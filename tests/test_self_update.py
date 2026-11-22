@@ -433,6 +433,73 @@ def test_shared_update_refuses_remote_ui_and_cli_activity(tmp_path):
         owner.close(failed_handoff=True)
 
 
+def test_shared_restart_can_drain_with_independent_cli_activity(tmp_path, monkeypatch):
+    class Runtime(_Runtime):
+        def cached_restart_active_task_count(self):
+            return 0
+
+        def strict_restart_active_task_count(self):
+            return 0
+
+    monkeypatch.setattr(self_update.UiUpdateCoordinator, "_start_monitor", lambda self: None)
+    monkeypatch.setattr(self_update.UiUpdateCoordinator, "_installed_version", staticmethod(lambda _fallback: "0.4.0"))
+    shutdowns = []
+    state_dir = tmp_path / "coordination"
+    owner = self_update.UiUpdateCoordinator(
+        lambda: shutdowns.append("owner"), state_dir=str(state_dir), shared=True, current_version="0.3.0",
+    )
+    follower = self_update.UiUpdateCoordinator(
+        lambda: shutdowns.append("follower"), state_dir=str(state_dir), shared=True, current_version="0.3.0",
+    )
+    runtime = Runtime(1)
+    owner.attach(runtime)
+    follower.attach(runtime)
+    try:
+        # A peer from an older version publishes only its general active count.
+        legacy = process_record(record_id="a" * 32, kind="ui")
+        legacy.update(phase="serving", active_count=1)
+        owner._store.write_record("instances", legacy["id"], legacy)
+        with pytest.raises(self_update.ActiveTasksError):
+            owner.prepare_restart(runtime)
+        owner._store.remove_record("instances", legacy["id"])
+
+        with EnvironmentActivityLease("cli-runner", state_dir=state_dir):
+            with pytest.raises(self_update.ActiveTasksError):
+                owner.prepare(runtime)
+            assert owner.prepare_restart(runtime)
+            owner._monitor_tick()
+            follower._monitor_tick()
+            assert shutdowns == ["owner", "follower"]
+    finally:
+        follower.close()
+        owner.close(failed_handoff=True)
+
+
+@pytest.mark.parametrize("operation", ["upgrade", "restart"])
+def test_scheduled_operation_checks_installed_version_again(monkeypatch, operation):
+    installed = "0.4.0" if operation == "restart" else "0.3.0"
+    runtime = _Runtime(1)
+    coordinator = self_update.UiUpdateCoordinator(
+        lambda: pytest.fail("a different installed release requires confirmation"), current_version="0.3.0",
+    )
+    monkeypatch.setattr(coordinator, "_installed_version", lambda _fallback: installed)
+    monkeypatch.setattr(coordinator, "_start_monitor", lambda: None)
+    monkeypatch.setattr(self_update, "SCHEDULED_OPERATION_RETRY_SECONDS", 0)
+
+    if operation == "restart":
+        assert not coordinator.prepare_restart(runtime, defer_if_busy=True)
+    else:
+        assert not coordinator.prepare(runtime, target_version="0.4.0", defer_if_busy=True)
+    installed = "0.5.0"
+    runtime.active_count = 0
+    coordinator._monitor_tick()
+
+    state, scheduled = coordinator.operation_status()
+    assert state == "restart_required"
+    assert scheduled and "while" in scheduled["error"]
+    assert coordinator.requested is False
+
+
 def test_shared_update_fails_closed_when_record_directory_is_unavailable(
     tmp_path,
     monkeypatch,
@@ -675,6 +742,7 @@ def test_coordinated_update_waits_for_handoff_then_publishes_to_waiter(tmp_path,
 
     monkeypatch.setattr(self_update.time, "sleep", release_follower)
     monkeypatch.setattr(self_update, "run_pip_upgrade", fake_upgrade)
+    monkeypatch.setattr(self_update, "_query_installed_version", lambda _fallback: "0.4.0")
 
     assert self_update.run_coordinated_update(
         state_dir=str(state_dir),
@@ -718,10 +786,13 @@ def test_coordinated_restart_accepts_stopped_follower_handoff(tmp_path, monkeypa
         }
     )
     store.write_record("instances", follower_id, follower)
+    activity = process_record(record_id="d" * 32, kind="cli-runner")
+    store.write_record("activities", activity["id"], activity)
+    monkeypatch.setattr(self_update, "_query_installed_version", lambda _fallback: "0.4.0")
     monkeypatch.setattr(
         self_update.time,
         "sleep",
-        lambda _seconds: pytest.fail("a stopped restart follower must not block completion"),
+        lambda _seconds: pytest.fail("a stopped follower or a CLI runner must not block a restart"),
     )
 
     relaunches = []
@@ -750,6 +821,7 @@ def test_coordinated_restart_accepts_stopped_follower_handoff(tmp_path, monkeypa
     }
     assert relaunches == [{"port": 8123, "token": "owner-token", "result": result}]
     assert store.read_request()["stage"] == "completed"
+    assert store.live_records_locked("activities") == [activity]
     self_update.restart_ui_after_handoff(
         port=8124,
         token="follower-token",
@@ -765,6 +837,60 @@ def test_coordinated_restart_accepts_stopped_follower_handoff(tmp_path, monkeypa
         "token": "follower-token",
         "result": result,
     }
+
+
+@pytest.mark.parametrize("release_becomes_visible", [True, False])
+def test_waiter_checks_local_version_after_shared_success(tmp_path, monkeypatch, release_becomes_visible):
+    result = {"ok": True, "previous_version": "0.3.0", "installed_version": "0.4.0", "exit_code": 0}
+    store = _publish_update_request(
+        tmp_path / "coordination", "a" * 32, "b" * 32, stage="completed", result=result,
+    )
+    clock = 100.0
+    sleeps = []
+
+    def advance(seconds):
+        nonlocal clock
+        sleeps.append(seconds)
+        clock += seconds
+
+    def local_version(_fallback):
+        return "0.4.0" if release_becomes_visible and clock >= 102.0 else "0.3.0"
+
+    monkeypatch.setattr(self_update, "LOCAL_RELEASE_WAIT_SECONDS", 3.0)
+    monkeypatch.setattr(self_update.time, "monotonic", lambda: clock)
+    monkeypatch.setattr(self_update.time, "sleep", advance)
+    monkeypatch.setattr(self_update, "_query_installed_version", local_version)
+
+    observed = self_update.wait_for_coordinated_update(
+        state_dir=store.state_dir, request_id="b" * 32, instance_id="c" * 32, previous_version="0.3.0",
+    )
+    if release_becomes_visible:
+        assert sleeps == [1.0, 1.0]
+        assert observed == result
+    else:
+        assert sleeps == [1.0, 1.0, 1.0]
+        assert observed["ok"] is False and observed["exit_code"] == 124
+        assert observed["installed_version"] == "0.3.0"
+        assert "could not verify Pyruns 0.4.0 on disk" in observed["error"]
+    assert store.read_request()["result"] == result
+    assert store.live_records_locked("instances") == []
+
+
+@pytest.mark.parametrize("first_read", [None, {"request_id": "old-request", "stage": "completed"}])
+def test_waiter_retries_a_stale_shared_request_read(tmp_path, monkeypatch, first_read):
+    result = {"ok": True, "previous_version": "0.3.0", "installed_version": "0.4.0", "exit_code": 0}
+    store = _publish_update_request(
+        tmp_path / "coordination", "a" * 32, "b" * 32, stage="completed", result=result,
+    )
+    responses = iter([first_read, store.read_request()])
+    sleeps = []
+    monkeypatch.setattr(CoordinationStore, "read_request", lambda _store: next(responses))
+    monkeypatch.setattr(self_update.time, "sleep", sleeps.append)
+    monkeypatch.setattr(self_update, "_query_installed_version", lambda _fallback: "0.4.0")
+    assert self_update.wait_for_coordinated_update(
+        state_dir=store.state_dir, request_id="b" * 32, instance_id="c" * 32, previous_version="0.3.0",
+    ) == result
+    assert sleeps == [0.2]
 
 
 def test_coordinated_waiter_times_out_and_restarts_available_version(tmp_path, monkeypatch):
@@ -981,6 +1107,19 @@ def test_remote_shared_leases_survive_brief_disconnects_and_expire(tmp_path):
     store.write_record("instances", instance_id, remote)
     with store.locked():
         assert store.live_records_locked("instances") == []
+
+
+def test_same_hostname_in_another_pid_namespace_keeps_its_shared_lease(tmp_path, monkeypatch):
+    store = CoordinationStore(tmp_path / "coordination")
+    record_id = "f" * 32
+    remote = process_record(record_id=record_id, kind="ui")
+    remote["runner_device"] = "another-device"
+    store.write_record("instances", record_id, remote)
+    monkeypatch.setattr(update_coordination, "local_runner_device", lambda: "this-device")
+    monkeypatch.setattr(
+        update_coordination, "is_pid_running", lambda _pid: pytest.fail("cannot inspect another device's PID"),
+    )
+    assert [item["id"] for item in store.live_records_locked("instances")] == [record_id]
 
 
 def test_local_live_process_keeps_activity_lease_when_heartbeat_is_old(tmp_path):
@@ -1257,6 +1396,42 @@ def test_external_install_version_change_waits_for_manual_restart(tmp_path, monk
         assert handoff["target_version"] == "0.4.0"
     finally:
         coordinator.close(failed_handoff=True)
+
+
+def test_stale_ui_follows_successful_shared_update_after_its_tasks_finish(tmp_path, monkeypatch):
+    installed = "0.3.0"
+    shutdowns = []
+    runtime = _Runtime(1)
+    state_dir = tmp_path / "coordination"
+    coordinator = self_update.UiUpdateCoordinator(
+        lambda: shutdowns.append("shutdown"), state_dir=str(state_dir), shared=True, current_version="0.3.0",
+    )
+    monkeypatch.setattr(coordinator, "_start_monitor", lambda: None)
+    monkeypatch.setattr(coordinator, "_installed_version", lambda _fallback: installed)
+    store = _publish_update_request(
+        state_dir, "a" * 32, "b" * 32, stage="completed", operation="upgrade",
+        result={"ok": True, "previous_version": "0.3.0", "installed_version": "0.4.0", "exit_code": 0},
+    )
+    completed = store.read_request()
+    coordinator.attach(runtime)
+    try:
+        coordinator._monitor_tick()
+        assert shutdowns == []
+        installed = "0.4.0"
+        coordinator._next_version_check = 0
+        coordinator._monitor_tick()
+        assert coordinator.state == "restart_required"
+        with coordinator.task_start_guard():
+            assert shutdowns == []
+
+        runtime.active_count = 0
+        coordinator._monitor_tick()
+        assert shutdowns == ["shutdown"]
+        handoff = coordinator.handoff()
+        assert (handoff["role"], handoff["operation"], handoff["request_id"]) == ("follower", "restart", "b" * 32)
+        assert store.read_request() == completed
+    finally:
+        coordinator.close()
 
 
 @pytest.mark.parametrize(
@@ -1765,3 +1940,13 @@ def test_read_update_result_rejects_invalid_payload(monkeypatch):
         "installed_version": "0.3.0",
         "exit_code": 1,
     }
+
+
+def test_successful_update_result_requires_the_running_version_to_match(monkeypatch):
+    result = {"ok": True, "previous_version": "0.3.0", "installed_version": "0.4.0", "exit_code": 0}
+    monkeypatch.setenv(self_update.UI_UPDATE_RESULT_ENV, json.dumps(result))
+    assert self_update.read_update_result(running_version="0.4.0") == result
+
+    stale = self_update.read_update_result(running_version="0.3.0")
+    assert stale["ok"] is False and stale["installed_version"] == "0.3.0"
+    assert "started Pyruns 0.3.0" in stale["error"]

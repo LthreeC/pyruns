@@ -17,7 +17,7 @@ from concurrent.futures import CancelledError, Future, ThreadPoolExecutor
 from functools import lru_cache
 from pathlib import Path
 from types import MappingProxyType
-from typing import Any, Callable, Dict, List, Mapping, Optional, overload
+from typing import Any, Callable, Dict, List, Literal, Mapping, Optional, overload
 
 from omegaconf import OmegaConf
 
@@ -567,16 +567,32 @@ class TaskManager:
         )
         return TaskManager._finalize_full_task_snapshot(full_snapshot, include_tracks=include_tracks)
 
-    def active_task_count(self) -> int:
+    def active_task_count(self, *, for_operation: Literal["upgrade", "restart"] | None = None) -> int:
         """Count cached active work without copying task payloads."""
+        current_pid = str(os.getpid()) if for_operation == "restart" else ""
         with self._lock:
-            count = sum(
-                1 for task in self.tasks
-                if task is not None
-                and task_storage_scope(task.get("dir", "")) != "remote"
-                and str(normalize_task_status(task.get("status", "")) or "").strip().lower()
-                in {"queued", "running"}
-            )
+            count = 0
+            for task in self.tasks:
+                if not task:
+                    continue
+                status = normalize_task_status(task.get("status", ""))
+                if status not in ("queued", "running") or task_storage_scope(task.get("dir", "")) == "remote":
+                    continue
+                location = runner_location(task, self.runner_host) if for_operation else None
+                if location == "remote":
+                    continue
+                # A UI-only restart cannot stop an already-running task
+                # owned by a separate local process. Queued work can still
+                # be picked up by this manager when its previous lease ends.
+                if for_operation == "restart" and status == "running" and location == "local":
+                    owner, _, token = str(task.get("runner_id") or "").rpartition(":")
+                    host, _, pid = owner.rpartition(":")
+                    if (
+                        host == self.runner_host and token and 0 < len(pid) <= 10
+                        and pid.isascii() and pid.isdecimal() and pid[0] != "0" and pid != current_pid
+                    ):
+                        continue
+                count += 1
             return count or int(bool(self.is_processing))
 
     def local_activity_counts(self) -> dict[str, int]:

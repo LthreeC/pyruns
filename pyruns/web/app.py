@@ -347,7 +347,13 @@ class RuntimeUpdateRequest(RequestModel):
     gpu_scheduler: dict[str, Any] | None = None
 
 
-class SystemUpdateRequest(RequestModel):
+class SystemOperationRequest(RequestModel):
+    """Whether to schedule the operation if relevant tasks are active."""
+
+    defer_if_busy: bool = False
+
+
+class SystemUpdateRequest(SystemOperationRequest):
     """The release confirmed by the user before a full-process upgrade."""
 
     target_version: str = Field(default="", max_length=64)
@@ -639,7 +645,7 @@ def create_app(
     app.state.allow_test_client_bypass = bool(allow_test_client_bypass)
     app.state.instance_id = secrets.token_urlsafe(16)
     app.state.update_coordinator = update_coordinator
-    app.state.update_result = read_update_result()
+    app.state.update_result = read_update_result(running_version=__version__)
 
     @app.exception_handler(WorkspaceChangedError)
     async def workspace_changed_error(_request: Request, exc: WorkspaceChangedError) -> JSONResponse:
@@ -1970,16 +1976,19 @@ def create_app(
         update_supported = coordinator is not None and coordinator.supported
         installed_version = __version__
         restart_required = False
+        state, scheduled_operation = "unavailable", None
         if coordinator is not None:
             installed_version = coordinator.refresh_installed_version()
             restart_required = coordinator.restart_required
+            state, scheduled_operation = coordinator.operation_status()
         return {
             "version": __version__,
             "installed_version": installed_version,
             "restart_required": restart_required,
             "instance_id": app.state.instance_id,
             "update_supported": update_supported,
-            "update_state": coordinator.state if update_supported else "unavailable",
+            "update_state": state if update_supported else "unavailable",
+            "scheduled_operation": scheduled_operation,
             "last_update": app.state.update_result,
         }
 
@@ -2010,6 +2019,7 @@ def create_app(
             ready = coordinator.prepare(
                 get_runtime(),
                 target_version=payload.target_version if payload is not None else "",
+                defer_if_busy=bool(payload and payload.defer_if_busy),
             )
         except ActiveTasksError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
@@ -2017,15 +2027,20 @@ def create_app(
             raise HTTPException(status_code=503, detail=str(exc)) from exc
         if ready:
             background_tasks.add_task(coordinator.trigger_shutdown)
+        state, scheduled_operation = coordinator.operation_status()
         return {
             "ok": True,
             "instance_id": app.state.instance_id,
             "version": __version__,
-            "state": coordinator.state,
+            "state": state,
+            "scheduled_operation": scheduled_operation,
         }
 
     @app.post("/api/system/restart", status_code=202)
-    def restart_pyruns(background_tasks: BackgroundTasks) -> dict[str, Any]:
+    def restart_pyruns(
+        background_tasks: BackgroundTasks,
+        payload: SystemOperationRequest | None = None,
+    ) -> dict[str, Any]:
         coordinator = app.state.update_coordinator
         if coordinator is None or not coordinator.supported:
             raise HTTPException(
@@ -2033,19 +2048,32 @@ def create_app(
                 detail="Full-process restarts are available only in the normal 'pyr ui' server.",
             )
         try:
-            ready = coordinator.prepare_restart(get_runtime())
+            ready = coordinator.prepare_restart(
+                get_runtime(), defer_if_busy=bool(payload and payload.defer_if_busy),
+            )
         except ActiveTasksError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         except UpdateCheckError as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
         if ready:
             background_tasks.add_task(coordinator.trigger_shutdown)
+        state, scheduled_operation = coordinator.operation_status()
         return {
             "ok": True,
             "instance_id": app.state.instance_id,
             "version": __version__,
-            "state": coordinator.state,
+            "state": state,
+            "scheduled_operation": scheduled_operation,
         }
+
+    @app.delete("/api/system/update/pending/{operation_id}")
+    def cancel_scheduled_operation(operation_id: Annotated[str, PathParam(min_length=32, max_length=32)]) -> dict[str, bool]:
+        coordinator = app.state.update_coordinator
+        if coordinator is None:
+            raise HTTPException(status_code=503, detail="This Pyruns interface does not support scheduled updates.")
+        if not coordinator.cancel_scheduled_operation(operation_id):
+            raise HTTPException(status_code=409, detail="The scheduled Pyruns operation already changed or started.")
+        return {"ok": True}
 
     @app.get("/api/system/metrics")
     def get_metrics(

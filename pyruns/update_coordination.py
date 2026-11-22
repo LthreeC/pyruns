@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any, Iterator
 
 from pyruns.utils.process_utils import get_process_create_time, is_pid_running
+from pyruns.utils.runner_device import local_runner_device, record_runner_device
 
 
 UPDATE_STATE_DIR_ENV = "PYRUNS_UPDATE_STATE_DIR"
@@ -170,7 +171,7 @@ def _atomic_write_json(path: str, payload: dict[str, Any]) -> None:
 
 
 def process_record(*, record_id: str, kind: str) -> dict[str, Any]:
-    return {
+    record = {
         "id": str(record_id),
         "kind": str(kind),
         "host": _LOCAL_HOST,
@@ -178,10 +179,14 @@ def process_record(*, record_id: str, kind: str) -> dict[str, Any]:
         "process_create_time": get_process_create_time(os.getpid()),
         "heartbeat_at": time.time(),
     }
+    record_runner_device(record)
+    return record
 
 
 def _record_owner_is_alive(record: dict[str, Any]) -> bool | None:
     if str(record.get("host", "") or "").lower() != _LOCAL_HOST:
+        return None
+    if (device := record.get("runner_device")) and device != local_runner_device():
         return None
     try:
         pid = int(record.get("pid", 0) or 0)

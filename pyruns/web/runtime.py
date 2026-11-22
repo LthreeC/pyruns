@@ -548,37 +548,40 @@ class PyrunsRuntime:
             for task in tasks
         )
 
-    def _active_task_count(self, *, force_all: bool) -> int:
-        self.ensure_tasks_loaded(full_refresh=False)
+    def _managed_task_managers(self) -> list[TaskManager]:
         with self._lock:
             managers = list(dict.fromkeys(self._task_managers.values()))
             if self._task_manager is not None and self._task_manager not in managers:
                 managers.append(self._task_manager)
+            return managers
 
+    def _active_task_count(self, *, force_all: bool, restart_only: bool = False) -> int:
+        self.ensure_tasks_loaded(full_refresh=False)
         active_count = 0
-        for manager in managers:
+        for manager in self._managed_task_managers():
             if force_all:
-                active_count += self._strict_manager_active_task_count(manager)
+                active_count += self._strict_manager_active_task_count(manager, restart_only=restart_only)
             else:
                 manager.refresh_from_disk(check_all=True, discover=True, check_payload=False)
-                active_count += manager.active_task_count()
+                active_count += manager.active_task_count(for_operation="upgrade")
         return active_count
 
     @staticmethod
-    def _strict_manager_active_task_count(manager: TaskManager) -> int:
+    def _strict_manager_active_task_count(manager: TaskManager, *, restart_only: bool = False) -> int:
         """Retry changing snapshots, but never interpret an unreadable workspace as idle."""
+        operation = "restart" if restart_only else "upgrade"
         attempts = 0
         while True:
             attempts += 1
             try:
                 manager.refresh_from_disk(force_all=True, discover=True, raise_on_error=True)
-                return manager.active_task_count()
+                return manager.active_task_count(for_operation=operation)
             except Exception as exc:
                 if isinstance(exc, TaskStateConflict):
                     # Heartbeats can prevent a stable read of an active task.
                     # A positive cached count safely refuses an update; zero
                     # must still be verified by a successful strict refresh.
-                    active_count = manager.active_task_count()
+                    active_count = manager.active_task_count(for_operation=operation)
                     if active_count:
                         return active_count
                     if attempts < 3:
@@ -598,6 +601,15 @@ class PyrunsRuntime:
         """Re-read every task before an operation that requires a proven idle UI."""
 
         return self._active_task_count(force_all=True)
+
+    @_with_stable_workspace
+    def strict_restart_active_task_count(self) -> int:
+        """Verify the work that must finish before this UI process exits."""
+        return self._active_task_count(force_all=True, restart_only=True)
+
+    def cached_restart_active_task_count(self) -> int:
+        """Use the refreshed registry for the shared restart heartbeat."""
+        return sum(manager.active_task_count(for_operation="restart") for manager in self._managed_task_managers())
 
     def _retire_task_manager_if_idle(self, manager_key: str, task_manager: TaskManager) -> None:
         """Stop and forget one non-current manager after its active work has finished."""

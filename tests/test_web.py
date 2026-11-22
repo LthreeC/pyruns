@@ -314,6 +314,101 @@ def test_system_update_refuses_active_tasks_then_accepts_idle_retry(monkeypatch,
     assert shutdowns == ["shutdown"]
 
 
+@pytest.mark.parametrize("operation", ["update", "restart"])
+def test_system_operation_can_wait_and_cancel_without_gating_work(tmp_path, monkeypatch, operation):
+    from pyruns.web import self_update
+
+    shutdowns = []
+    runtime = _RouteRuntime({
+        "active_task_count": 2,
+        "start_task": {"name": "alpha", "status": "queued"},
+    })
+    coordinator = self_update.UiUpdateCoordinator(
+        lambda: shutdowns.append("shutdown"), current_version="0.3.0",
+        shared=True, state_dir=str(tmp_path / "coordination"),
+    )
+    monkeypatch.setattr(coordinator, "_installed_version", lambda _fallback: "0.3.1")
+    monkeypatch.setattr(coordinator, "_start_monitor", lambda: None)
+    monkeypatch.setattr(self_update, "SCHEDULED_OPERATION_RETRY_SECONDS", 0)
+    coordinator.attach(runtime)
+
+    try:
+        client = TestClient(create_app(runtime, update_coordinator=coordinator))
+        path = f"/api/system/{operation}"
+        payload = {"defer_if_busy": True}
+        if operation == "update":
+            payload["target_version"] = "0.4.0"
+        first = client.post(path, json=payload)
+        assert first.status_code == 202
+        assert first.json()["state"] == "waiting"
+        scheduled = first.json()["scheduled_operation"]
+        assert client.get("/api/system/info").json()["scheduled_operation"] == scheduled
+        assert client.post(path, json=payload).json()["scheduled_operation"] == scheduled
+        assert client.post("/api/tasks/alpha/run").status_code == 200
+        assert coordinator._store.read_request() is None
+        coordinator._monitor_tick()
+        assert shutdowns == []
+
+        cancel_path = "/api/system/update/pending"
+        assert client.delete(f"{cancel_path}/{'f' * 32}").status_code == 409
+        assert client.delete(f"{cancel_path}/{scheduled['id']}").status_code == 200
+        runtime.results["active_task_count"] = 0
+        coordinator._monitor_tick()
+        assert coordinator._store.read_request() is None
+        assert shutdowns == []
+
+        runtime.results["active_task_count"] = 2
+        next_request = client.post(path, json=payload).json()["scheduled_operation"]
+        assert next_request["id"] != scheduled["id"]
+        runtime.results["active_task_count"] = 0
+        coordinator._monitor_tick()
+        coordinator._monitor_tick()
+        assert coordinator.state == "restarting"
+        assert coordinator._store.read_request()["operation"] == next_request["operation"]
+        assert shutdowns == ["shutdown"]
+        assert client.delete(f"{cancel_path}/{next_request['id']}").status_code == 409
+    finally:
+        coordinator.close(failed_handoff=True)
+
+
+def test_runtime_restart_count_distinguishes_task_ownership(tmp_path, monkeypatch):
+    from pyruns.utils import runner_device
+
+    monkeypatch.setattr(runner_device, "local_runner_device", lambda: "test-device")
+    workspace = _make_workspace(tmp_path, "main")
+    runtime = _build_runtime(workspace, owns_task_lifecycle=False)
+    try:
+        host = runtime.task_manager.runner_host
+        independent_owner = {
+            "runner_host": host,
+            "runner_device": "test-device",
+            "runner_id": f"{host}:{os.getpid() + 1}:cli",
+        }
+        other_host = f"other-{host}"
+        for name, status, owner in (
+            ("remote", "running", {"runner_host": other_host}),
+            ("remote-queue", "queued", {"runner_host": other_host}),
+            ("independent", "running", independent_owner),
+            ("local-queue", "queued", independent_owner),
+            ("same-process", "running", {**independent_owner, "runner_id": f"{host}:{os.getpid()}:another-manager"}),
+            ("legacy", "running", {"runner_host": host}),
+            ("pending", "pending", {}),
+        ):
+            _add_task(workspace, name, status=status)
+            update_task_info(
+                str(workspace / TASKS_DIR / name),
+                lambda info: info.update(owner, lease_until=time.time() + 60),
+            )
+
+        assert runtime.strict_active_task_count() == 4
+        assert runtime.strict_restart_active_task_count() == 3
+        assert runtime.task_manager.active_task_count() == 6
+        assert runtime.cached_restart_active_task_count() == 3
+        assert load_task_info(str(workspace / TASKS_DIR / "remote"))["status"] == "running"
+    finally:
+        runtime.shutdown()
+
+
 def test_runtime_active_task_count_refreshes_all_owned_managers(tmp_path):
     workspace_a = _make_workspace(tmp_path, "main")
     workspace_b = _make_workspace(tmp_path, "alt")

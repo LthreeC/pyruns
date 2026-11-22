@@ -39,8 +39,10 @@ PYPI_CHECK_TIMEOUT_SECONDS = 5.0
 PYPI_MAX_RESPONSE_BYTES = 1_048_576
 UPDATE_PARTICIPANT_WAIT_SECONDS = 60.0
 UPDATE_STATUS_REPORT_SECONDS = 5.0
+SCHEDULED_OPERATION_RETRY_SECONDS = 10.0
 PIP_UPGRADE_TIMEOUT_SECONDS = 300.0
 COORDINATED_UPDATE_WAIT_SECONDS = 420.0
+LOCAL_RELEASE_WAIT_SECONDS = 60.0
 INSTALLED_VERSION_QUERY_TIMEOUT_SECONDS = 15.0
 _WINDOWS_PROCESS_REPLACEMENT = os.name == "nt"
 
@@ -88,6 +90,8 @@ class UiUpdateCoordinator:
         self._request_id = ""
         self._operation = "upgrade"
         self._role = "owner"
+        self._scheduled_operation: dict[str, str] | None = None
+        self._next_scheduled_check = 0.0
         self._instance_id = secrets.token_hex(16)
         self._store = CoordinationStore(state_dir) if shared else None
         self._coordination_error = ""
@@ -95,6 +99,7 @@ class UiUpdateCoordinator:
         self._stop = threading.Event()
         self._monitor: threading.Thread | None = None
         self._next_version_check = 0.0
+        self._next_shared_restart_check = 0.0
 
     @property
     def supported(self) -> bool:
@@ -107,9 +112,29 @@ class UiUpdateCoordinator:
 
     @property
     def state(self) -> str:
-        if self.requested:
-            return "restarting"
-        return "restart_required" if self.restart_required else "idle"
+        return self.operation_status()[0]
+
+    def operation_status(self) -> tuple[str, dict[str, str] | None]:
+        with self._lock:
+            pending = self._scheduled_operation
+            if self._requested:
+                state = "restarting"
+            elif pending is not None and not pending.get("error"):
+                state = "waiting"
+            else:
+                state = "restart_required" if self.restart_required else "idle"
+            return state, pending.copy() if pending is not None else None
+
+    def cancel_scheduled_operation(self, operation_id: str) -> bool:
+        with self._lock:
+            pending = self._scheduled_operation
+            if (
+                self._requested or pending is None or pending.get("error")
+                or pending["id"] != operation_id
+            ):
+                return False
+            self._scheduled_operation = None
+            return True
 
     @property
     def installed_version(self) -> str:
@@ -142,35 +167,41 @@ class UiUpdateCoordinator:
     def instance_id(self) -> str:
         return self._instance_id
 
-    def _runtime_active_count(self, *, strict: bool) -> int:
+    def _strict_active_count(self, *, restart_only: bool) -> int:
         try:
-            strict_counter = getattr(
-                type(self._runtime),
-                "strict_active_task_count",
-                None,
-            )
-            counter = (
-                self._runtime.strict_active_task_count
-                if strict and callable(strict_counter)
-                else self._runtime.active_task_count
-            )
-            return max(0, int(counter()))
+            for name in (
+                ("strict_restart_active_task_count", "strict_active_task_count")
+                if restart_only else ("strict_active_task_count",)
+            ):
+                if callable(getattr(type(self._runtime), name, None)):
+                    return max(0, int(getattr(self._runtime, name)()))
+            return max(0, int(self._runtime.active_task_count()))
         except Exception as exc:
-            if strict:
-                detail = str(exc).strip() or type(exc).__name__
-                raise UpdateCheckError(
-                    "Could not verify that every managed workspace is idle. "
-                    f"{detail[:1600]} "
-                    "Retry after task state settles; "
-                    "if this persists, check the reported workspace and file access."
-                ) from exc
-            return 1
+            detail = str(exc).strip() or type(exc).__name__
+            raise UpdateCheckError(
+                "Could not verify that every managed workspace is idle. "
+                f"{detail[:1600]} "
+                "Retry after task state settles; "
+                "if this persists, check the reported workspace and file access."
+            ) from exc
+
+    def _serving_counts(self) -> tuple[int, int]:
+        try:
+            active = max(0, int(self._runtime.active_task_count()))
+            restart_active = active
+            if active and callable(getattr(type(self._runtime), "cached_restart_active_task_count", None)):
+                restart_active = max(0, int(self._runtime.cached_restart_active_task_count()))
+            return active, restart_active
+        except Exception:
+            # Another UI should not start replacing this process on a failed check.
+            return 1, 1
 
     def _instance_payload(
         self,
         *,
         phase: str,
         active_count: int,
+        restart_active_count: int | None = None,
         request_id: str = "",
     ) -> dict[str, Any]:
         payload = process_record(record_id=self._instance_id, kind="ui")
@@ -182,6 +213,8 @@ class UiUpdateCoordinator:
                 "version": self._current_version,
             }
         )
+        if restart_active_count is not None:
+            payload["restart_active_count"] = max(0, int(restart_active_count))
         return payload
 
     def _write_instance(
@@ -189,6 +222,7 @@ class UiUpdateCoordinator:
         *,
         phase: str,
         active_count: int,
+        restart_active_count: int | None = None,
         request_id: str = "",
     ) -> None:
         if self._store is None:
@@ -204,6 +238,7 @@ class UiUpdateCoordinator:
                 self._instance_payload(
                     phase=phase,
                     active_count=active_count,
+                    restart_active_count=restart_active_count,
                     request_id=request_id,
                 ),
             )
@@ -211,6 +246,7 @@ class UiUpdateCoordinator:
     def _join_request(self, request: dict[str, Any]) -> None:
         with self._lock:
             self._requested = True
+            self._scheduled_operation = None
             self._request_id = str(request.get("request_id", "") or "")
             self._operation = str(request.get("operation", "upgrade") or "upgrade")
             self._target_version = str(request.get("target_version", "") or "")
@@ -228,7 +264,7 @@ class UiUpdateCoordinator:
             return
         try:
             self._store.ensure()
-            active_count = self._runtime_active_count(strict=False)
+            active_count, restart_active_count = self._serving_counts()
             with self._store.locked():
                 request = self._store.active_request_locked(recover=True)
                 if request is not None:
@@ -236,6 +272,7 @@ class UiUpdateCoordinator:
                 self._write_instance(
                     phase="draining" if request is not None else "serving",
                     active_count=active_count,
+                    restart_active_count=restart_active_count,
                     request_id=self._request_id,
                 )
         except (OSError, UpdateCoordinationError, ValueError) as exc:
@@ -262,6 +299,11 @@ class UiUpdateCoordinator:
                     self._coordination_degraded = True
             if self._coordination_degraded:
                 return
+        self._start_monitor()
+
+    def _start_monitor(self) -> None:
+        if self._monitor is not None:
+            return
         self._monitor = threading.Thread(
             target=self._monitor_loop,
             name="pyruns-update-monitor",
@@ -309,15 +351,17 @@ class UiUpdateCoordinator:
             finally:
                 if sys.exc_info()[0] is None:
                     try:
+                        active_count, restart_active_count = self._serving_counts()
                         self._write_instance(
                             phase="serving",
-                            active_count=self._runtime_active_count(strict=False),
+                            active_count=active_count,
+                            restart_active_count=restart_active_count,
                         )
                     except (OSError, ValueError):
                         pass
                 lock_context.__exit__(*sys.exc_info())
 
-    def prepare(self, runtime: Any, *, target_version: str = "") -> bool:
+    def prepare(self, runtime: Any, *, target_version: str = "", defer_if_busy: bool = False) -> bool:
         """Publish an upgrade gate after every registered process is idle."""
 
         target_version = str(target_version or "").strip()
@@ -333,9 +377,10 @@ class UiUpdateCoordinator:
             runtime,
             operation="upgrade",
             target_version=target_version,
+            defer_if_busy=defer_if_busy,
         )
 
-    def prepare_restart(self, runtime: Any) -> bool:
+    def prepare_restart(self, runtime: Any, *, defer_if_busy: bool = False) -> bool:
         """Publish a restart gate for an externally changed installation."""
 
         installed = self.refresh_installed_version(force=True)
@@ -345,6 +390,7 @@ class UiUpdateCoordinator:
             runtime,
             operation="restart",
             target_version=installed,
+            defer_if_busy=defer_if_busy,
         )
 
     def _prepare_operation(
@@ -353,83 +399,140 @@ class UiUpdateCoordinator:
         *,
         operation: str,
         target_version: str,
+        defer_if_busy: bool,
     ) -> bool:
-        """Publish one shared full-process operation after every user is idle."""
-
         with self._lock:
-            if self._requested:
-                return self._runtime_active_count(strict=True) == 0
+            if self._stop.is_set():
+                raise UpdateCheckError("This Pyruns interface is already shutting down.")
             self._runtime = runtime
-            if self._coordination_error:
-                raise UpdateCheckError(
-                    "Shared update coordination is unavailable for this installation."
-                )
-            if self._store is None:
-                active_count = self._runtime_active_count(strict=True)
-                if active_count > 0:
-                    raise ActiveTasksError(active_count)
-                self._requested = True
-                self._operation = operation
-                self._target_version = target_version
-                self._role = "owner"
-                return True
+            pending = self._scheduled_operation
+            if defer_if_busy and pending is not None and not pending.get("error"):
+                if (operation, target_version) != (pending["operation"], pending["target_version"]):
+                    raise UpdateCheckError("Cancel the scheduled Pyruns operation before scheduling another.")
+                return False
             try:
-                with self._store.locked():
-                    existing = self._store.active_request_locked(recover=True)
-                    if existing is not None:
-                        self._join_request(existing)
-                        active_count = self._runtime_active_count(strict=True)
-                        self._write_instance(
-                            phase="draining",
-                            active_count=active_count,
-                            request_id=self._request_id,
-                        )
-                        return active_count == 0
-
-                    local_count = self._runtime_active_count(strict=True)
-                    instances = self._store.live_records_locked("instances")
-                    activities = self._store.live_records_locked("activities")
-                    remote_count = sum(
-                        max(0, int(item.get("active_count", 0) or 0))
-                        for item in instances
-                        if str(item.get("id", "") or "") != self._instance_id
-                    )
-                    active_count = local_count + remote_count + len(activities)
-                    if active_count > 0:
-                        raise ActiveTasksError(active_count)
-
-                    request_id = secrets.token_hex(16)
-                    request = process_record(
-                        record_id=self._instance_id,
-                        kind="ui-restart" if operation == "restart" else "ui-update",
-                    )
-                    request.update(
-                        {
-                            "request_id": request_id,
-                            "owner_instance_id": self._instance_id,
-                            "operation": operation,
-                            "stage": "draining",
-                            "previous_version": self._current_version,
-                            "target_version": target_version,
-                            "requested_at": time.time(),
-                        }
-                    )
-                    self._store.write_request_locked(request)
-                    self._join_request(request)
-                    self._write_instance(
-                        phase="draining",
-                        active_count=0,
-                        request_id=request_id,
-                    )
-                    return True
+                return self._admit_operation(operation, target_version)
             except ActiveTasksError:
-                raise
-            except UpdateCheckError:
-                raise
-            except (OSError, UpdateCoordinationError, TypeError, ValueError) as exc:
-                raise UpdateCheckError(
-                    f"Could not coordinate an idle {operation} across this Pyruns installation."
-                ) from exc
+                if not defer_if_busy:
+                    raise
+                self._scheduled_operation = {
+                    "id": secrets.token_hex(16),
+                    "operation": operation,
+                    "target_version": target_version,
+                }
+                self._next_scheduled_check = time.monotonic() + SCHEDULED_OPERATION_RETRY_SECONDS
+                self._start_monitor()
+                return False
+
+    def _admit_operation(self, operation: str, target_version: str) -> bool:
+        """Check and publish the gate while the coordinator lock is held."""
+
+        if self._requested:
+            return self._strict_active_count(restart_only=self._operation == "restart") == 0
+        if self._coordination_error:
+            raise UpdateCheckError(
+                "Shared update coordination is unavailable for this installation."
+            )
+        restart_only = operation == "restart"
+        if self._store is None:
+            active_count = self._strict_active_count(restart_only=restart_only)
+            if active_count:
+                raise ActiveTasksError(active_count)
+            if self._stop.is_set():
+                raise UpdateCheckError("This Pyruns interface is already shutting down.")
+            self._requested = True
+            self._scheduled_operation = None
+            self._operation = operation
+            self._target_version = target_version
+            self._role = "owner"
+            return True
+        try:
+            with self._store.locked():
+                existing = self._store.active_request_locked(recover=True)
+                if existing is not None:
+                    self._join_request(existing)
+                    active_count = self._strict_active_count(restart_only=self._operation == "restart")
+                    self._write_instance(phase="draining", active_count=active_count, request_id=self._request_id)
+                    return active_count == 0
+
+                instances = self._store.live_records_locked("instances")
+                count_key = "restart_active_count" if restart_only else "active_count"
+                active_count = sum(
+                    max(0, int(item.get(count_key, item.get("active_count", 0)) or 0))
+                    for item in instances
+                    if str(item.get("id", "") or "") != self._instance_id
+                )
+                if not restart_only:
+                    active_count += len(self._store.live_records_locked("activities"))
+                if active_count:
+                    raise ActiveTasksError(active_count)
+                active_count = self._strict_active_count(restart_only=restart_only)
+                if active_count:
+                    raise ActiveTasksError(active_count)
+                if self._stop.is_set():
+                    raise UpdateCheckError("This Pyruns interface is already shutting down.")
+
+                request_id = secrets.token_hex(16)
+                request = process_record(
+                    record_id=self._instance_id,
+                    kind="ui-restart" if restart_only else "ui-update",
+                )
+                request.update(
+                    {
+                        "request_id": request_id,
+                        "owner_instance_id": self._instance_id,
+                        "operation": operation,
+                        "stage": "draining",
+                        "previous_version": self._current_version,
+                        "target_version": target_version,
+                        "requested_at": time.time(),
+                    }
+                )
+                self._store.write_request_locked(request)
+                self._join_request(request)
+                self._write_instance(phase="draining", active_count=0, request_id=request_id)
+                return True
+        except (OSError, UpdateCoordinationError, TypeError, ValueError) as exc:
+            raise UpdateCheckError(
+                f"Could not coordinate an idle {operation} across this Pyruns installation."
+            ) from exc
+
+    def _retry_scheduled_operation(self, serving_counts: tuple[int, int] | None = None) -> None:
+        with self._lock:
+            pending = self._scheduled_operation
+            now = time.monotonic()
+            if (
+                self._stop.is_set() or self._coordination_error or pending is None
+                or pending.get("error") or now < self._next_scheduled_check
+            ):
+                return
+            operation = pending["operation"]
+            target_version = pending["target_version"]
+            self._next_scheduled_check = now + SCHEDULED_OPERATION_RETRY_SECONDS
+            try:
+                installed = self.refresh_installed_version(force=True)
+                if operation == "restart" and installed != target_version:
+                    raise UpdateCheckError("The installed Pyruns version changed while the restart was waiting.")
+                if operation == "upgrade" and target_version and installed and installed != self._current_version:
+                    installed_version = Version(installed)
+                    confirmed_version = Version(target_version)
+                    if installed_version > confirmed_version:
+                        raise UpdateCheckError("A newer Pyruns version was installed while the update was waiting.")
+                    if installed_version == confirmed_version:
+                        operation = "restart"
+                if serving_counts is not None:
+                    active, restart_active = serving_counts
+                    if (restart_active if operation == "restart" else active) > 0:
+                        return
+                ready = self._admit_operation(operation, target_version)
+            except ActiveTasksError:
+                return
+            except (UpdateCheckError, InvalidVersion) as exc:
+                if self._scheduled_operation is pending:
+                    pending["error"] = str(exc)
+                return
+        if ready:
+            self.trigger_shutdown()
 
     def trigger_shutdown(self) -> None:
         """Ask Uvicorn to finish after the update response has been sent."""
@@ -454,7 +557,7 @@ class UiUpdateCoordinator:
         return value or fallback
 
     def _drain_once(self) -> None:
-        active_count = self._runtime_active_count(strict=True)
+        active_count = self._strict_active_count(restart_only=self._operation == "restart")
         self._write_instance(
             phase="draining",
             active_count=active_count,
@@ -478,15 +581,57 @@ class UiUpdateCoordinator:
                     heartbeat_at=time.time(),
                 )
 
+    def _restart_after_shared_completion(self, installed: str) -> bool:
+        """Join a successful shared update this UI missed while it was serving."""
+
+        if self._store is None:
+            return False
+        with self._lock:
+            now = time.monotonic()
+            scheduled = self._scheduled_operation
+            if (
+                self._requested or self._stop.is_set() or now < self._next_shared_restart_check
+                or (scheduled is not None and not scheduled.get("error"))
+            ):
+                return False
+            self._next_shared_restart_check = now + SCHEDULED_OPERATION_RETRY_SECONDS
+            with self._store.locked():
+                request = self._store.read_request_locked()
+                if request is None or request.get("stage") != "completed" or not request.get("request_id"):
+                    return False
+                result = request.get("result")
+                if (
+                    not isinstance(result, dict) or result.get("ok") is not True
+                    or result.get("installed_version") != installed
+                ):
+                    return False
+                try:
+                    if self._strict_active_count(restart_only=True):
+                        return False
+                except UpdateCheckError:
+                    return False
+                if self._stop.is_set():
+                    return False
+                # Reuse the follower handoff with the existing completed request.
+                # Its restart must not publish a new gate or restart updated peers.
+                self._join_request(request)
+                self._role = "follower"
+                self._operation = "restart"
+                self._target_version = installed
+                return True
+
     def _monitor_tick(self) -> None:
         if self._store is None:
+            self._retry_scheduled_operation()
             return
         # Match prepare's lock order so a completed request cannot clear a
         # newly accepted update while this monitor is reading shared state.
         with self._lock:
             with self._store.locked():
                 request = self._store.active_request_locked(recover=True)
-                if request is None and self._requested and not self._shutdown_triggered:
+                if request is not None:
+                    self._join_request(request)
+                elif self._requested and not self._shutdown_triggered:
                     completed = self._store.read_request_locked()
                     # Missing/stale NFS reads are not proof that pip stopped.
                     if (
@@ -498,15 +643,25 @@ class UiUpdateCoordinator:
                         self._request_id = ""
                         self._target_version = ""
         if request is not None:
-            self._join_request(request)
             self._heartbeat_request_if_owner()
             self._drain_once()
             return
 
-        active_count = self._runtime_active_count(strict=False)
-        self._write_instance(phase="serving", active_count=active_count)
+        serving_counts = self._serving_counts()
+        self._write_instance(
+            phase="serving",
+            active_count=serving_counts[0],
+            restart_active_count=serving_counts[1],
+        )
         if self._current_version:
-            self.refresh_installed_version()
+            installed = self.refresh_installed_version()
+            if (
+                installed != self._current_version and not serving_counts[1]
+                and self._restart_after_shared_completion(installed)
+            ):
+                self.trigger_shutdown()
+                return
+        self._retry_scheduled_operation(serving_counts)
 
     def _monitor_loop(self) -> None:
         while not self._stop.wait(UPDATE_HEARTBEAT_SECONDS):
@@ -625,7 +780,7 @@ def check_latest_version(current_version: str) -> dict[str, Any]:
     }
 
 
-def read_update_result() -> dict[str, Any] | None:
+def read_update_result(*, running_version: str = "") -> dict[str, Any] | None:
     """Read the bounded result passed from the one-shot updater process."""
 
     raw = str(os.getenv(UI_UPDATE_RESULT_ENV, "") or "")
@@ -649,6 +804,14 @@ def read_update_result() -> dict[str, Any] | None:
     }
     if isinstance(payload.get("error"), str) and payload["error"]:
         result["error"] = payload["error"][-1024:]
+    if result["ok"] and running_version and result["installed_version"] != running_version:
+        expected = result["installed_version"]
+        result.update(
+            ok=False,
+            installed_version=running_version,
+            exit_code=1,
+            error=f"This host started Pyruns {running_version} after the shared update reported {expected}.",
+        )
     return result
 
 
@@ -895,6 +1058,7 @@ def _heartbeat_coordinated_process(
                 stage=stage,
                 heartbeat_at=time.time(),
                 host=owner["host"],
+                runner_device=owner.get("runner_device"),
                 pid=owner["pid"],
                 process_create_time=owner["process_create_time"],
             )
@@ -919,7 +1083,7 @@ def _wait_for_update_participants(
     previous_version: str,
     restart_only: bool = False,
 ) -> None:
-    """Wait until every live UI has stopped and every CLI runner has exited."""
+    """Wait until the UIs stop and, for a pip upgrade, CLI activity has ended."""
 
     deadline = time.monotonic() + UPDATE_PARTICIPANT_WAIT_SECONDS
     next_report = 0.0
@@ -934,6 +1098,7 @@ def _wait_for_update_participants(
                 "stage": "draining",
                 "heartbeat_at": time.time(),
                 "host": owner["host"],
+                "runner_device": owner.get("runner_device"),
                 "pid": owner["pid"],
                 "process_create_time": owner["process_create_time"],
             }
@@ -958,7 +1123,7 @@ def _wait_for_update_participants(
                 ),
             )
             instances = store.live_records_locked("instances")
-            activities = store.live_records_locked("activities")
+            activities = [] if restart_only else store.live_records_locked("activities")
             blockers = [
                 item
                 for item in instances
@@ -1113,13 +1278,13 @@ def wait_for_coordinated_update(
     instance_id: str,
     previous_version: str,
 ) -> dict[str, Any]:
-    """Keep a follower lease alive until the updater publishes completion."""
+    """Keep a follower lease alive until completion and local release visibility."""
 
     store = CoordinationStore(state_dir)
     deadline = time.monotonic() + COORDINATED_UPDATE_WAIT_SECONDS
     next_report = time.monotonic() + UPDATE_STATUS_REPORT_SECONDS
+    release_deadline: float | None = None
     while True:
-        request_read = False
         request = None
         try:
             _heartbeat_coordinated_process(
@@ -1130,22 +1295,13 @@ def wait_for_coordinated_update(
                 version=previous_version,
             )
             request = store.read_request()
-            request_read = True
         except (OSError, UpdateCoordinationError, ValueError):
             pass
-        if request_read and (
-            request is None or str(request.get("request_id", "") or "") != request_id
-        ):
-            result = {
-                "ok": False,
-                "previous_version": str(previous_version),
-                "installed_version": str(previous_version),
-                "exit_code": 1,
-            }
-            break
+        # A missing or older request can be a stale shared-filesystem read.
+        # Only completion for this handoff lets a follower relaunch early.
         if (
-            request_read
-            and request is not None
+            request is not None
+            and str(request.get("request_id", "") or "") == request_id
             and str(request.get("stage", "") or "") == "completed"
         ):
             raw_result = request.get("result")
@@ -1174,9 +1330,30 @@ def wait_for_coordinated_update(
                     "installed_version": str(previous_version),
                     "exit_code": 1,
                 }
-            break
+            if not result["ok"]:
+                break
+            # Seeing the completion marker on NFS does not prove this client
+            # can see the updated package metadata yet.
+            expected = result["installed_version"]
+            installed = _query_installed_version("")
+            if installed and installed == expected:
+                break
+            now = time.monotonic()
+            if release_deadline is None:
+                release_deadline = min(deadline, now + LOCAL_RELEASE_WAIT_SECONDS)
+                print(f"[pyruns] Waiting for this host to see Pyruns {expected} on disk.", flush=True)
+            if now >= release_deadline:
+                result.update(
+                    ok=False,
+                    installed_version=installed or previous_version,
+                    exit_code=124,
+                    error=f"This host could not verify Pyruns {expected} on disk after the shared update.",
+                )
+                break
+            time.sleep(min(UPDATE_HEARTBEAT_SECONDS, release_deadline - now))
+            continue
         now = time.monotonic()
-        if now >= deadline:
+        if now >= (release_deadline if release_deadline is not None else deadline):
             print(
                 f"[pyruns] Shared Pyruns update did not finish within "
                 f"{COORDINATED_UPDATE_WAIT_SECONDS:g} seconds; restarting the available version.",
