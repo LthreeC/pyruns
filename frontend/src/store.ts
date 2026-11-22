@@ -46,6 +46,9 @@ const MANAGER_COLS_STORAGE_KEY = 'pyruns_manager_cols'
 const MANAGER_SORT_STORAGE_KEY = 'pyruns_manager_sort'
 const MANAGER_VIEW_STORAGE_KEY = 'pyruns_manager_view'
 const GENERATOR_COLS_STORAGE_KEY = 'pyruns_generator_cols'
+const GENERATOR_STORAGE_PREFERENCE_KEY = 'pyruns_generator_task_storage'
+const GENERATOR_TIMESTAMP_PREFERENCE_KEY = 'pyruns_generator_append_timestamp'
+const TASK_SOURCES_PREFERENCE_KEY = 'pyruns_task_sources'
 const PINNED_PARAMS_STORAGE_KEY = 'pyruns_pinned_params_v2'
 export const MONITOR_TASK_PAGE_SIZE = 200
 const DEFAULT_SEARCH_OPTIONS: TaskSearchOptions = { matchCase: false, wholeWord: false, useRegex: false }
@@ -194,6 +197,25 @@ function currentWorkspaceKey() {
   return String(useWorkspaceStore.getState().workspace?.run_root || '')
 }
 
+function readWorkspacePreference(key: string, workspaceKey: string) {
+  return workspaceKey ? readLocalStorage(`${key}:${workspaceKey}`) : null
+}
+
+function saveWorkspacePreference(key: string, value: string) {
+  const workspaceKey = currentWorkspaceKey()
+  if (workspaceKey) writeLocalStorage(`${key}:${workspaceKey}`, value)
+}
+
+function readTaskSourcesPreference(workspaceKey: string): string[] | null {
+  try {
+    const sources = JSON.parse(readWorkspacePreference(TASK_SOURCES_PREFERENCE_KEY, workspaceKey) || 'null')
+    return Array.isArray(sources) && sources.every(source => typeof source === 'string' && source.length > 0)
+      ? sources : null
+  } catch {
+    return null
+  }
+}
+
 function resetWorkspaceScopedState(nextWorkspaceKey: string) {
   monitorLogController?.abort()
   taskSearchController?.abort()
@@ -211,7 +233,7 @@ function resetWorkspaceScopedState(nextWorkspaceKey: string) {
   generatorDraftVersion += 1
   useTaskStore.setState({
     sources: DEFAULT_SOURCES,
-    selectedSources: null,
+    selectedSources: readTaskSourcesPreference(nextWorkspaceKey),
     tasks: [],
     total: 0,
     statusCounts: null,
@@ -259,6 +281,7 @@ function resetWorkspaceScopedState(nextWorkspaceKey: string) {
     data: null, loading: false, error: null,
     metrics: null, metricsLoading: false, metricsError: null, metricsUpdatedAt: null,
   })
+  const storage = readWorkspacePreference(GENERATOR_STORAGE_PREFERENCE_KEY, nextWorkspaceKey)
   useGeneratorStore.setState({
     templates: [],
     selectedTemplate: '',
@@ -267,8 +290,8 @@ function resetWorkspaceScopedState(nextWorkspaceKey: string) {
     yamlText: '',
     shellText: '',
     namePrefix: 'task',
-    appendTimestamp: true,
-    storageOverride: null,
+    appendTimestamp: readWorkspacePreference(GENERATOR_TIMESTAMP_PREFERENCE_KEY, nextWorkspaceKey) !== 'false',
+    storageOverride: storage === 'local' || storage === 'shared' ? storage : null,
     dirty: false,
     loading: false,
   })
@@ -753,6 +776,7 @@ export const useTaskStore = create<TaskState>((set, get) => ({
   sources: DEFAULT_SOURCES,
   selectedSources: null,
   setSelectedSources(selectedSources) {
+    saveWorkspacePreference(TASK_SOURCES_PREFERENCE_KEY, JSON.stringify(selectedSources))
     taskSearchController?.abort()
     monitorSearchController?.abort()
     taskRequestSeq += 1
@@ -1275,15 +1299,15 @@ export const useGeneratorStore = create<GeneratorState>((set, get) => ({
     generatorDraftVersion += 1
     set({ namePrefix: n, dirty: true })
   },
-  setAppendTimestamp(b) {
-    if (b === get().appendTimestamp) return
-    generatorDraftVersion += 1
-    set({ appendTimestamp: b, dirty: true })
+  setAppendTimestamp(appendTimestamp) {
+    if (appendTimestamp === get().appendTimestamp) return
+    saveWorkspacePreference(GENERATOR_TIMESTAMP_PREFERENCE_KEY, String(appendTimestamp))
+    set({ appendTimestamp })
   },
   setStorageOverride(storageOverride) {
     if (storageOverride === get().storageOverride) return
-    generatorDraftVersion += 1
-    set({ storageOverride, dirty: true })
+    saveWorkspacePreference(GENERATOR_STORAGE_PREFERENCE_KEY, storageOverride ?? '')
+    set({ storageOverride })
   },
   setDirty(dirty) { set({ dirty }) },
   setColumns(n) {

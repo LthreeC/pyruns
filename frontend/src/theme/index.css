@@ -719,36 +719,51 @@ dialog::backdrop {
 .manager-task-grid { --manager-grid-gap: 0.875rem; gap: var(--manager-grid-gap); }
 .task-card {
   --task-status-color: var(--text-secondary);
-  --task-status-stripe-color: #617185;
-  --task-status-stripe-width: 6px;
+  --task-status-frame-color: #6c7c90;
+  --task-status-frame-width: 3px;
+  --task-status-frame-highlight: var(--surface-raised);
+  --task-status-frame-shade: var(--text-secondary);
+  --task-card-shadow-color: rgb(32 41 56 / 10%);
   --task-card-control-size: 2.75rem;
+}
+.dark .task-card {
+  --task-status-frame-highlight: var(--text-tertiary);
+  --task-status-frame-shade: var(--surface-base);
+  --task-card-shadow-color: rgb(0 0 0 / 32%);
+}
+.manager-page[data-view="cards"] .task-card {
+  @apply shadow-[0_2px_0_var(--task-card-shadow-color)];
 }
 .task-card::before {
   content: "";
   position: absolute;
-  inset-block: 0;
-  inset-inline-start: 0;
-  inline-size: var(--task-status-stripe-width);
-  background-color: var(--task-status-stripe-color);
+  inset: 0;
+  border: var(--task-status-frame-width) solid var(--task-status-frame-color);
+  border-image: linear-gradient(
+    165deg,
+    color-mix(in srgb, var(--task-status-frame-color) 58%, var(--task-status-frame-highlight)),
+    color-mix(in srgb, var(--task-status-frame-color) 78%, var(--border-subtle)) 48%,
+    color-mix(in srgb, var(--task-status-frame-color) 76%, var(--task-status-frame-shade))
+  ) 1;
   pointer-events: none;
 }
 .task-card[data-task-status="queued"] {
   --task-status-color: #345e88;
-  --task-status-stripe-color: #467aca;
+  --task-status-frame-color: #557bb9;
 }
 .task-card[data-task-status="running"] {
   --task-status-color: #7c572a;
-  --task-status-stripe-color: #b4782b;
+  --task-status-frame-color: #b4813d;
 }
 .task-card[data-task-status="completed"] {
   --task-status-color: #346451;
-  --task-status-stripe-color: #348361;
+  --task-status-frame-color: #478871;
 }
 .task-card[data-task-status="failed"] {
   --task-status-color: #8b4947;
-  --task-status-stripe-color: #b75050;
+  --task-status-frame-color: #b45d61;
 }
-.task-card[data-task-status="cancelled"] { --task-status-stripe-color: #8c858a; }
+.task-card[data-task-status="cancelled"] { --task-status-frame-color: #90858f; }
 .dark .task-card[data-task-status="queued"] { --task-status-color: #9bb9df; }
 .dark .task-card[data-task-status="running"] { --task-status-color: #d7b587; }
 .dark .task-card[data-task-status="completed"] { --task-status-color: #9ac8b2; }
@@ -785,12 +800,11 @@ dialog::backdrop {
 .task-card-main { cursor: pointer; padding: 0.875rem 1rem 0.375rem; }
 .task-card[data-selection-mode="true"] .task-card-main { padding-block-end: 0.875rem; }
 .task-card-footer { padding: 0.125rem 0.625rem 0.5rem 1rem; }
-.manager-page[data-view="list"] .manager-task-grid {
-  --manager-grid-gap: 0px;
-  border-block: 1px solid var(--border-subtle);
+.manager-page[data-view="list"] .manager-task-grid { --manager-grid-gap: 0px; }
+.manager-page[data-view="list"] .task-card {
+  --task-status-frame-width: 1px;
+  contain-intrinsic-size: auto 126px;
 }
-.manager-page[data-view="list"] .task-card { contain-intrinsic-size: auto 126px; }
-.manager-page[data-view="list"] .task-card + .task-card { border-top: 1px solid var(--border-subtle); }
 
 @media (max-width: 700px) {
   .manager-heading { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 0.5rem; }
@@ -836,7 +850,7 @@ dialog::backdrop {
   .manager-page[data-view="list"] .task-card-pin { position: static; }
   .manager-page[data-view="list"] .task-card-corner {
     inset-block-start: 50%;
-    inset-inline-start: var(--task-status-stripe-width);
+    inset-inline-start: 0.375rem;
     inset-inline-end: auto;
     translate: 0 -50%;
   }

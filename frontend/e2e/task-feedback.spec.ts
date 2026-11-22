@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test'
-import { mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -29,12 +29,55 @@ test('generator saves a batch to the selected device and opens it in Manager', a
       expect(task.task_source).toBe('local')
       expect(task.status).toBe('pending')
     }
-    await expect(target).not.toBeChecked()
+    await expect(target).toBeChecked()
     await expect(page.getByRole('button', { name: /run this batch/i })).toHaveCount(0)
     await page.screenshot({ path: testInfo.outputPath('created-batch.png') })
     await page.getByRole('button', { name: 'Open in Manager' }).click()
     await expect(page.getByRole('button', { name: 'Close task details' })).toBeVisible()
     await expect(page.getByText(result.items[0].name, { exact: true }).first()).toBeVisible()
+  } finally {
+    await page.request.post('/api/workspace/run-root', { data: { path: original.run_root } })
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test('Generator remembers the storage and timestamp checkboxes per browser workspace', async ({ page }) => {
+  const root = await mkdtemp(join(tmpdir(), 'pyruns-generator-preferences-'))
+  const first = join(root, 'first'), second = join(root, 'second')
+  await mkdir(first)
+  await mkdir(second)
+  await page.goto('/?token=pyruns-e2e-access-token')
+  const original = await (await page.request.get('/api/workspace')).json()
+  const deviceOnly = page.getByRole('checkbox', { name: 'This device only', exact: true })
+  const timestamp = page.getByRole('checkbox', { name: 'Append timestamp', exact: true })
+  const open = async (path: string) => {
+    const response = await page.request.post('/api/launcher/open-shell-root', { data: { path } })
+    expect(response.ok(), await response.text()).toBe(true)
+    await page.goto('/generator')
+    await expect(deviceOnly).toBeVisible()
+  }
+  try {
+    await open(first)
+    await expect(deviceOnly).not.toBeChecked()
+    await expect(timestamp).toBeChecked()
+    await deviceOnly.check()
+    await timestamp.uncheck()
+    await page.getByRole('link', { name: 'Home', exact: true }).click()
+    await expect(page.getByRole('heading', { name: 'Dashboard', exact: true })).toBeVisible()
+    await page.getByRole('link', { name: 'Generator', exact: true }).click()
+    await page.reload()
+    await expect(deviceOnly).toBeChecked()
+    await expect(timestamp).not.toBeChecked()
+
+    await open(second)
+    await expect(deviceOnly).not.toBeChecked()
+    await expect(timestamp).toBeChecked()
+    await open(first)
+    await expect(deviceOnly).toBeChecked()
+    await expect(timestamp).not.toBeChecked()
+    await deviceOnly.uncheck()
+    await page.reload()
+    await expect(deviceOnly).not.toBeChecked()
   } finally {
     await page.request.post('/api/workspace/run-root', { data: { path: original.run_root } })
     await rm(root, { recursive: true, force: true })
@@ -160,6 +203,9 @@ test('source checkboxes filter both task views and allow an empty selection', as
   await expect(page.locator('[data-task-card]')).toHaveCount(1)
   await page.keyboard.press('Escape')
   await expect(trigger).toBeFocused()
+  await page.reload()
+  await expect(page.locator('[data-task-card]')).toHaveCount(1)
+  await expect(remoteCard).toBeVisible()
   await page.getByRole('link', { name: 'Monitor', exact: true }).first().click()
   const terminal = page.getByRole('region', { name: 'Read-only logs for trial' })
   await expect(terminal).toContainText('remote output')
@@ -175,5 +221,7 @@ test('source checkboxes filter both task views and allow an empty selection', as
   await expect(page.getByRole('checkbox', { name: 'Common tasks' })).toBeChecked()
   await all.uncheck()
   await expect(terminal).toHaveCount(0)
+  await expect(page.getByText('No task sources selected')).toBeVisible()
+  await page.reload()
   await expect(page.getByText('No task sources selected')).toBeVisible()
 })

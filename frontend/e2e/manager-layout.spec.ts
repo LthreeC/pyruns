@@ -61,23 +61,32 @@ test('manager combines quick filters with persistent views and keeps every task 
     {
       surface: getComputedStyle(element).backgroundColor,
       status: getComputedStyle(element.querySelector('.task-card-status-label')!).backgroundColor,
-      stripe: getComputedStyle(element, '::before').backgroundColor,
+      frame: getComputedStyle(element, '::before').borderImageSource,
     },
   ] as const)))
   const lightColors = await cardColors()
   expect(new Set(Object.values(lightColors).map(({ surface }) => surface))).toEqual(new Set(['rgb(255, 255, 255)']))
   expect(new Set(Object.values(lightColors).map(({ status }) => status)).size).toBe(5)
   expect(lightColors.pending.status).toBe(lightColors.cancelled.status)
-  expect(new Set(Object.values(lightColors).map(({ stripe }) => stripe)).size).toBe(6)
+  const lightFrames = Object.values(lightColors).map(({ frame }) => frame)
+  expect(new Set(lightFrames).size).toBe(6)
+  expect(lightFrames.every(frame => frame.startsWith('linear-gradient('))).toBe(true)
   const runningCard = page.locator('[data-task-card][data-task-status="running"]')
   await expect(runningCard.getByText('Running', { exact: true })).toBeVisible()
-  const stripe = await runningCard.evaluate(element => {
+  await expect(runningCard).toHaveCSS('box-shadow', /0px 2px 0px/)
+  const frame = await runningCard.evaluate(element => {
     const style = getComputedStyle(element, '::before')
-    return { width: style.width, height: parseFloat(style.height), cardHeight: element.clientHeight, pointerEvents: style.pointerEvents }
+    return {
+      widths: [style.borderTopWidth, style.borderRightWidth, style.borderBottomWidth, style.borderLeftWidth],
+      edges: [style.top, style.right, style.bottom, style.left],
+      radius: style.borderRadius,
+      pointerEvents: style.pointerEvents,
+    }
   })
-  expect(stripe.width).toBe('6px')
-  expect(Math.abs(stripe.height - stripe.cardHeight)).toBeLessThan(1)
-  expect(stripe.pointerEvents).toBe('none')
+  expect(frame.widths).toEqual(['3px', '3px', '3px', '3px'])
+  expect(frame.edges).toEqual(['0px', '0px', '0px', '0px'])
+  expect(frame.radius).toBe('0px')
+  expect(frame.pointerEvents).toBe('none')
   const pin = runningCard.getByRole('button', { name: `Pin ${state.first}`, exact: true })
   const unpin = runningCard.getByRole('button', { name: `Unpin ${state.first}`, exact: true })
   await expect(pin).toBeVisible()
@@ -163,6 +172,8 @@ test('manager combines quick filters with persistent views and keeps every task 
   await expect(page.locator('[data-task-card]')).toHaveCount(50)
   await page.mouse.move(0, 0)
   await expect.poll(cardColors).toEqual(lightColors)
+  expect(await row.evaluate(element => getComputedStyle(element, '::before').borderTopWidth)).toBe('1px')
+  await expect(row).not.toHaveCSS('box-shadow', /0px 2px 0px/)
   await page.screenshot({ path: testInfo.outputPath('manager-list.png'), animations: 'disabled' })
   if (!isMobile) {
     expect((await row.boundingBox())!.height).toBeLessThan(180)
@@ -180,7 +191,9 @@ test('manager combines quick filters with persistent views and keeps every task 
   await expect(page.getByRole('button', { name: `Deselect ${state.first}`, exact: true })).toHaveAttribute('aria-pressed', 'true')
   await expect(runningCard).toHaveCSS('background-color', lightColors.running.surface)
   await expect(runningCard.locator('.task-card-status-label')).toHaveCSS('background-color', lightColors.running.status)
-  expect((await cardColors()).running.stripe).toBe(lightColors.running.stripe)
+  await expect(runningCard).toHaveClass(/\bring-accent\b/)
+  await expect(runningCard).toHaveCSS('box-shadow', /0px 0px 0px 1px.*0px 2px 0px/)
+  expect((await cardColors()).running.frame).toBe(lightColors.running.frame)
   await page.screenshot({ path: testInfo.outputPath('manager-selection.png') })
   await cancel.click()
   await page.getByRole('button', { name: 'List view', exact: true }).click()
@@ -193,8 +206,9 @@ test('manager combines quick filters with persistent views and keeps every task 
   expect(new Set(Object.values(darkColors).map(({ status }) => status)).size).toBe(5)
   expect(darkColors.pending.status).toBe(darkColors.cancelled.status)
   expect(darkColors.running.status).not.toBe(lightColors.running.status)
+  expect(new Set(Object.values(darkColors).map(({ frame }) => frame)).size).toBe(6)
   for (const [status, colors] of Object.entries(lightColors)) {
-    expect(darkColors[status].stripe).toBe(colors.stripe)
+    expect(darkColors[status].frame).not.toBe(colors.frame)
   }
   await page.screenshot({ path: testInfo.outputPath('manager-dark.png') })
   await page.getByRole('button', { name: 'Card view', exact: true }).click()

@@ -1018,7 +1018,7 @@ export default function GeneratorPage() {
         generationInputKeyRef.current === requestInputKey
         && generationDraftRevisionRef.current === requestDraftRevision
       ) {
-        useGeneratorStore.setState({ dirty: false, storageOverride: null })
+        setDirty(false)
       }
       setPreviewOpen(false)
       setPreviewData(null)
@@ -1045,7 +1045,7 @@ export default function GeneratorPage() {
         setGenerating(false)
       }
     }
-  }, [currentGenerationPayload, fetchTemplates, workspace?.run_root])
+  }, [currentGenerationPayload, fetchTemplates, setDirty, workspace?.run_root])
 
   const handleGenerate = useCallback(async () => {
     setError('')

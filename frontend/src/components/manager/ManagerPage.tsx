@@ -1459,9 +1459,9 @@ const TaskCard = memo(function TaskCard({
       aria-busy={taskPending || undefined}
       className={clsx(
         'task-card relative flex min-w-0 flex-col bg-surface-raised [contain-intrinsic-size:182px] [content-visibility:auto] transition-colors duration-150',
-        selected && 'ring-1 ring-inset ring-accent',
-        dragging && 'scale-[0.985] opacity-70 ring-1 ring-inset ring-accent/50',
-        dropPlacement && !dragging && 'ring-1 ring-inset ring-accent/35',
+        selected && 'z-[1] ring-1 ring-accent',
+        dragging && 'scale-[0.985] opacity-70 ring-1 ring-accent/50',
+        dropPlacement && !dragging && 'ring-1 ring-accent/35',
       )}
     >
       {dropIndicator}
