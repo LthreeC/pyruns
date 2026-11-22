@@ -233,7 +233,8 @@ export interface SystemInfo {
   restart_required: boolean
   instance_id: string
   update_supported: boolean
-  update_state: 'idle' | 'restarting' | 'unavailable' | string
+  update_state: string
+  scheduled_operation?: UiScheduledOperation | null
   last_update: UiUpdateResult | null
 }
 
@@ -241,7 +242,15 @@ export interface UiUpdateResponse {
   ok: boolean
   instance_id: string
   version: string
-  state: 'restarting' | string
+  state: string
+  scheduled_operation?: UiScheduledOperation | null
+}
+
+export interface UiScheduledOperation {
+  id: string
+  operation: 'upgrade' | 'restart'
+  target_version: string
+  error?: string
 }
 
 export interface UiVersionCheck {

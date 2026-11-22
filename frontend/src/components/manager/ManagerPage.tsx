@@ -7,12 +7,14 @@ import {
   useMemo,
   useRef,
   useState,
+  type CSSProperties,
   type PointerEvent as ReactPointerEvent,
   type ReactNode,
 } from 'react'
+import { createPortal } from 'react-dom'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import {
-  AlertTriangle, ArrowDown, ArrowDownWideNarrow, ArrowUp, ChevronDown, Cpu, GripVertical, LayoutGrid, List, ListChecks, Loader2, Pin, Play,
+  AlertTriangle, ArrowDown, ArrowDownWideNarrow, ArrowUp, ChevronDown, Cpu, Ellipsis, GripVertical, LayoutGrid, List, ListChecks, Loader2, Pin, Play,
   RefreshCw, RotateCcw, Rows3, Search, Square, Terminal, Trash2, X,
 } from 'lucide-react'
 import clsx from 'clsx'
@@ -58,15 +60,6 @@ function isOrderMutation(action: PendingTaskAction) {
 
 function hasPendingOrderMutation(actions: Map<string, PendingTaskAction>) {
   return [...actions.values()].some(isOrderMutation)
-}
-
-const MANAGER_STATUS_DOTS: Record<TaskStatus, string> = {
-  pending: 'bg-slate-500',
-  queued: 'bg-blue-600 dark:bg-blue-400',
-  running: 'bg-amber-600 dark:bg-amber-400',
-  completed: 'bg-emerald-600 dark:bg-emerald-400',
-  failed: 'bg-rose-600 dark:bg-rose-400',
-  cancelled: 'bg-slate-500 dark:bg-slate-400',
 }
 
 interface DropIntent {
@@ -1122,7 +1115,7 @@ export default function ManagerPage() {
       </header>
 
       <section
-        className="manager-tasks-content min-h-0 flex-1 overflow-y-auto p-3 sm:p-5"
+        className="manager-tasks-content min-h-0 flex-1 overflow-y-auto px-3 py-4 sm:px-6 sm:py-5"
         aria-label={t("Task list")}
         aria-busy={loading || undefined}
       >
@@ -1162,7 +1155,7 @@ export default function ManagerPage() {
             />
           )
         ) : (
-          <div className="space-y-3">
+          <div className="space-y-5">
             {showPinnedSection && (
               <div
                 data-task-drop-target="pinned"
@@ -1175,8 +1168,7 @@ export default function ManagerPage() {
                   title={t("Pinned Tasks")}
                   subtitle={dragOverTarget === 'pinned' ? t("Drop to pin or reorder") : undefined}
                   count={pinnedTasks.length}
-                  icon={<Pin className="h-3.5 w-3.5 text-accent" />}
-                  accent
+                  icon={<Pin className="h-3.5 w-3.5 text-txt-tertiary" />}
                   bodyClassName="pt-1"
                 >
                   {pinnedTasks.length === 0 ? (
@@ -1214,12 +1206,12 @@ export default function ManagerPage() {
                 dragOverTarget === 'tasks' && 'bg-surface-overlay ring-1 ring-border',
               )}
             >
-            <CompactSection
-              title={t("Tasks")}
-              subtitle={dragOverTarget === 'tasks' ? t("Drop to reorder") : t('{{count}} on this page · {{total}} matching', { count: otherTasks.length, total })}
-              icon={<Rows3 className="h-3.5 w-3.5 text-txt-tertiary" />}
-              bodyClassName="pt-1"
-            >
+              {showPinnedSection && (
+                <h2 className="mb-2 flex items-baseline gap-2 px-0.5 text-xs font-medium">
+                  {t("Tasks")}
+                  {dragOverTarget === 'tasks' && <span className="text-2xs font-normal text-txt-tertiary">{t("Drop to reorder")}</span>}
+                </h2>
+              )}
               <TaskGrid
                 tasks={otherTasks}
                 columns={viewMode === 'list' ? 1 : columns}
@@ -1238,7 +1230,6 @@ export default function ManagerPage() {
                 onMonitor={openTaskLogs}
                 onPointerDown={handleTaskPointerDown}
               />
-            </CompactSection>
             </div>
           </div>
         )}
@@ -1358,9 +1349,9 @@ function TaskGrid({
     <div
       data-task-grid="true"
       data-task-grid-columns={columns}
-      className="manager-task-grid grid gap-2"
+      className="manager-task-grid grid"
       style={{
-        gridTemplateColumns: `repeat(auto-fill, minmax(min(100%, max(15rem, calc((100% - ${(columns - 1) * 8}px) / ${columns}))), 1fr))`,
+        gridTemplateColumns: `repeat(auto-fill, minmax(min(100%, max(15rem, calc((100% - ${columns - 1} * var(--manager-grid-gap)) / ${columns}))), 1fr))`,
       }}
     >
       {tasks.map(task => (
@@ -1430,12 +1421,13 @@ const TaskCard = memo(function TaskCard({
   useTranslation()
   const actionBtn = getActionButton(task)
   const readOnly = task.task_storage === 'remote'
+  const statusId = useId()
   const displayName = task.display_name ?? task.name
   const accessibleName = task.task_source_host ? `${displayName} · ${task.task_source_host}` : displayName
   const folderName = task.dir.split(/[\\/]/).pop() || task.dir
   const createdAtLabel = task.created_at?.replace(/^(\d{4}-\d{2}-\d{2})[_T](\d{2})[-:](\d{2}).*$/, '$1 · $2:$3')
-  const taskKindLabel = task.task_kind === 'shell' ? 'shell' : 'python'
-  const cardDescription = task._load_error || task.preview_text || t("No preview available.")
+  const taskKindLabel = task.task_kind === 'shell' ? 'Shell' : 'Python'
+  const cardDescription = task._load_error || task.preview_text
   const dropIndicator = dropPlacement ? <DropIndicator placement={dropPlacement} axis={dropAxis || 'horizontal'} /> : null
   const taskPending = Boolean(pendingAction)
   const gpuWait = task.status === 'queued' ? task.gpu_wait : null
@@ -1444,59 +1436,52 @@ const TaskCard = memo(function TaskCard({
     && typeof gpuWait.requested_gpu_count === 'number'
     ? t('{{eligible}}/{{requested}} eligible', { eligible: gpuWait.eligible_gpu_count, requested: gpuWait.requested_gpu_count })
     : ''
+  const status = (
+    <div className="task-card-state flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
+      <span id={statusId} className="task-card-status-label min-w-0 max-w-full px-2 py-0.5 text-2xs font-medium [overflow-wrap:anywhere]">
+        {t(taskStatusLabel(task))}
+      </span>
+      {taskPending && (
+        <span className="inline-flex items-center gap-1 text-2xs text-txt-secondary" role="status">
+          <Loader2 aria-hidden="true" className="size-3 animate-spin" />
+          {pendingAction === 'move' ? t("Moving") : pendingAction === 'delete' ? t("Deleting") : t("Updating")}
+        </span>
+      )}
+    </div>
+  )
 
   return (
     <article
       data-task-card={task.name}
+      data-task-status={task.status}
       data-task-card-pinned={task.pinned ? 'true' : 'false'}
       data-selection-mode={selectMode}
       aria-busy={taskPending || undefined}
       className={clsx(
-        'task-card group relative flex flex-col border bg-surface-raised [contain-intrinsic-size:220px] [content-visibility:auto] transition-colors duration-150 ease-out focus-within:border-accent',
-        selected ? 'border-accent bg-accent/8 ring-1 ring-accent/20' : 'border-border-subtle hover:border-border',
-        task.pinned && !selected && 'border-accent/20',
-        dragging && 'scale-[0.985] border-accent/35 bg-accent/5 opacity-70 shadow-[0_10px_30px_rgba(15,23,42,0.14)] ring-1 ring-accent/35',
-        dropPlacement && !dragging && 'border-accent/35 bg-accent/5 ring-1 ring-accent/25',
+        'task-card relative flex min-w-0 flex-col bg-surface-raised [contain-intrinsic-size:182px] [content-visibility:auto] transition-colors duration-150',
+        selected && 'ring-1 ring-inset ring-accent',
+        dragging && 'scale-[0.985] opacity-70 ring-1 ring-inset ring-accent/50',
+        dropPlacement && !dragging && 'ring-1 ring-inset ring-accent/35',
       )}
     >
       {dropIndicator}
-      {!selectMode && !readOnly && (
+      {selectMode ? (
+        <div className="task-card-corner task-card-control pointer-events-none flex items-center justify-center">
+          <SelectionIndicator selected={selected} />
+        </div>
+      ) : !readOnly && (
         <span
           data-task-drag-handle="true"
           aria-hidden="true"
           onPointerDown={event => onPointerDown(task, event)}
           className={clsx(
-            'task-card-drag touch-target absolute left-0.5 top-0.5 z-10 flex h-11 w-11 cursor-grab touch-none items-center justify-center rounded-md text-txt-tertiary transition-[background-color,color,opacity] active:cursor-grabbing sm:left-2 sm:top-2 sm:h-7 sm:w-7',
-            'group-hover:bg-surface-overlay group-hover:text-txt-secondary',
-            dragging && 'bg-accent/10 text-accent',
+            'task-card-corner task-card-grip task-card-control touch-target flex cursor-grab touch-none items-center justify-center text-txt-tertiary transition-opacity hover:bg-surface-overlay hover:text-txt-primary active:cursor-grabbing',
             (taskPending || reorderDisabled) && 'pointer-events-none opacity-40',
           )}
           title={t("Drag to set manual order; keyboard users can use Move earlier and Move later")}
         >
-          <GripVertical className="h-3.5 w-3.5" />
+          <GripVertical className="size-4" />
         </span>
-      )}
-      {selectMode ? (
-        <div className="pointer-events-none absolute right-2.5 top-2.5 z-10">
-          <SelectionIndicator selected={selected} />
-        </div>
-      ) : (
-        <button
-          type="button"
-          onClick={() => void onPin(task)}
-          disabled={readOnly || taskPending || reorderDisabled}
-          title={task.pinned ? t("Unpin") : t("Pin")}
-          aria-label={t(task.pinned ? 'Unpin {{name}}' : 'Pin {{name}}', { name: accessibleName })}
-          aria-busy={pendingAction === 'pin' || undefined}
-          className={clsx(
-            'task-card-pin touch-target absolute right-0.5 top-0.5 z-10 inline-flex h-11 w-11 items-center justify-center rounded-md p-1 transition-colors hover:bg-surface-overlay focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/35 disabled:cursor-wait disabled:opacity-50 sm:right-2 sm:top-1.5 sm:h-9 sm:w-9',
-            task.pinned ? 'text-accent' : 'text-txt-tertiary hover:text-accent'
-          )}
-        >
-          {pendingAction === 'pin'
-            ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
-            : <Pin className="h-3.5 w-3.5" />}
-        </button>
       )}
 
       <div
@@ -1512,90 +1497,70 @@ const TaskCard = memo(function TaskCard({
         aria-label={selectMode
           ? t('{{action}} {{name}}', { action: selected ? t("Deselect") : t("Select"), name: accessibleName })
           : t('Open details for {{name}}', { name: accessibleName })}
+        aria-describedby={statusId}
         aria-pressed={selectMode ? selected : undefined}
-        className="task-card-main block w-full min-w-0 flex-1 rounded-xl px-3 pb-3 pt-2.5 text-left outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent/35"
+        className="task-card-main flex min-w-0 flex-1 flex-col gap-2 text-left focus-visible:outline-offset-[-2px]"
       >
-        <div className="task-card-status flex items-center gap-2 pl-11 pr-11 sm:pl-5 sm:pr-7">
-          <ManagerStatusBadge task={task} />
-          <span className="text-2xs uppercase tracking-[0.08em] text-txt-tertiary">
-            {taskKindLabel}
-          </span>
-          {taskPending && pendingAction !== 'pin' && (
-            <span className="ml-auto inline-flex items-center gap-1 text-2xs font-medium text-txt-secondary" role="status">
-              <Loader2 className="h-3 w-3 animate-spin" />
-              {pendingAction === 'move' ? t("Moving") : pendingAction === 'delete' ? t("Deleting") : t("Updating")}
-            </span>
-          )}
-        </div>
-
-        <div className="task-card-name mt-3 text-sm font-semibold leading-6 text-txt-primary [overflow-wrap:anywhere]" title={displayName}>
+        <div className="task-card-name text-base font-semibold leading-5 tracking-tight text-txt-primary [overflow-wrap:anywhere]" title={displayName}>
           {displayName}
         </div>
-
-        <div className="task-card-preview mt-2 border-l-2 border-border pl-2.5 font-mono text-2xs leading-5 text-txt-secondary" title={cardDescription}>
-          <div className={clsx('truncate-2 whitespace-pre-wrap [overflow-wrap:anywhere]', task._load_error && 'text-rose-700 dark:text-rose-300')}>
-            {cardDescription}
-          </div>
-        </div>
-
-        <TaskExecutionInfo task={task} className="task-card-execution mt-2" />
-        {gpuWait && (
-          <div
-            className="task-card-gpu mt-2 inline-flex max-w-full items-center gap-1.5 rounded-md border border-blue-200 bg-blue-50 px-2 py-1 text-2xs font-medium text-blue-700 dark:border-blue-800 dark:bg-blue-950/45 dark:text-blue-300"
-            title={gpuWait.reason || t("Waiting for GPU capacity")}
-          >
-            <Cpu className="h-3 w-3 flex-none" aria-hidden="true" />
-            <span>{t("Waiting for GPU")}{gpuCapacity ? ` · ${gpuCapacity}` : ''}</span>
+        {cardDescription && (
+          <div className="task-card-preview min-w-0 font-mono text-2xs leading-5 text-txt-secondary" title={cardDescription}>
+            <div className="truncate-2 whitespace-pre-wrap [overflow-wrap:anywhere]">{cardDescription}</div>
           </div>
         )}
-
-        <div className="task-card-meta mt-3 flex flex-wrap items-center gap-x-3 gap-y-1 text-2xs text-txt-tertiary">
-          <span title={task.created_at}>{createdAtLabel}</span>
-          {task.run_index > 0 && <span>{t('Run #{{index}}', { index: task.run_index })}</span>}
-          {folderName !== displayName && <span className="truncate" title={task.dir}>{folderName}</span>}
-        </div>
-
-
-        {task._load_error && (
-          <div className="task-card-error mt-2 inline-flex max-w-full items-center gap-1 rounded-md bg-rose-500/10 px-2 py-1 text-2xs font-medium text-rose-700 dark:text-rose-300" title={task._load_error}>
-            <AlertTriangle className="h-3 w-3" />
-            <span className="truncate">{t("Task load error")}</span>
+        <div className="task-card-context flex min-w-0 flex-col gap-1.5">
+          <div className="task-card-meta flex flex-wrap items-center gap-x-2.5 gap-y-1 text-2xs text-txt-tertiary">
+            <span>{taskKindLabel}</span>
+            <span title={task.created_at}>{createdAtLabel}</span>
+            {task.run_index > 0 && <span>{t('Run #{{index}}', { index: task.run_index })}</span>}
+            {folderName !== displayName && <span className="truncate" title={task.dir}>{folderName}</span>}
           </div>
-        )}
+          <TaskExecutionInfo task={task} />
+          {gpuWait && (
+            <div
+              className="inline-flex min-w-0 items-center gap-1.5 text-2xs font-medium text-[var(--task-status-color)]"
+              title={gpuWait.reason || t("Waiting for GPU capacity")}
+            >
+              <Cpu className="h-3 w-3 flex-none" aria-hidden="true" />
+              <span>{t("Waiting for GPU")}{gpuCapacity ? ` · ${gpuCapacity}` : ''}</span>
+            </div>
+          )}
+          {task._load_error && (
+            <div className="inline-flex min-w-0 items-center gap-1 text-2xs font-medium text-rose-700 dark:text-rose-300" title={task._load_error}>
+              <AlertTriangle className="h-3 w-3" aria-hidden="true" />
+              <span className="truncate">{t("Task load error")}</span>
+            </div>
+          )}
+        </div>
+        {selectMode && status}
       </div>
 
-      {query && <div className="task-card-matches mx-3 mb-2 border-t border-border-subtle pt-1">
-        <TaskSearchMatches task={task} onSelect={() => onCardClick(task)} exportMode={selectMode} action={selectMode ? t("Select") : t("View")} />
-      </div>}
       {!selectMode && (
-        <div className="task-card-actions mx-3 flex items-center justify-between gap-2 border-t border-border-subtle pb-2 pt-1.5">
-          <div className="flex items-center gap-0.5" aria-label={t('Reorder {{name}}', { name: task.name })}>
-            <TaskIconButton
-              label={t('Move {{name}} earlier', { name: task.name })}
-              title={t("Move earlier")}
-              disabled={readOnly || taskPending || reorderDisabled}
-              onClick={() => void onMove(task, -1)}
-            >
-              <ArrowUp className="h-3.5 w-3.5" />
-            </TaskIconButton>
-            <TaskIconButton
-              label={t('Move {{name}} later', { name: task.name })}
-              title={t("Move later")}
-              disabled={readOnly || taskPending || reorderDisabled}
-              onClick={() => void onMove(task, 1)}
-            >
-              <ArrowDown className="h-3.5 w-3.5" />
-            </TaskIconButton>
-          </div>
-
-          <div className="flex items-center gap-0.5">
+        <div className="task-card-footer flex min-w-0 flex-wrap items-center justify-between gap-x-2 gap-y-1">
+          {status}
+          <div className="task-card-actions ms-auto flex flex-none items-center">
+            {!readOnly && (
+              <TaskIconButton
+                label={t(task.pinned ? 'Unpin {{name}}' : 'Pin {{name}}', { name: accessibleName })}
+                title={t(task.pinned ? 'Unpin' : 'Pin')}
+                className="task-card-pin"
+                disabled={taskPending || reorderDisabled}
+                busy={pendingAction === 'pin'}
+                onClick={() => void onPin(task)}
+              >
+                {pendingAction === 'pin'
+                  ? <Loader2 aria-hidden="true" className="size-3.5 animate-spin" />
+                  : <Pin aria-hidden="true" className={clsx('size-3.5', task.pinned && 'fill-current text-accent-ink')} />}
+              </TaskIconButton>
+            )}
             {actionBtn && (
               <TaskIconButton
                 label={t('{{action}} {{name}}', { action: t(actionBtn.label), name: task.name })}
                 title={t(actionBtn.label)}
                 disabled={taskPending}
                 busy={pendingAction === actionBtn.action}
-                className={actionBtn.className}
+                danger={actionBtn.action === 'cancel'}
                 onClick={() => void onTaskAction(task, actionBtn.action)}
               >
                 {pendingAction === actionBtn.action
@@ -1607,22 +1572,23 @@ const TaskCard = memo(function TaskCard({
               label={t('View logs for {{name}}', { name: accessibleName })}
               title={t("View logs")}
               onClick={() => onMonitor(task)}
-              className="text-txt-tertiary hover:bg-surface-overlay hover:text-txt-primary"
             >
               <Terminal className="h-3.5 w-3.5" />
             </TaskIconButton>
-            <TaskIconButton
-              label={t('Delete {{name}}', { name: task.name })}
-              title={t("Delete task")}
-              disabled={readOnly || taskPending}
-              onClick={() => onDelete(task)}
-              className="text-rose-700 hover:bg-rose-500/10 dark:text-rose-300"
-            >
-              <Trash2 className="h-3.5 w-3.5" />
-            </TaskIconButton>
+            {!readOnly && <TaskCardMenu name={accessibleName} items={[
+              { label: t('Move earlier'), icon: ArrowUp,
+                disabled: taskPending || reorderDisabled, onClick: () => void onMove(task, -1) },
+              { label: t('Move later'), icon: ArrowDown,
+                disabled: taskPending || reorderDisabled, onClick: () => void onMove(task, 1) },
+              { label: t('Delete task'), icon: Trash2, danger: true,
+                disabled: taskPending, onClick: () => onDelete(task) },
+            ]} />}
           </div>
         </div>
       )}
+      {query && <div className="task-card-matches mx-4 mb-3 border-t border-border-subtle pt-1">
+        <TaskSearchMatches task={task} onSelect={() => onCardClick(task)} exportMode={selectMode} action={selectMode ? t("Select") : t("View")} />
+      </div>}
     </article>
   )
 })
@@ -1663,14 +1629,119 @@ function ManagerMetric({
   )
 }
 
-function ManagerStatusBadge({ task }: { task: Task }) {
-  const status = task.status
-  useTranslation()
+interface TaskCardMenuItem {
+  label: string
+  icon: typeof Pin
+  onClick: () => void
+  disabled: boolean
+  danger?: boolean
+}
+
+function TaskCardMenu({ name, items }: { name: string; items: TaskCardMenuItem[] }) {
+  const { t } = useTranslation()
+  const id = useId()
+  const trigger = useRef<HTMLButtonElement>(null)
+  const panel = useRef<HTMLDivElement>(null)
+  const [position, setPosition] = useState<CSSProperties | null>(null)
+
+  useEffect(() => {
+    if (!position) return
+    const popover = panel.current
+    const first = popover?.querySelector<HTMLButtonElement>('button:not(:disabled)') ?? popover
+    first?.focus({ preventScroll: true })
+
+    const dismissOutside = (event: Event) => {
+      if (event.target instanceof Node && !trigger.current?.contains(event.target) && !popover?.contains(event.target)) {
+        setPosition(null)
+      }
+    }
+    const dismissOnViewportChange = (event: Event) => {
+      if (event.target instanceof Node && popover?.contains(event.target)) return
+      setPosition(null)
+      if (popover?.contains(document.activeElement)) trigger.current?.focus({ preventScroll: true })
+    }
+    document.addEventListener('pointerdown', dismissOutside)
+    document.addEventListener('focusin', dismissOutside)
+    document.addEventListener('scroll', dismissOnViewportChange, true)
+    window.addEventListener('resize', dismissOnViewportChange)
+    return () => {
+      document.removeEventListener('pointerdown', dismissOutside)
+      document.removeEventListener('focusin', dismissOutside)
+      document.removeEventListener('scroll', dismissOnViewportChange, true)
+      window.removeEventListener('resize', dismissOnViewportChange)
+    }
+  }, [position])
+
+  const close = () => {
+    setPosition(null)
+    trigger.current?.focus({ preventScroll: true })
+  }
+
   return (
-    <span className="inline-flex items-center gap-1.5 text-xs font-medium text-txt-primary">
-      <span className={clsx('h-1.5 w-1.5 rounded-full', MANAGER_STATUS_DOTS[status])} aria-hidden="true" />
-      {t(taskStatusLabel(task))}
-    </span>
+    <>
+      <button
+        type="button"
+        ref={trigger}
+        aria-label={t('More actions for {{name}}', { name })}
+        aria-expanded={position !== null}
+        aria-controls={position ? id : undefined}
+        title={t('More actions')}
+        className="task-card-control touch-target inline-flex items-center justify-center text-txt-secondary transition-colors hover:bg-surface-overlay hover:text-txt-primary focus-visible:outline-offset-0 aria-expanded:bg-surface-overlay"
+        onClick={event => {
+          if (position) {
+            close()
+            return
+          }
+          const rect = event.currentTarget.getBoundingClientRect()
+          const width = Math.min(208, innerWidth - 16)
+          const below = innerHeight - rect.bottom - 14
+          const above = rect.top - 14
+          const opensAbove = below < 184 && above > below
+          setPosition({
+            width,
+            left: Math.max(8, Math.min(rect.right - width, innerWidth - width - 8)),
+            maxHeight: Math.max(0, opensAbove ? above : below),
+            ...(opensAbove ? { bottom: innerHeight - rect.top + 6 } : { top: rect.bottom + 6 }),
+          })
+        }}
+      >
+        <Ellipsis className="size-4" aria-hidden="true" />
+      </button>
+      {position && createPortal(
+        <div
+          id={id}
+          ref={panel}
+          role="group"
+          tabIndex={-1}
+          aria-label={t('Task actions for {{name}}', { name })}
+          style={position}
+          className="fixed z-50 overflow-y-auto overscroll-contain border border-border bg-surface-raised p-1 text-sm shadow-[0_8px_24px_rgb(0_0_0/12%)]"
+          onKeyDown={event => {
+            if (event.key === 'Escape') {
+              event.preventDefault()
+              event.stopPropagation()
+              close()
+            }
+          }}
+        >
+          {items.map(item => (
+            <button
+              key={item.label}
+              type="button"
+              disabled={item.disabled}
+              onClick={() => { close(); item.onClick() }}
+              className={clsx(
+                'touch-target flex min-h-11 w-full items-center gap-2.5 px-2.5 text-left hover:bg-surface-overlay focus-visible:outline-offset-[-2px] disabled:opacity-40 sm:min-h-9',
+                item.danger && 'mt-1 border-t border-border-subtle text-rose-700 dark:text-rose-300',
+              )}
+            >
+              <item.icon aria-hidden="true" className="size-4 flex-none" />
+              {item.label}
+            </button>
+          ))}
+        </div>, document.body,
+      )}
+    </>
   )
 }
 
@@ -1679,6 +1750,7 @@ function TaskIconButton({
   label,
   title,
   className,
+  danger = false,
   disabled = false,
   busy = false,
   onClick,
@@ -1687,6 +1759,7 @@ function TaskIconButton({
   label: string
   title: string
   className?: string
+  danger?: boolean
   disabled?: boolean
   busy?: boolean
   onClick: () => void
@@ -1701,8 +1774,11 @@ function TaskIconButton({
       aria-busy={busy || undefined}
       title={title}
       className={clsx(
-        'touch-target inline-flex h-11 w-11 items-center justify-center rounded-md transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/35 disabled:cursor-not-allowed disabled:opacity-40 sm:h-9 sm:w-9',
-        className || 'text-txt-tertiary hover:bg-surface-overlay hover:text-txt-primary',
+        'task-card-control touch-target inline-flex items-center justify-center text-txt-secondary transition-colors hover:bg-surface-overlay focus-visible:outline-offset-0 disabled:cursor-not-allowed disabled:opacity-40',
+        className,
+        danger
+          ? 'hover:text-rose-700 focus-visible:text-rose-700 dark:hover:text-rose-300 dark:focus-visible:text-rose-300'
+          : 'hover:text-txt-primary',
       )}
     >
       {children}
@@ -1800,7 +1876,6 @@ function getActionButton(task: Task) {
         action: 'run' as const,
         icon: Play,
         label: 'Run',
-        className: 'text-emerald-700 hover:bg-emerald-500/10 dark:text-emerald-300',
       }
     case 'running':
     case 'queued':
@@ -1808,14 +1883,12 @@ function getActionButton(task: Task) {
         action: 'cancel' as const,
         icon: Square,
         label: 'Stop',
-        className: 'text-rose-700 hover:bg-rose-500/10 dark:text-rose-300',
       }
     case 'completed':
       return {
         action: 'rerun' as const,
         icon: RotateCcw,
         label: 'Rerun',
-        className: 'text-blue-700 hover:bg-blue-500/10 dark:text-blue-300',
       }
     default:
       return null

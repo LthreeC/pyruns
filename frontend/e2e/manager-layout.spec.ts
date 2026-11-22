@@ -13,7 +13,7 @@ async function fixture(page: Page) {
       name, dir: `/shared/experiments/tasks/${name}`, task_identity: `task-${index}`,
       task_kind: 'shell', config_file: 'config.sh', config_text: 'python train.py',
       preview_text: `export CUDA_VISIBLE_DEVICES=${index % 4}\npython train.py --seed ${index} --dataset LaMP-5`,
-      status: index === 0 ? 'running' : index === 1 ? 'queued' : index % 8 === 0 ? 'failed' : 'completed',
+      status: ['running', 'queued', 'pending', 'cancelled'][index] ?? (index % 8 === 0 ? 'failed' : 'completed'),
       created_at: `2026-11-15_17-${String(index).padStart(2, '0')}-09`,
       run_index: 1, start_times: [], finish_times: [], pids: [], records: [], tracks: [],
       config: {}, env: {}, notes: '', progress: 0, pinned: false, runner_host: index < 2 ? 'gpu-worker-02' : null,
@@ -51,9 +51,49 @@ test('manager combines quick filters with persistent views and keeps every task 
   page.on('pageerror', error => errors.push(error.message))
   if (!isMobile) await page.setViewportSize({ width: 1600, height: 1000 })
   else await page.setViewportSize({ width: 375, height: 812 })
+  await page.emulateMedia({ reducedMotion: 'reduce' })
   const state = await fixture(page)
   await page.goto('/manager?token=pyruns-e2e-access-token')
-  await expect(page.locator('[data-task-card]')).toHaveCount(50)
+  const cards = page.locator('[data-task-card]')
+  await expect(cards).toHaveCount(50)
+  const cardColors = () => cards.evaluateAll(elements => Object.fromEntries(elements.map(element => [
+    element.getAttribute('data-task-status')!,
+    {
+      surface: getComputedStyle(element).backgroundColor,
+      status: getComputedStyle(element.querySelector('.task-card-status-label')!).backgroundColor,
+      stripe: getComputedStyle(element, '::before').backgroundColor,
+    },
+  ] as const)))
+  const lightColors = await cardColors()
+  expect(new Set(Object.values(lightColors).map(({ surface }) => surface))).toEqual(new Set(['rgb(255, 255, 255)']))
+  expect(new Set(Object.values(lightColors).map(({ status }) => status)).size).toBe(5)
+  expect(lightColors.pending.status).toBe(lightColors.cancelled.status)
+  expect(new Set(Object.values(lightColors).map(({ stripe }) => stripe)).size).toBe(6)
+  const runningCard = page.locator('[data-task-card][data-task-status="running"]')
+  await expect(runningCard.getByText('Running', { exact: true })).toBeVisible()
+  const stripe = await runningCard.evaluate(element => {
+    const style = getComputedStyle(element, '::before')
+    return { width: style.width, height: parseFloat(style.height), cardHeight: element.clientHeight, pointerEvents: style.pointerEvents }
+  })
+  expect(stripe.width).toBe('6px')
+  expect(Math.abs(stripe.height - stripe.cardHeight)).toBeLessThan(1)
+  expect(stripe.pointerEvents).toBe('none')
+  const pin = runningCard.getByRole('button', { name: `Pin ${state.first}`, exact: true })
+  const unpin = runningCard.getByRole('button', { name: `Unpin ${state.first}`, exact: true })
+  await expect(pin).toBeVisible()
+  if (isMobile) {
+    const controls = await runningCard.locator('.task-card-actions button').evaluateAll(buttons =>
+      buttons.map(button => {
+        const { width, height } = button.getBoundingClientRect()
+        return { width, height }
+      }),
+    )
+    expect(controls).toHaveLength(4)
+    for (const { width, height } of controls) {
+      expect(width).toBeGreaterThanOrEqual(44)
+      expect(height).toBeGreaterThanOrEqual(44)
+    }
+  }
   await expect(page.getByRole('button', { name: 'Filter tasks: All tasks' })).toHaveAttribute('aria-pressed', 'true')
   await page.screenshot({ path: testInfo.outputPath('manager-cards.png') })
   await page.locator('[data-tour="manager-controls"]').screenshot({ path: testInfo.outputPath('manager-toolbar.png') })
@@ -62,6 +102,10 @@ test('manager combines quick filters with persistent views and keeps every task 
     await page.screenshot({ path: testInfo.outputPath('manager-wide.png') })
     await page.setViewportSize({ width: 1600, height: 1000 })
   }
+  await pin.click()
+  await expect(runningCard).toHaveAttribute('data-task-card-pinned', 'true')
+  await unpin.click()
+  await expect(runningCard).toHaveAttribute('data-task-card-pinned', 'false')
   await page.getByRole('button', { name: 'Filter tasks: Active' }).click()
   await expect(page.locator('[data-task-card]')).toHaveCount(2)
   const options = page.getByRole('button', { name: 'View options', exact: true })
@@ -89,19 +133,42 @@ test('manager combines quick filters with persistent views and keeps every task 
   await page.getByRole('button', { name: 'List view', exact: true }).click()
   await expect(page.getByRole('button', { name: 'List view', exact: true })).toHaveAttribute('aria-pressed', 'true')
   const row = page.locator('[data-task-card]').filter({ has: page.getByRole('button', { name: `Open details for ${state.first}` }) })
-  for (const label of [`Pin ${state.first}`, `Move ${state.first} earlier`, `Move ${state.first} later`, `Stop ${state.first}`, `View logs for ${state.first}`, `Delete ${state.first}`]) {
+  for (const label of [`Stop ${state.first}`, `View logs for ${state.first}`]) {
     await expect(row.getByRole('button', { name: label, exact: true })).toBeVisible()
   }
-  await row.getByRole('button', { name: `Move ${state.first} later`, exact: true }).click()
+  const more = row.getByRole('button', { name: `More actions for ${state.first}`, exact: true })
+  const menu = page.getByRole('group', { name: `Task actions for ${state.first}`, exact: true })
+  await expect(menu).toBeHidden()
+  await more.press('Enter')
+  await expect(menu.getByRole('button', { name: 'Move earlier', exact: true })).toBeFocused()
+  await expect(menu.getByRole('button', { name: 'Delete task', exact: true })).toBeVisible()
+  await page.keyboard.press('Escape')
+  await expect(menu).toBeHidden()
+  await expect(more).toBeFocused()
+  await more.click()
+  await menu.getByRole('button', { name: 'Move later', exact: true }).click()
   await expect.poll(() => state.mutations).toContain('reorder')
-  await row.getByRole('button', { name: `Pin ${state.first}`, exact: true }).click()
-  await expect.poll(() => state.mutations).toContain('pin')
-  await expect(row.getByRole('button', { name: `Unpin ${state.first}`, exact: true })).toBeVisible()
+  await pin.click()
+  await expect(row).toHaveAttribute('data-task-card-pinned', 'true')
+  await expect(unpin).toBeVisible()
+  await more.click()
+  await expect(menu).toBeVisible()
+  await page.getByRole('heading', { name: 'Task Manager', exact: true }).click()
+  await expect(menu).toBeHidden()
+  await more.click()
+  await menu.getByRole('button', { name: 'Delete task', exact: true }).click()
+  await expect(page.getByRole('heading', { name: 'Stop and Delete Task', exact: true })).toBeVisible()
+  await page.getByRole('button', { name: 'Close dialog', exact: true }).click()
   await all.click()
   await expect(page.locator('[data-task-card]')).toHaveCount(50)
+  await page.mouse.move(0, 0)
+  await expect.poll(cardColors).toEqual(lightColors)
   await page.screenshot({ path: testInfo.outputPath('manager-list.png'), animations: 'disabled' })
   if (!isMobile) {
     expect((await row.boundingBox())!.height).toBeLessThan(180)
+    const name = (await row.locator('.task-card-name').boundingBox())!
+    const state = (await row.locator('.task-card-status-label').boundingBox())!
+    expect(state.x).toBeGreaterThan(name.x + name.width)
   }
   const select = page.getByRole('button', { name: 'Select tasks', exact: true })
   const position = await select.boundingBox()
@@ -111,17 +178,38 @@ test('manager combines quick filters with persistent views and keeps every task 
   await page.getByRole('button', { name: `Select ${state.first}`, exact: true }).click()
   await page.getByRole('button', { name: 'Card view', exact: true }).click()
   await expect(page.getByRole('button', { name: `Deselect ${state.first}`, exact: true })).toHaveAttribute('aria-pressed', 'true')
+  await expect(runningCard).toHaveCSS('background-color', lightColors.running.surface)
+  await expect(runningCard.locator('.task-card-status-label')).toHaveCSS('background-color', lightColors.running.status)
+  expect((await cardColors()).running.stripe).toBe(lightColors.running.stripe)
   await page.screenshot({ path: testInfo.outputPath('manager-selection.png') })
   await cancel.click()
   await page.getByRole('button', { name: 'List view', exact: true }).click()
   await page.reload()
   await expect(page.getByRole('button', { name: 'List view', exact: true })).toHaveAttribute('aria-pressed', 'true')
   await page.getByRole('button', { name: 'Dark Mode', exact: true }).click()
+  await expect(runningCard).toHaveCSS('background-color', 'rgb(28, 31, 40)')
+  const darkColors = await cardColors()
+  expect(new Set(Object.values(darkColors).map(({ surface }) => surface))).toEqual(new Set(['rgb(28, 31, 40)']))
+  expect(new Set(Object.values(darkColors).map(({ status }) => status)).size).toBe(5)
+  expect(darkColors.pending.status).toBe(darkColors.cancelled.status)
+  expect(darkColors.running.status).not.toBe(lightColors.running.status)
+  for (const [status, colors] of Object.entries(lightColors)) {
+    expect(darkColors[status].stripe).toBe(colors.stripe)
+  }
   await page.screenshot({ path: testInfo.outputPath('manager-dark.png') })
+  await page.getByRole('button', { name: 'Card view', exact: true }).click()
+  await page.screenshot({ path: testInfo.outputPath('manager-cards-dark.png') })
   await page.getByRole('button', { name: 'Switch to Chinese', exact: true }).click()
   await expect(page.getByRole('heading', { name: '任务管理', exact: true })).toBeVisible()
   await page.screenshot({ path: testInfo.outputPath('manager-zh.png') })
   await page.locator('[data-tour="manager-controls"]').screenshot({ path: testInfo.outputPath('manager-toolbar-dark-zh.png') })
+  if (isMobile) {
+    await page.setViewportSize({ width: 320, height: 640 })
+    const { clientWidth, scrollWidth } = await runningCard.locator('.task-card-footer').evaluate(element => ({
+      clientWidth: element.clientWidth, scrollWidth: element.scrollWidth,
+    }))
+    expect(scrollWidth).toBeLessThanOrEqual(clientWidth)
+  }
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)
   expect(errors).toEqual([])
 })

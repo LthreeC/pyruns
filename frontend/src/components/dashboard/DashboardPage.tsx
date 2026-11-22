@@ -42,6 +42,7 @@ const STAT_CARDS: { key: string; label: string; icon: ElementType; color: string
 const DASHBOARD_REQUEST_TIMEOUT_MS = 10_000
 const GPU_DETAILS_REQUEST_TIMEOUT_MS = 10_000
 const PROCESS_DETAILS_REQUEST_TIMEOUT_MS = 10_000
+const GPU_PROCESS_GRID = 'grid grid-cols-[88px_minmax(0,1fr)_56px_44px] items-center gap-x-2 px-3 sm:grid-cols-[96px_96px_minmax(0,1fr)_80px_48px_44px] sm:gap-x-3 sm:px-4'
 
 interface DashboardRead {
   controller: AbortController
@@ -262,13 +263,13 @@ export default function DashboardPage() {
       <div className="h-full overflow-y-auto bg-surface-base">
         <div className="dashboard-content flex min-h-full w-full flex-col gap-3 px-4 py-4 sm:px-5">
           <header className="dashboard-header workspace-header shrink-0 flex flex-wrap items-center justify-between gap-x-3 gap-y-2 border-b border-border-subtle pb-3">
-            <div className="min-w-0 flex-1 basis-full sm:basis-0">
+            <div className={clsx('min-w-0 flex-1', !workspaceReady && 'basis-full sm:basis-0')}>
               <div className="flex flex-wrap items-center gap-2">
                 <h1 className="workspace-heading mr-2 text-lg font-semibold text-txt-primary">{t('Dashboard')}</h1>
                 <span className="inline-flex items-center rounded-md bg-accent/10 px-2 py-1 text-2xs font-medium text-accent">
                   {workspaceKindLabel}
                 </span>
-                <span className="min-w-[12rem] max-w-full truncate font-mono text-2xs text-txt-tertiary sm:max-w-[56rem]" title={workspaceWorkingPath || ''}>
+                <span className="min-w-0 max-w-full truncate font-mono text-2xs text-txt-tertiary sm:max-w-[56rem]" title={workspaceWorkingPath || ''}>
                   {workspaceWorkingPath || t('Choose a workspace to start')}
                 </span>
               </div>
@@ -276,7 +277,10 @@ export default function DashboardPage() {
                 <div className="mt-0.5 truncate font-mono text-2xs text-txt-secondary" title={workspaceName}>{workspaceName}</div>
               )}
             </div>
-            <div className="grid w-full min-w-0 grid-cols-[44px_minmax(0,1fr)] gap-2 sm:flex sm:w-auto sm:flex-wrap sm:items-center">
+            <div className={clsx(
+              'min-w-0 gap-2',
+              workspaceReady ? 'flex flex-none items-center' : 'grid w-full grid-cols-[44px_minmax(0,1fr)] sm:flex sm:w-auto sm:flex-wrap sm:items-center',
+            )}>
               <button
                 type="button"
                 onClick={() => void handleManualRefresh()}
@@ -288,14 +292,14 @@ export default function DashboardPage() {
                 <RefreshCw aria-hidden="true" className={clsx('h-4 w-4', manualRefreshing && 'animate-spin')} />
                 <span className="hidden sm:inline">{t('Refresh')}</span>
               </button>
-              <button
+              {!workspaceReady && <button
                 type="button"
-                onClick={() => navigate(workspaceReady ? '/generator' : '/?launcher=1&mode=python')}
+                onClick={() => navigate('/?launcher=1&mode=python')}
                 className="touch-target inline-flex min-h-11 min-w-0 items-center justify-center gap-2 rounded-md bg-accent px-2 py-2 text-sm font-semibold text-white transition-colors hover:bg-accent-hover sm:min-h-8 sm:px-3"
               >
                 <Wand2 className="h-4 w-4" />
-                <span className="whitespace-nowrap">{workspaceReady ? t('Start New Task') : t('Choose Workspace')}</span>
-              </button>
+                <span className="whitespace-nowrap">{t('Choose Workspace')}</span>
+              </button>}
             </div>
           </header>
 
@@ -791,7 +795,7 @@ function GpuProcessDialog({
         aria-labelledby="gpu-detail-title"
         aria-describedby="gpu-detail-description"
         aria-busy={loading}
-        className="flex max-h-[calc(100dvh-2rem)] w-full max-w-5xl flex-col overflow-hidden rounded-md border border-border-subtle bg-surface-raised shadow-md"
+        className="flex max-h-[calc(100dvh-2rem)] w-full max-w-5xl select-text flex-col overflow-hidden rounded-md border border-border-subtle bg-surface-raised shadow-md"
         onPointerDown={() => {
           backdropPointerStartedRef.current = false
         }}
@@ -896,7 +900,7 @@ function GpuProcessDialog({
           ) : (
             <div className="overflow-hidden rounded-md border border-border-subtle">
               <div>
-                <div className="grid grid-cols-[56px_minmax(0,1fr)_64px_16px] gap-2 border-b border-border-subtle bg-surface-overlay/70 px-3 py-2 text-2xs uppercase tracking-[0.18em] text-txt-tertiary sm:grid-cols-[72px_96px_minmax(0,1fr)_80px_48px_16px] sm:gap-3 sm:px-4">
+                <div className={clsx(GPU_PROCESS_GRID, 'border-b border-border-subtle bg-surface-overlay/70 py-2 text-2xs uppercase tracking-[0.18em] text-txt-tertiary')}>
                   <span>PID</span>
                   <span className="hidden sm:block">{t('User')}</span>
                   <span>{t('Process')}</span>
@@ -910,17 +914,22 @@ function GpuProcessDialog({
                   const processDetailsState = processDetailsByKey[rowKey]
                   const processDetails = processDetailsState?.data
                   const displayName = processDetails?.process_name?.trim() || process.name
+                  const pid = process.pid >= 0 ? String(process.pid) : ''
                   return (
                     <div key={rowKey} className="border-b border-border-subtle/80 last:border-b-0">
-                      <button
-                        type="button"
-                        disabled={loading}
-                        aria-expanded={expanded}
-                        aria-label={expanded ? t('Hide details for process {{pid}} {{name}}', { pid: process.pid, name: displayName }) : t('View details for process {{pid}} {{name}}', { pid: process.pid, name: displayName })}
-                        onClick={() => toggleProcessDetails(process, rowKey)}
-                        className="grid min-h-11 w-full grid-cols-[56px_minmax(0,1fr)_64px_16px] items-center gap-x-2 gap-y-0.5 px-3 py-3 text-left text-xs transition-colors hover:bg-surface-overlay/45 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent/40 disabled:cursor-wait disabled:opacity-50 sm:grid-cols-[72px_96px_minmax(0,1fr)_80px_48px_16px] sm:gap-3 sm:px-4 sm:text-sm"
+                      <div
+                        className={clsx(GPU_PROCESS_GRID, 'min-h-11 cursor-text gap-y-0.5 py-1 text-xs transition-colors hover:bg-surface-overlay/45 sm:text-sm')}
+                        onClick={event => {
+                          if (event.target instanceof Element && event.target.closest('button')) return
+                          const selection = window.getSelection()
+                          if (selection && !selection.isCollapsed && selection.containsNode(event.currentTarget, true)) return
+                          toggleProcessDetails(process, rowKey)
+                        }}
                       >
-                        <span className="row-span-2 truncate font-mono text-txt-secondary sm:row-span-1" title={String(process.pid)}>{process.pid >= 0 ? process.pid : '--'}</span>
+                        <div className="row-span-2 flex min-w-0 items-center gap-1 font-mono text-txt-secondary sm:row-span-1">
+                          <span className="truncate" title={pid}>{pid || '--'}</span>
+                          {pid && <CopyButton value={pid} label={t('Copy PID {{pid}}', { pid })} size="xs" />}
+                        </div>
                         <span className="col-start-2 row-start-2 truncate font-mono text-xs text-txt-secondary sm:col-auto sm:row-auto" title={process.user || processDetails?.user || 'unknown'}>
                           {process.user || processDetails?.user || 'unknown'}
                         </span>
@@ -931,8 +940,17 @@ function GpuProcessDialog({
                             ? '--'
                             : formatPercent((process.memory_mb / gpu.mem_total) * 100)}
                         </span>
-                        <ChevronDown className={clsx('row-span-2 h-4 w-4 text-txt-tertiary transition-transform sm:row-span-1', expanded && 'rotate-180')} />
-                      </button>
+                        <button
+                          type="button"
+                          disabled={loading}
+                          aria-expanded={expanded}
+                          aria-label={t(expanded ? 'Hide details for process {{pid}} {{name}}' : 'View details for process {{pid}} {{name}}', { pid: process.pid, name: displayName })}
+                          onClick={() => toggleProcessDetails(process, rowKey)}
+                          className="touch-target row-span-2 inline-flex size-9 items-center justify-center justify-self-end rounded-md text-txt-tertiary hover:bg-surface-overlay hover:text-txt-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 disabled:cursor-wait disabled:opacity-50 sm:row-span-1"
+                        >
+                          <ChevronDown aria-hidden="true" className={clsx('size-4 transition-transform', expanded && 'rotate-180')} />
+                        </button>
+                      </div>
                       {expanded && (
                         <GpuProcessMetadata
                           process={process}
@@ -1027,7 +1045,7 @@ function GpuProcessMetadata({
         <ProcessDetail label={t('Host RAM')} value={hostMemory} mono />
         <ProcessDetail label={t('Started')} value={startedAt} />
         <ProcessDetail label={t('Process runtime')} value={runtime} mono />
-        <ProcessDetail label={t('Parent PID')} value={formatOptionalInteger(details.parent_pid)} mono />
+        <ProcessDetail label={t('Parent PID')} value={details.parent_pid != null && details.parent_pid >= 0 ? String(details.parent_pid) : t('Not available')} mono />
         <ProcessDetail label={t('Threads')} value={formatOptionalInteger(details.thread_count)} mono />
       </dl>
       <div className="mt-3 grid gap-3 border-t border-border-subtle/80 pt-3 lg:grid-cols-2">

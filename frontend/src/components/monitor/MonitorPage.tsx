@@ -1847,7 +1847,6 @@ export default function MonitorPage() {
       )}
 
       <div className="monitor-terminal-shell flex min-h-0 min-w-0 max-w-full flex-1 flex-col border-l border-border-subtle">
-        {selectedTask && <TaskExecutionInfo task={selectedTask} className="shrink-0 bg-surface-raised px-3 pt-1" />}
         <div className="monitor-header flex shrink-0 items-center gap-2 border-b border-border-subtle bg-surface-raised px-3 py-1">
           {selectedTask ? (
             <div className="monitor-header-content flex min-w-0 flex-1 items-center justify-between gap-3">
@@ -1875,6 +1874,7 @@ export default function MonitorPage() {
                   <div className="monitor-log-name truncate font-mono text-[11px] text-txt-tertiary" title={selectedLog || liveLogName || t("latest log")}>
                     {selectedLog || liveLogName || t("latest log")}
                   </div>
+                  <TaskExecutionInfo task={selectedTask} singleLine className="monitor-execution-info border-s border-border-subtle ps-2" />
                 </div>
 
                 {isLive && (
@@ -2047,7 +2047,7 @@ export default function MonitorPage() {
           </div>
         )}
 
-        <div className="relative min-h-0 flex-1 overflow-hidden" aria-busy={loading}>
+        <div className="monitor-log-output relative min-h-0 flex-1 overflow-hidden" aria-busy={loading}>
           {selectedTaskName ? (
             <>
               <div
@@ -2200,75 +2200,77 @@ function GPUWaitPanel({ wait }: { wait: GPUWaitStatus | null }) {
   return (
     <section
       aria-labelledby="gpu-wait-heading"
-      className="gpu-wait-panel border-b border-border-subtle bg-amber-500/[0.035] px-3 py-2.5 sm:px-4"
+      className="gpu-wait-panel min-h-0 overflow-y-auto overscroll-contain px-3 pb-2 pt-3 focus-visible:outline-offset-[-2px] sm:px-4"
+      tabIndex={0}
     >
-      <div className="flex flex-wrap items-start gap-x-4 gap-y-2 border-l-2 border-amber-500/60 pl-3">
-        <div className="flex min-w-0 flex-1 basis-[20rem] items-start gap-2.5">
-          <span className="mt-0.5 inline-flex h-7 w-7 flex-none items-center justify-center rounded-md bg-amber-500/10 text-amber-700 dark:text-amber-300">
-            <Cpu className="h-4 w-4" />
+      <div className="flex flex-wrap items-start justify-between gap-x-6 gap-y-3">
+        <div className="flex min-w-0 flex-1 basis-72 items-start gap-2.5">
+          <span className="gpu-wait-accent flex size-8 shrink-0 items-center justify-center" aria-hidden="true">
+            <Cpu className="size-4" />
           </span>
           <div className="min-w-0">
             <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
-              <h2 id="gpu-wait-heading" className="text-xs font-semibold text-txt-primary">{t("Waiting for GPU capacity")}</h2>
-              <span className="rounded-full border border-amber-500/20 bg-amber-500/10 px-2 py-0.5 text-2xs font-medium text-amber-700 dark:text-amber-300">
+              <h2 id="gpu-wait-heading" className="text-sm font-semibold text-txt-primary">{t("Waiting for GPU capacity")}</h2>
+              <span className="gpu-wait-accent px-1.5 py-0.5 text-xs font-medium tabular-nums">
                 {eligible === null ? t("Checking eligibility") : t('{{eligible}}/{{requested}} eligible', { eligible, requested })}
               </span>
             </div>
-            <p className="mt-0.5 text-2xs leading-5 text-txt-secondary">
+            <p className="mt-1 text-xs leading-relaxed text-txt-secondary [overflow-wrap:anywhere]">
               {wait?.reason || t("The scheduler is checking memory, utilization, reservations, and the stability window.")}
             </p>
           </div>
         </div>
 
-        <dl className="grid min-w-[15rem] flex-none grid-cols-2 gap-x-4 gap-y-1 text-2xs sm:grid-cols-3">
+        <dl className="flex flex-wrap gap-x-5 gap-y-2 text-xs sm:gap-x-6">
           <div>
-            <dt className="text-txt-tertiary">{t("Waited")}</dt>
-            <dd className="font-medium tabular-nums text-txt-primary">{formatDuration(waitedSeconds)}</dd>
+            <dt className="text-txt-secondary">{t("Waited")}</dt>
+            <dd className="mt-0.5 font-medium tabular-nums text-txt-primary">{formatDuration(waitedSeconds)}</dd>
           </div>
           <div>
-            <dt className="text-txt-tertiary">{t("Time left")}</dt>
-            <dd className="font-medium tabular-nums text-txt-primary">
+            <dt className="text-txt-secondary">{t("Time left")}</dt>
+            <dd className="mt-0.5 font-medium tabular-nums text-txt-primary">
               {remainingSeconds === null ? t("No limit") : formatDuration(remainingSeconds)}
             </dd>
           </div>
-          <div className="col-span-2 sm:col-span-1">
-            <dt className="text-txt-tertiary">{t("Visible GPUs")}</dt>
-            <dd className="font-medium tabular-nums text-txt-primary">
+          <div>
+            <dt className="text-txt-secondary">{t("Visible GPUs")}</dt>
+            <dd className="mt-0.5 font-medium tabular-nums text-txt-primary">
               {wait?.total_gpu_count ?? (devices.length || '—')}
             </dd>
           </div>
         </dl>
+      </div>
 
       {devices.length > 0 && (
-        <details className="group mt-2 border-t border-border-subtle">
-          <summary className="flex min-h-8 cursor-pointer list-none items-center justify-between gap-2 py-1.5 text-2xs font-medium text-txt-secondary focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent/35">
+        <details className="gpu-wait-details group mt-2 border-t">
+          <summary className="flex min-h-11 cursor-pointer list-none items-center gap-1.5 text-xs font-medium text-txt-secondary hover:text-txt-primary focus-visible:outline-offset-0 sm:min-h-8">
+            <ChevronDown className="size-3.5 shrink-0 -rotate-90 transition-transform group-open:rotate-0" aria-hidden="true" />
             <span>{t("Why each GPU is waiting")}</span>
-            <ChevronDown className="h-3.5 w-3.5 transition-transform group-open:rotate-180" />
           </summary>
-          <ul className="grid gap-x-4 border-t border-border-subtle py-1.5 sm:grid-cols-2" aria-label={t("GPU eligibility details")}>
+          <ul
+            className="gpu-wait-device-list grid grid-cols-[repeat(auto-fit,minmax(min(100%,16rem),1fr))] gap-x-6 border-t py-1"
+            aria-label={t("GPU eligibility details")}
+          >
             {devices.map(device => (
-              <li key={device.uuid || device.index} className="flex min-w-0 items-start gap-2 border-b border-border-subtle/70 py-1.5 text-2xs last:border-b-0">
-                <span className={clsx(
-                  'mt-1 h-1.5 w-1.5 flex-none rounded-full',
-                  device.eligible ? 'bg-emerald-500' : 'bg-amber-500',
-                )} />
-                <span className="min-w-0">
-                  <span className="block truncate font-medium text-txt-primary">
+              <li key={device.uuid || device.index} className="flex min-w-0 items-start gap-2 py-1.5 text-xs">
+                <span
+                  aria-hidden="true"
+                  className={clsx('mt-1.5 size-1.5 shrink-0 rounded-full', device.eligible ? 'bg-emerald-500' : 'bg-amber-500')}
+                />
+                <div className="min-w-0 [overflow-wrap:anywhere]">
+                  <p className="font-medium text-txt-primary">
                     {t("GPU")} {device.index}{device.name ? ` · ${device.name}` : ''}
-                  </span>
-                  <span className="block truncate text-txt-tertiary" title={device.reason || undefined}>
+                  </p>
+                  <p className="text-txt-secondary">
                     {device.eligible ? t("Passes current thresholds") : device.reason || t("Waiting for current thresholds")}
-                  </span>
-                  <span className="block truncate text-txt-tertiary/80">
-                    {formatGPUDeviceMetrics(device)}
-                  </span>
-                </span>
+                  </p>
+                  <p className="text-txt-tertiary">{formatGPUDeviceMetrics(device)}</p>
+                </div>
               </li>
             ))}
           </ul>
         </details>
       )}
-      </div>
     </section>
   )
 }

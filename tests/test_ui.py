@@ -151,7 +151,6 @@ STATIC_INDEX = Path(__file__).resolve().parents[1] / "pyruns" / "web" / "static"
             'flex min-h-full w-full flex-col',
             'const workspaceKindLabel',
             'Shell Workspace',
-            'Start New Task',
             'Recent Tasks',
             'GPU & System',
             'ResourceTile',
@@ -596,8 +595,10 @@ def test_react_manager_uses_global_counts_page_scoped_selection_and_pending_lock
     assert "t('Stop {{active}} active task(s) and move all {{selected}} selected tasks from this page to trash?', { active: activeSelectedCount, selected: visibleSelectedCount })" in manager
     assert "hasReorderChanges(allTasks.items, items)" in manager
     assert "is already in this position" in manager
-    assert "label={t('Move {{name}} earlier', { name: task.name })}" in manager
-    assert "label={t('Move {{name}} later', { name: task.name })}" in manager
+    assert "label: t('Move earlier')" in manager
+    assert "label: t('Move later')" in manager
+    assert "disabled: taskPending || reorderDisabled, onClick: () => void onMove(task, -1)" in manager
+    assert "disabled: taskPending || reorderDisabled, onClick: () => void onMove(task, 1)" in manager
     assert 'role="button"' in manager
     assert "tabIndex={0}" in manager
     assert "event.key === 'Enter' || event.key === ' '" in manager
@@ -632,10 +633,10 @@ def test_react_icon_only_buttons_have_accessible_names():
     assert 'aria-label={t("Rename task")}' in task_detail
     assert 'aria-label={t("Close task details")}' in task_detail
     assert "aria-label={t('Close dialog')}" in confirm_dialog
-    assert "aria-label={t(task.pinned ? 'Unpin {{name}}' : 'Pin {{name}}', { name: accessibleName })}" in manager
+    assert "label={t(task.pinned ? 'Unpin {{name}}' : 'Pin {{name}}', { name: accessibleName })}" in manager
     assert "label={t('{{action}} {{name}}', { action: t(actionBtn.label), name: task.name })}" in manager
     assert "label={t('View logs for {{name}}', { name: accessibleName })}" in manager
-    assert "label={t('Delete {{name}}', { name: task.name })}" in manager
+    assert "aria-label={t('More actions for {{name}}', { name })}" in manager
     assert "aria-label={label}" in manager
     assert "aria-label={t('Previous page')}" in pagination
     assert "aria-label={t('Next page')}" in pagination
@@ -750,7 +751,7 @@ def test_react_task_lists_use_summaries_and_fetch_full_details_on_open():
     assert "Drop here to pin" in manager
     assert 'title={t("Pinned Tasks")}' in manager
     assert "count={pinnedTasks.length}" in manager
-    assert "const taskKindLabel = task.task_kind === 'shell' ? 'shell' : 'python'" in manager
+    assert "const taskKindLabel = task.task_kind === 'shell' ? 'Shell' : 'Python'" in manager
 
 
 def test_react_monitor_batches_live_log_chunks_for_stable_progress_rendering():
@@ -771,13 +772,10 @@ def test_react_monitor_batches_live_log_chunks_for_stable_progress_rendering():
 
 
 def test_react_secondary_mobile_controls_keep_usable_touch_targets():
-    manager = FRONTEND_MANAGER.read_text(encoding="utf-8")
     confirm_dialog = FRONTEND_CONFIRM_DIALOG.read_text(encoding="utf-8")
     pagination = FRONTEND_PAGINATION.read_text(encoding="utf-8")
     toast_host = FRONTEND_TOAST_HOST.read_text(encoding="utf-8")
 
-    assert "'task-card-pin touch-target absolute right-0.5 top-0.5 z-10 inline-flex h-11 w-11" in manager
-    assert "'touch-target inline-flex h-11 w-11 items-center justify-center" in manager
     assert "inline-flex h-11 w-11 items-center justify-center rounded-md" in confirm_dialog
     assert "min-h-11" in confirm_dialog
     assert "inline-flex h-11 w-11 items-center justify-center rounded-md" in pagination

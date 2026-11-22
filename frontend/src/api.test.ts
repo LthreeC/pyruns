@@ -327,10 +327,11 @@ describe('API errors', () => {
     expect(fetchMock).toHaveBeenNthCalledWith(2, '/api/system/update/check', expect.any(Object))
     expect(fetchMock).toHaveBeenNthCalledWith(3, '/api/system/update', expect.objectContaining({
       method: 'POST',
-      body: JSON.stringify({ target_version: '0.4.0' }),
+      body: JSON.stringify({ target_version: '0.4.0', defer_if_busy: true }),
     }))
     expect(fetchMock).toHaveBeenNthCalledWith(4, '/api/system/restart', expect.objectContaining({
       method: 'POST',
+      body: JSON.stringify({ defer_if_busy: true }),
     }))
   })
 

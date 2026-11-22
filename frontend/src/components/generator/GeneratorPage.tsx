@@ -1387,28 +1387,31 @@ export default function GeneratorPage() {
 
           </div>
           <div data-tour="generator-create" className="mt-auto shrink-0 border-t border-border-subtle bg-surface-raised pt-3">
-            <div className="mb-2.5 grid grid-cols-[auto_minmax(0,1fr)] items-center gap-3">
-              <label htmlFor="generator-task-storage" className="text-sm font-medium text-txt-primary">{t('Save to')}</label>
-              <div className="relative min-w-0">
-                <select
-                  id="generator-task-storage"
-                  aria-describedby="generator-task-storage-description"
-                  title={storageDescription}
-                  value={taskStorage}
-                  disabled={generationBusy}
-                  onChange={event => {
-                    const storage = event.target.value === 'local' ? 'local' : 'shared'
-                    setStorageOverride(storage === defaultStorage ? null : storage)
-                  }}
-                  className="h-11 w-full appearance-none truncate rounded-md border border-border bg-surface-raised pl-2.5 pr-7 text-base text-txt-primary outline-none hover:bg-surface-overlay focus:border-accent focus-visible:ring-1 focus-visible:ring-accent/30 disabled:opacity-60 min-[701px]:h-9 min-[701px]:text-sm"
-                >
-                  <option value="shared">{t('Common tasks')}</option>
-                  <option value="local">{deviceHost ? t('This device · {{host}}', { host: deviceHost }) : t('This device')}</option>
-                </select>
-                <ChevronDown aria-hidden="true" className="pointer-events-none absolute right-2.5 top-1/2 size-3.5 -translate-y-1/2 text-txt-secondary" />
-                <span id="generator-task-storage-description" className="sr-only">{storageDescription}</span>
-              </div>
-            </div>
+            <label
+              title={storageDescription}
+              className={clsx(
+                'touch-target mb-2 flex min-h-11 items-center gap-2 rounded-md px-1.5 text-sm font-medium text-txt-primary min-[701px]:min-h-8',
+                generationBusy ? 'cursor-not-allowed opacity-60' : 'cursor-pointer hover:bg-surface-overlay',
+              )}
+            >
+              <input
+                type="checkbox"
+                checked={taskStorage === 'local'}
+                disabled={generationBusy}
+                aria-labelledby="generator-task-storage-label"
+                aria-describedby="generator-task-storage-description"
+                onChange={event => {
+                  const storage = event.target.checked ? 'local' : 'shared'
+                  setStorageOverride(storage === defaultStorage ? null : storage)
+                }}
+                className="size-4 shrink-0 accent-accent"
+              />
+              <span id="generator-task-storage-label">{t('This device only')}</span>
+              {taskStorage === 'local' && deviceHost && (
+                <span className="ml-auto min-w-0 truncate font-mono text-2xs font-normal text-txt-secondary">{deviceHost}</span>
+              )}
+            </label>
+            <span id="generator-task-storage-description" className="sr-only">{storageDescription}</span>
             <ActionButton
               icon={generationBusy ? <Loader2 aria-hidden="true" className="h-4 w-4 animate-spin" /> : undefined}
               variant="primary"

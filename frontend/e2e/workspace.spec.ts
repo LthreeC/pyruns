@@ -1,4 +1,4 @@
-import { expect, test, type Page } from '@playwright/test'
+import { expect, test, type Locator, type Page } from '@playwright/test'
 
 test('idle UI update confirms, waits for a new instance, and reloads', async ({ page, isMobile }) => {
   let restarted = false
@@ -35,7 +35,7 @@ test('idle UI update confirms, waits for a new instance, and reloads', async ({ 
   })
   await page.route('**/api/system/update', route => {
     updateRequests += 1
-    expect(route.request().postDataJSON()).toEqual({ target_version: '0.4.0' })
+    expect(route.request().postDataJSON()).toEqual({ target_version: '0.4.0', defer_if_busy: true })
     restarted = true
     return route.fulfill({
       status: 202,
@@ -105,7 +105,7 @@ test('busy update is refused without waiting and can be retried after tasks fini
   await page.goto('/?token=pyruns-e2e-access-token')
   await page.getByRole('button', { name: /Check for Pyruns updates.*0\.3\.0/ }).click()
   const confirmation = page.getByRole('dialog', { name: 'Update Pyruns to v0.4.0?' })
-  await expect(confirmation).toContainText('retry once they finish')
+  await expect(confirmation).toContainText('when the affected tasks finish')
   await confirmation.getByRole('button', { name: 'Update and Restart' }).click()
   const failure = page.getByRole('dialog', { name: 'Could not update Pyruns' })
   await expect(failure).toContainText('2 queued or running tasks')
@@ -122,6 +122,67 @@ test('busy update is refused without waiting and can be retried after tasks fini
   await confirmation.getByRole('button', { name: 'Update and Restart' }).click()
   await expect(page.getByRole('button', { name: /Check for Pyruns updates.*0\.4\.0/ })).toBeVisible()
   expect(updateRequests).toBe(2)
+})
+
+test('scheduled restart leaves the UI available and can be cancelled before it starts', async ({ page }) => {
+  await page.clock.install()
+  const scheduled = { id: 'scheduled-restart', operation: 'restart', target_version: '0.4.0' }
+  let state = 'restart_required'
+  let restartRequests = 0
+  let cancellations = 0
+  await page.route('**/api/system/info', route => route.fulfill({
+    json: {
+      version: state === 'idle' ? '0.4.0' : '0.3.0',
+      installed_version: '0.4.0',
+      restart_required: state !== 'idle',
+      instance_id: state === 'idle' ? 'new-instance' : 'old-instance',
+      update_supported: true, update_state: state, last_update: null,
+      scheduled_operation: state === 'waiting' ? scheduled : null,
+    },
+  }))
+  await page.route('**/api/system/restart', route => {
+    expect(route.request().postDataJSON()).toEqual({ defer_if_busy: true })
+    restartRequests++
+    state = 'waiting'
+    return route.fulfill({
+      status: 202,
+      json: { ok: true, instance_id: 'old-instance', version: '0.3.0', state, scheduled_operation: scheduled },
+    })
+  })
+  await page.route('**/api/system/update/pending/scheduled-restart', route => {
+    expect(route.request().method()).toBe('DELETE')
+    cancellations++
+    state = 'restart_required'
+    return route.fulfill({ json: { ok: true } })
+  })
+  await page.goto('/?token=pyruns-e2e-access-token')
+  const restartButton = page.getByRole('button', { name: /Restart Pyruns to load installed version 0\.4\.0/ })
+  const scheduledButton = page.getByRole('button', { name: 'Restart scheduled to load v0.4.0' })
+  const scheduleRestart = async () => {
+    await restartButton.click()
+    await page.getByRole('dialog', { name: 'Restart Pyruns to load v0.4.0?' })
+      .getByRole('button', { name: 'Restart Interfaces' }).click()
+    await expect(scheduledButton).toBeEnabled()
+  }
+  await scheduleRestart()
+  await expect(page.getByRole('dialog', { name: 'Restarting Pyruns' })).toBeHidden()
+  await page.getByRole('link', { name: 'Manager' }).click()
+  await expect(page).toHaveURL(/\/manager/)
+  await page.clock.fastForward(9 * 60_000)
+  await expect(scheduledButton).toBeEnabled()
+  await page.reload()
+  await scheduledButton.click()
+  await page.getByRole('dialog', { name: 'Restart scheduled to load v0.4.0' })
+    .getByRole('button', { name: 'Cancel schedule' }).click()
+  await expect(restartButton).toBeEnabled()
+  expect(cancellations).toBe(1)
+
+  await scheduleRestart()
+  state = 'idle'
+  await page.clock.fastForward(6_000)
+  await expect(page.getByRole('button', { name: /Check for Pyruns updates.*0\.4\.0/ })).toBeEnabled()
+  await expect(page).toHaveURL(/\/manager/)
+  expect(restartRequests).toBe(2)
 })
 
 test('update wait stops immediately when shared coordination aborts', async ({ page }) => {
@@ -493,6 +554,26 @@ test('launcher, navigation, and theme work without browser errors', async ({ pag
 
 test('GPU card opens detailed device and process information', async ({ page, isMobile }, testInfo) => {
   if (isMobile) await page.setViewportSize({ width: 375, height: 667 })
+  await page.addInitScript(() => {
+    Object.defineProperty(navigator, 'clipboard', {
+      value: { writeText: async (value: string) => { sessionStorage.setItem('gpu-test-clipboard', value) } },
+    })
+  })
+  const dragSelect = async (text: Locator, expected: string) => {
+    await text.scrollIntoViewIfNeeded()
+    const { left, right, y } = await text.evaluate(element => {
+      const range = document.createRange()
+      range.selectNodeContents(element)
+      const box = range.getBoundingClientRect()
+      return { left: box.left + 1, right: box.right - 1, y: box.y + box.height / 2 }
+    })
+    await page.mouse.move(left, y)
+    await page.mouse.down()
+    await page.mouse.move(right, y, { steps: 8 })
+    await page.mouse.up()
+    await expect.poll(() => page.evaluate(() => window.getSelection()?.toString())).toBe(expected)
+    await page.evaluate(() => window.getSelection()?.removeAllRanges())
+  }
   let detailRequests = 0
   let processDetailRequests = 0
   let releaseProcessDetails!: () => void
@@ -590,7 +671,13 @@ test('GPU card opens detailed device and process information', async ({ page, is
   await expect(dialog.getByText('python train.py --epochs 10')).toBeHidden()
 
   const processRow = dialog.getByRole('button', { name: /details for process 4321 .*python/ })
-  await processRow.click()
+  const pid = dialog.getByText('4321', { exact: true })
+  await dialog.getByRole('button', { name: 'Copy PID 4321' }).click()
+  await expect.poll(() => page.evaluate(() => sessionStorage.getItem('gpu-test-clipboard'))).toBe('4321')
+  await expect(processRow).toHaveAttribute('aria-expanded', 'false')
+  if (!isMobile) await dragSelect(pid, '4321')
+  await expect(processRow).toHaveAttribute('aria-expanded', 'false')
+  await pid.click()
   await expect(processRow).toHaveAttribute('aria-expanded', 'true')
   await expect(dialog.getByText('Loading process details...')).toBeVisible()
   expect(processDetailRequests).toBe(1)
@@ -598,10 +685,12 @@ test('GPU card opens detailed device and process information', async ({ page, is
   await expect(dialog.getByText('python train.py --epochs 10')).toBeVisible()
   await expect(dialog.getByText('researcher')).toBeVisible()
   await expect(dialog.getByText('/workspace')).toBeVisible()
+  await expect(dialog.getByText('1000', { exact: true })).toBeVisible()
   await expect(dialog.getByText('1.5 GB (6.3% RAM)')).toBeVisible()
   await expect(dialog.getByRole('button', { name: 'Copy command line for PID 4321' })).toBeVisible()
   expect(await dialog.evaluate(element => element.scrollWidth <= element.clientWidth)).toBe(true)
   const command = dialog.getByText('python train.py --epochs 10')
+  if (!isMobile) await dragSelect(command, 'python train.py --epochs 10')
   const commandBox = await command.boundingBox()
   const dialogBox = await dialog.boundingBox()
   expect(commandBox!.x + commandBox!.width).toBeLessThanOrEqual(dialogBox!.x + dialogBox!.width)

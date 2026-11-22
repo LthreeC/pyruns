@@ -454,14 +454,20 @@ export const checkPyrunsUpdate = (signal?: AbortSignal) => request<UiVersionChec
 
 export const updatePyruns = (targetVersion: string, signal?: AbortSignal) => request<UiUpdateResponse>('/api/system/update', {
   method: 'POST',
-  body: JSON.stringify({ target_version: targetVersion }),
+  body: JSON.stringify({ target_version: targetVersion, defer_if_busy: true }),
   signal,
 })
 
 export const restartPyruns = (signal?: AbortSignal) => request<UiUpdateResponse>('/api/system/restart', {
   method: 'POST',
+  body: JSON.stringify({ defer_if_busy: true }),
   signal,
 })
+
+export const cancelScheduledPyrunsOperation = (id: string, signal?: AbortSignal) => request<{ ok: boolean }>(
+  `/api/system/update/pending/${encodeURIComponent(id)}`,
+  { method: 'DELETE', signal },
+)
 
 export const getLauncherScripts = (signal?: AbortSignal) => request<{ items: ScriptCandidate[] }>('/api/launcher/scripts', { signal })
 export const getLauncherConfigs = (script: string, signal?: AbortSignal) =>

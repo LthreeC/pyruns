@@ -14,10 +14,10 @@ test('generator saves a batch to the selected device and opens it in Manager', a
     const opened = await page.request.post('/api/launcher/open', { data: { script_path: script, config_path: config } })
     expect(opened.ok()).toBe(true)
     await page.goto('/generator')
-    const target = page.getByRole('combobox', { name: 'Save to', exact: true })
-    await expect(target).toHaveValue('shared')
-    await target.selectOption('local')
-    await expect(target).toHaveValue('local')
+    const target = page.getByRole('checkbox', { name: 'This device only', exact: true })
+    await expect(target).not.toBeChecked()
+    await page.getByText('This device only', { exact: true }).click()
+    await expect(target).toBeChecked()
     await page.getByRole('textbox', { name: 'value parameter value', exact: true }).fill('left | right')
     await page.screenshot({ path: testInfo.outputPath('generator-workspace.png') })
     await page.getByRole('button', { name: 'Preview Batch Tasks' }).click()
@@ -29,7 +29,7 @@ test('generator saves a batch to the selected device and opens it in Manager', a
       expect(task.task_source).toBe('local')
       expect(task.status).toBe('pending')
     }
-    await expect(target).toHaveValue('shared')
+    await expect(target).not.toBeChecked()
     await expect(page.getByRole('button', { name: /run this batch/i })).toHaveCount(0)
     await page.screenshot({ path: testInfo.outputPath('created-batch.png') })
     await page.getByRole('button', { name: 'Open in Manager' }).click()
@@ -61,7 +61,7 @@ test('new-task storage persists across a reload', async ({ page }) => {
   }
 })
 
-test('task source and uncertainty remain distinct from running and log connectivity', async ({ page }, testInfo) => {
+test('task source and uncertainty remain distinct from running and log connectivity', async ({ page, isMobile }, testInfo) => {
   const task = {
     name: 'remote-task', status: 'running', task_kind: 'shell', task_identity: 'remote-original',
     dir: '/experiments/remote-task', config_file: 'config.sh', config_text: 'echo hello',
@@ -84,13 +84,29 @@ test('task source and uncertainty remain distinct from running and log connectiv
   await expect(page.getByText('gpu-worker-02', { exact: true })).toBeVisible()
   await expect(page.getByText('Runner status awaiting confirmation', { exact: true })).toBeVisible()
   await expect(page.getByTitle('The recorded runner lease has expired. This does not confirm that the process stopped; waiting for a verified result.')).toBeVisible()
-  await expect(page.getByRole('button', { name: 'Open details for remote-task' })).toContainText('Last reported running')
+  const card = page.locator('[data-task-card="remote-task"]')
+  await expect(card.getByText('Last reported running', { exact: true })).toBeVisible()
+  await expect(card.getByRole('button', { name: 'Open details for remote-task' })).toHaveAccessibleDescription('Last reported running')
   await page.screenshot({ path: testInfo.outputPath('task-source.png') })
   task.cancel_requested_at = Date.now() / 1000
   await page.goto('/monitor?task=remote-task')
-  await expect(page.getByText('gpu-worker-02', { exact: true })).toBeVisible()
-  await expect(page.getByText('Cancellation awaiting confirmation', { exact: true })).toBeVisible()
+  const title = page.locator('.monitor-task-title')
+  const execution = title.getByRole('group', { name: 'Execution source' })
+  await expect(execution.getByText('gpu-worker-02', { exact: true })).toBeVisible()
+  const warning = execution.getByTitle('Cancellation was requested. Waiting for the runner to confirm the result.')
+  await expect(warning).toBeVisible()
+  await expect(warning).toHaveText('Cancellation awaiting confirmation')
+  await expect(execution).toHaveCSS('white-space', 'nowrap')
+  const taskBox = (await title.getByText('remote-task', { exact: true }).boundingBox())!
+  const sourceBox = (await execution.boundingBox())!
+  expect(Math.abs(taskBox.y + taskBox.height / 2 - sourceBox.y - sourceBox.height / 2)).toBeLessThan(2)
   await expect(page.getByTitle('Log connection status; task execution is reported separately.')).toBeVisible()
+  await page.screenshot({ path: testInfo.outputPath('monitor-execution.png') })
+  if (!isMobile) {
+    await page.setViewportSize({ width: 1920, height: 900 })
+    await expect(warning.getByText('Cancellation awaiting confirmation')).toHaveCSS('position', 'static')
+    await page.screenshot({ path: testInfo.outputPath('monitor-execution-wide.png') })
+  }
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true)
 })
 

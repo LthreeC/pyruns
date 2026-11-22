@@ -131,7 +131,9 @@ test('GPU rules preserve old policies until migrated to CUDA_VISIBLE_DEVICES', a
   await expect(envTab).toHaveAttribute('aria-selected', 'true')
   const editor = panel.getByRole('textbox', { name: 'Workspace environment variables editor' })
   await expect(editor).toHaveText('CUDA_VISIBLE_DEVICES=0,1')
-  await editor.fill('CUDA_VISIBLE_DEVICES=1,0')
+  await editor.press('ControlOrMeta+a')
+  await page.keyboard.insertText('CUDA_VISIBLE_DEVICES=1,0')
+  await expect(editor).toHaveText('CUDA_VISIBLE_DEVICES=1,0')
   const envSave = waitForSave()
   await save.click()
   expect((await (await envSave).json()).global_env.CUDA_VISIBLE_DEVICES).toBe('1,0')
@@ -234,7 +236,8 @@ test('unavailable GPU readings remain visible and cannot pass the scheduling pre
   await page.screenshot({ path: testInfo.outputPath('gpu-unavailable.png'), fullPage: true })
 })
 
-test('Monitor shows actual GPU wait details and refreshes them from task events', async ({ page }) => {
+test('Monitor shows readable GPU wait details and refreshes them from task events', async ({ page, isMobile }, testInfo) => {
+  if (isMobile) await page.setViewportSize({ width: 320, height: 640 })
   const waitSnapshot = {
     state: 'waiting', run_index: 1, waited_seconds: 30, max_wait_seconds: 900,
     remaining_seconds: 870, requested_gpu_count: 2, eligible_gpu_count: 1, total_gpu_count: 2,
@@ -271,15 +274,33 @@ test('Monitor shows actual GPU wait details and refreshes them from task events'
   const heading = page.getByRole('heading', { name: 'Waiting for GPU capacity', exact: true })
   await expect(heading).toBeVisible()
   const panel = page.getByRole('region', { name: 'Waiting for GPU capacity', exact: true })
+  const logs = page.getByRole('region', { name: 'Read-only logs for gpu-wait-test' })
+  await expect(panel).toHaveCSS('background-color', 'rgb(255, 245, 223)')
+  await expect(logs).toHaveCSS('background-color', 'rgb(16, 18, 24)')
   await expect(panel).toContainText('1/2 eligible')
   await expect(panel).toContainText('CUDA_VISIBLE_DEVICES=2,3')
   await expect(panel).toContainText('14m 30s')
   await expect(panel.locator('dl > div').filter({ hasText: 'Visible GPUs' })).toContainText('2')
+  const devices = panel.getByRole('list', { name: 'GPU eligibility details' })
+  await expect(devices).toBeHidden()
+  await page.screenshot({ path: testInfo.outputPath('gpu-wait-light.png') })
   await panel.getByText('Why each GPU is waiting', { exact: true }).click()
-  const unavailable = panel.getByRole('listitem').filter({ hasText: 'GPU 3' })
+  await expect(devices).toBeVisible()
+  const unavailable = devices.getByRole('listitem').filter({ hasText: 'GPU 3' })
   await expect(unavailable).toContainText('metrics unavailable or invalid')
   await expect(unavailable).toContainText('Metrics unavailable')
   await expect(unavailable).not.toContainText('0%')
+  await page.getByRole('button', { name: 'Dark Mode', exact: true }).click()
+  await expect(panel).toHaveCSS('background-color', 'rgb(53, 42, 27)')
+  await expect(heading).toHaveCSS('color', 'rgb(238, 241, 247)')
+  await expect(logs).toHaveCSS('background-color', 'rgb(16, 18, 24)')
+  await expect(logs).toBeVisible()
+  expect(await panel.evaluate(element => element.scrollWidth <= element.clientWidth)).toBe(true)
+  if (isMobile) {
+    await unavailable.scrollIntoViewIfNeeded()
+    expect(await panel.evaluate(element => element.scrollTop)).toBeGreaterThan(0)
+  }
+  await page.screenshot({ path: testInfo.outputPath('gpu-wait-dark-expanded.png') })
   expect(events).toBeDefined()
   gpuWait = null
   events!.send(JSON.stringify({ type: 'changed' }))

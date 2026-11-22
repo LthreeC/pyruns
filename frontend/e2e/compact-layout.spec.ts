@@ -170,6 +170,8 @@ test('375px layout keeps GPU details and log controls reachable without horizont
   await mockWorkspace(page, 201)
   await page.goto('/?token=pyruns-e2e-access-token')
   await expect(page.getByRole('heading', { name: 'Dashboard', exact: true })).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Refresh dashboard', exact: true })).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Start New Task', exact: true })).toHaveCount(0)
   await expectCompactTaskRow(page)
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)
   await page.getByRole('button', { name: 'View details for GPU 0 NVIDIA A100-PCIE-40GB' }).click()
