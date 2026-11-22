@@ -114,6 +114,7 @@ export interface Task {
   runner_id?: string | null
   runner_host?: string | null
   runner_location?: 'local' | 'remote' | 'unknown'
+  local_process_verified?: boolean
   task_storage?: 'shared' | 'local' | 'remote'
   task_source?: string
   task_source_host?: string

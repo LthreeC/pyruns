@@ -12,7 +12,7 @@ export default function TaskExecutionInfo({ task, className, showRecordedHost = 
   const sourceHost = task.task_source_host
   const showHost = host && host.toLowerCase() !== sourceHost?.toLowerCase()
   const cancelling = active && Boolean(task.cancel_requested_at)
-  const expired = active && task.runner_lease_expired === true
+  const expired = active && !task.local_process_verified && task.runner_lease_expired === true
   const deviceFolder = task.task_storage === 'local' || task.task_storage === 'remote'
   if (!host && !cancelling && !expired && !deviceFolder) return null
 

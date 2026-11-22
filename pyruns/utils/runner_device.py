@@ -9,6 +9,7 @@ import sys
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
+from uuid import UUID
 
 
 @lru_cache(maxsize=1)
@@ -44,11 +45,18 @@ def _machine_fingerprint() -> str | None:
 @lru_cache(maxsize=1)
 def local_runner_device() -> str | None:
     machine = _machine_fingerprint()
-    if not machine or not sys.platform.startswith("linux"):
+    if not sys.platform.startswith("linux"):
         return machine
     try:
         namespace = os.readlink("/proc/self/ns/pid")
-    except OSError:
+        if not machine:
+            # Minimal Linux environments may omit machine-id. A boot ID is
+            # enough for this PID namespace, without changing task folders.
+            boot_id = UUID(Path("/proc/sys/kernel/random/boot_id").read_text(encoding="ascii").strip())
+            if not boot_id.int:
+                return None
+            machine = f"boot:{boot_id}"
+    except (OSError, ValueError):
         return None
     return hashlib.sha256(f"{machine}:{namespace}".encode()).hexdigest()
 

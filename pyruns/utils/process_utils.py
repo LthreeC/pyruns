@@ -133,6 +133,18 @@ def process_identity_matches(pid: Any, expected_create_time: Any) -> bool:
     )
 
 
+def process_environment_matches(pid: int, expected: dict[str, str]) -> bool:
+    """Check specific environment markers on an inspectable local process."""
+    if _psutil is None:
+        return False
+    try:
+        process = _psutil.Process(pid)
+        environment = process.environ()
+        return all(environment.get(key) == value for key, value in expected.items()) and process.is_running()
+    except (_psutil.Error, OSError):
+        return False
+
+
 def _process_tree_identities(pid: int) -> list[tuple[int, float | None]]:
     """Snapshot a process tree as PID/create-time pairs before signalling it."""
 

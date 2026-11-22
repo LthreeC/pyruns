@@ -24,6 +24,8 @@ from omegaconf import OmegaConf
 from pyruns._config import (
     DEFAULT_RUNNER_HEARTBEAT_SECONDS,
     DEFAULT_RUNNER_LEASE_SECONDS,
+    ENV_KEY_RUN_ATTEMPT_ID,
+    ENV_KEY_RUN_INDEX,
     ERROR_LOG_FILENAME,
     QUEUE_LOG_FILENAME,
     TASK_KIND_CONFIG,
@@ -71,6 +73,7 @@ from pyruns.utils.process_utils import (
     get_process_create_time,
     is_pid_running,
     kill_process,
+    process_environment_matches,
     process_identity_matches,
 )
 from pyruns.utils.settings import load_settings
@@ -359,6 +362,7 @@ class TaskManager:
         "finish_times",
         "pids",
         "pid_create_times",
+        "_attempt_id",
         "run_statuses",
         "durations",
         "exit_codes",
@@ -413,11 +417,15 @@ class TaskManager:
             if not include_tracks:
                 task = {key: value for key, value in task.items() if key != "tracks"}
             return copy.deepcopy(task)
-        return {
+        snapshot = {
             key: copy.deepcopy(task[key])
             for key in cls._SUMMARY_API_FIELDS
             if key in task and not (compact and key in cls._COMPACT_SUMMARY_OMIT_FIELDS)
         }
+        if compact and task.get("status") == "running":
+            # Keep one run's identity for liveness checks after releasing the registry lock.
+            snapshot["_current_process_identity"] = cls._current_process_identity(task)
+        return snapshot
 
     @classmethod
     def _finalize_full_task_snapshot(
@@ -460,22 +468,50 @@ class TaskManager:
             data.pop("gpu_wait", None)
         else:
             data["gpu_wait"] = gpu_wait
-        data["runner_lease_expired"] = cls._runner_lease_expired(data)
-        data.update(cls._task_origin(data))
+        lease_expired = cls._runner_lease_expired(data)
+        data["runner_lease_expired"] = lease_expired
+        data.update(cls._task_origin(data, lease_expired=lease_expired))
         data.pop("runner_device", None)
         return data
 
-    @staticmethod
-    def _task_origin(task: Dict[str, Any]) -> dict[str, str]:
+    @classmethod
+    def _task_origin(cls, task: Dict[str, Any], *, lease_expired: bool | None) -> dict[str, str | bool]:
         task_dir = str(task.get("dir") or "")
         source = task_source(task_dir)
         storage = source if source in {"shared", "local"} else "remote"
-        origin = {"task_source": source, "task_storage": storage,
-                  "runner_location": "remote" if storage == "remote" else runner_location(task)}
+        location = "remote" if storage == "remote" else runner_location(task)
+        origin: dict[str, str | bool] = {
+            "task_source": source,
+            "task_storage": storage,
+            "runner_location": location,
+            "local_process_verified": False,
+        }
         if storage == "remote":
             origin["display_name"] = os.path.basename(task_dir)
             origin["task_source_host"] = device_folder_host(source)
+        if (
+            task.get("status") == "running" and location != "remote"
+            and (location == "unknown" or lease_expired is not False)
+            and cls._local_run_process_is_alive(task, location)
+        ):
+            origin["local_process_verified"] = True
         return origin
+
+    @classmethod
+    def _local_run_process_is_alive(cls, task: Dict[str, Any], location: str) -> bool:
+        attempt_id = str(task.get("_attempt_id") or "")
+        if location != "local" and not attempt_id:
+            return False
+        identity = task.get("_current_process_identity")
+        pid, created_at = identity if identity is not None else cls._current_process_identity(task)
+        if not pid or created_at is None or not process_identity_matches(pid, created_at) or not is_pid_running(pid):
+            return False
+        # A matching PID and timestamp alone cannot disambiguate a legacy
+        # record copied from another machine with the same hostname.
+        return location == "local" or process_environment_matches(pid, {
+            ENV_KEY_RUN_ATTEMPT_ID: attempt_id,
+            ENV_KEY_RUN_INDEX: str(task["run_index"]),
+        })
 
     @staticmethod
     def _runner_lease_expired(task: Dict[str, Any]) -> bool | None:
@@ -512,6 +548,8 @@ class TaskManager:
         if task is None:
             return None
         if summary:
+            lease_expired = TaskManager._runner_lease_expired(task)
+            origin = TaskManager._task_origin(task, lease_expired=lease_expired)
             if compact:
                 task = {key: value for key, value in task.items() if key not in TaskManager._COMPACT_SUMMARY_OMIT_FIELDS}
             return {
@@ -550,11 +588,11 @@ class TaskManager:
                 "run_index": task.get("run_index", 0),
                 "queued_at": task.get("queued_at"),
                 "runner_host": task.get("runner_host"),
-                **TaskManager._task_origin(task),
+                **origin,
                 "lease_until": task.get("lease_until"),
                 "lease_heartbeat": task.get("lease_heartbeat"),
                 "cancel_requested_at": task.get("cancel_requested_at"),
-                "runner_lease_expired": TaskManager._runner_lease_expired(task),
+                "runner_lease_expired": lease_expired,
                 "gpu_wait": TaskManager._serialized_gpu_wait(task),
                 "preview_text": task.get("preview_text", ""),
                 "search_text": task.get("search_text", ""),
@@ -4372,29 +4410,29 @@ class TaskManager:
 
         try:
             run_index = int(info.get("run_index", 0) or 0)
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
             return None, None
         if run_index <= 0:
             return None, None
 
-        pids = list(info.get("pids", []) or [])
-        if run_index > len(pids):
+        pids = info.get("pids")
+        if not isinstance(pids, (list, tuple)) or run_index > len(pids):
             return None, None
         try:
             pid = int(pids[run_index - 1])
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
             return None, None
         if pid <= 0:
             return None, None
 
-        create_times = list(info.get("pid_create_times", []) or [])
-        if run_index > len(create_times):
+        create_times = info.get("pid_create_times")
+        if not isinstance(create_times, (list, tuple)) or run_index > len(create_times):
             return pid, None
         try:
             created_at = float(create_times[run_index - 1])
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
             return pid, None
-        if created_at <= 0 or created_at != created_at:
+        if not math.isfinite(created_at) or created_at <= 0:
             return pid, None
         return pid, created_at
 

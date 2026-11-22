@@ -70,16 +70,22 @@ test('task source and uncertainty remain distinct from running and log connectiv
     start_times: ['2026-11-15_12-00-00'], finish_times: [], pids: [123],
     run_statuses: ['running'], records: [], tracks: [], notes: '', env: {}, progress: 0,
   }
+  const local = {
+    ...task, name: 'local-task', dir: '/experiments/local-task', task_identity: 'local-original',
+    runner_host: 'local-worker', runner_location: 'unknown', local_process_verified: true,
+  }
   await page.route('**/api/tasks?*', route => route.fulfill({ json: {
-    items: [task], total: 1, offset: 0, limit: 50, has_more: false,
-    status_counts: { pending: 0, queued: 0, running: 1, completed: 0, failed: 0, cancelled: 0 },
+    items: [local, task], total: 2, offset: 0, limit: 50, has_more: false,
+    status_counts: { pending: 0, queued: 0, running: 2, completed: 0, failed: 0, cancelled: 0 },
   } }))
   await page.route('**/api/tasks/remote-task?*', route => route.fulfill({ json: task }))
-  await page.route('**/api/tasks/remote-task/logs?*', route => route.fulfill({ json: {
-    task_name: task.name, content: 'hello\n', offset: 6, selected_log: 'run1.log', available_logs: ['run1.log'], log_identity: 'log-1',
-  } }))
+  for (const observed of [task, local]) {
+    await page.route(`**/api/tasks/${observed.name}/logs?*`, route => route.fulfill({ json: {
+      task_name: observed.name, content: 'hello\n', offset: 6, selected_log: 'run1.log', available_logs: ['run1.log'], log_identity: 'log-1',
+    } }))
+    await page.routeWebSocket(`**/api/tasks/${observed.name}/logs/stream?*`, () => {})
+  }
   await page.routeWebSocket('**/api/tasks/events?*', socket => socket.send(JSON.stringify({ type: 'ready' })))
-  await page.routeWebSocket('**/api/tasks/remote-task/logs/stream?*', () => {})
   await page.goto('/manager?token=pyruns-e2e-access-token')
   await expect(page.getByText('gpu-worker-02', { exact: true })).toBeVisible()
   await expect(page.getByText('Runner status awaiting confirmation', { exact: true })).toBeVisible()
@@ -87,10 +93,21 @@ test('task source and uncertainty remain distinct from running and log connectiv
   const card = page.locator('[data-task-card="remote-task"]')
   await expect(card.getByText('Last reported running', { exact: true })).toBeVisible()
   await expect(card.getByRole('button', { name: 'Open details for remote-task' })).toHaveAccessibleDescription('Last reported running')
+  const localCard = page.locator('[data-task-card="local-task"]')
+  await expect(localCard.getByText('Running', { exact: true })).toBeVisible()
+  await expect(localCard.getByText('Runner status awaiting confirmation')).toHaveCount(0)
   await page.screenshot({ path: testInfo.outputPath('task-source.png') })
   task.cancel_requested_at = Date.now() / 1000
-  await page.goto('/monitor?task=remote-task')
+  await page.goto('/monitor')
+  const localRow = page.getByRole('button', { name: 'View local-task, running', exact: true })
+  const recordedRow = page.getByRole('button', { name: 'View remote-task, last reported running', exact: true })
+  await expect(localRow.getByRole('img', { name: 'Running', exact: true })).toHaveClass(/bg-amber-500/)
+  await expect(recordedRow.getByRole('img', { name: 'Last reported running', exact: true })).toHaveClass(/border-current/)
+  const header = page.locator('.monitor-header')
   const title = page.locator('.monitor-task-title')
+  await expect(header.getByText('Running', { exact: true })).toBeVisible()
+  await recordedRow.click()
+  await expect(header.getByText('Last reported running', { exact: true })).toBeVisible()
   const execution = title.getByRole('group', { name: 'Execution source' })
   await expect(execution.getByText('gpu-worker-02', { exact: true })).toBeVisible()
   const warning = execution.getByTitle('Cancellation was requested. Waiting for the runner to confirm the result.')

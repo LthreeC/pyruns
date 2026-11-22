@@ -27,6 +27,25 @@ def git(repo, *args):
     ).stdout.strip()
 
 
+def test_linux_runner_without_machine_id_uses_boot_and_pid_namespace(monkeypatch):
+    monkeypatch.setattr(runner_device.sys, "platform", "linux")
+    monkeypatch.setattr(runner_device, "_machine_fingerprint", lambda: None)
+    boot = "63d08101-c11b-4946-bfd6-7e31558049dc"
+    namespace = "pid:[4026531836]"
+    monkeypatch.setattr(runner_device.Path, "read_text", lambda self, **kwargs: boot)
+    monkeypatch.setattr(runner_device.os, "readlink", lambda path: namespace)
+    fingerprint = runner_device.local_runner_device.__wrapped__()
+    assert fingerprint
+    assert runner_device.local_runner_device.__wrapped__() == fingerprint
+    boot = "8cadc4d5-f199-4299-bc08-210b40a02250"
+    assert runner_device.local_runner_device.__wrapped__() not in (None, fingerprint)
+    boot = "63d08101-c11b-4946-bfd6-7e31558049dc"
+    namespace = "pid:[4026532345]"
+    assert runner_device.local_runner_device.__wrapped__() not in (None, fingerprint)
+    boot = ""
+    assert runner_device.local_runner_device.__wrapped__() is None
+
+
 @pytest.mark.parametrize("old_device", [None, "server-device"])
 def test_git_pull_never_claims_another_devices_tasks(tmp_path, monkeypatch, old_device):
     monkeypatch.setattr(TaskManager, "_scheduler_loop", lambda self: None)

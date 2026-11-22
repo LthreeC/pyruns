@@ -25,6 +25,8 @@ from pyruns._config import (
     DEFAULT_TASK_SUMMARY_SEARCH_TEXT_CHARS,
     ENV_KEY_CLI_TERMINAL_RUNTIME,
     ENV_KEY_ROOT,
+    ENV_KEY_RUN_ATTEMPT_ID,
+    ENV_KEY_RUN_INDEX,
     SCRIPT_INFO_FILENAME,
     SHELL_CONFIG_FILENAME,
     SHELL_WORKSPACE_NAME,
@@ -41,6 +43,7 @@ from pyruns.utils.runner_device import local_runner_device
 from pyruns.utils.config_utils import save_yaml
 from pyruns.utils.events import log_emitter
 from pyruns.utils.info_io import get_log_entries, load_task_info, save_task_info, update_task_info
+from pyruns.utils.process_utils import get_process_create_time, hidden_subprocess_kwargs
 from pyruns.web.app import create_app as _create_app
 from pyruns.web.runtime import (
     PyrunsRuntime,
@@ -9136,6 +9139,55 @@ def test_task_snapshots_expose_execution_source_without_changing_status(monkeypa
     assert "runner_lease_expired" not in task
     task["status"] = "completed"
     assert TaskManager.serialize_task(task, summary=summary)["runner_lease_expired"] is None
+
+
+def test_web_confirms_legacy_local_process_without_trusting_synced_metadata(tmp_path, monkeypatch):
+    from pyruns.utils import runner_device
+
+    monkeypatch.setattr(runner_device, "local_runner_device", lambda: "this-device")
+    workspace = _make_workspace(tmp_path, "main")
+    host = runner_device.local_runner_host()
+    attempt = "6f83e331be5e41fd835d46a53cfabc18"
+    env = {**os.environ, ENV_KEY_RUN_ATTEMPT_ID: attempt, ENV_KEY_RUN_INDEX: "1"}
+    with subprocess.Popen(
+        [sys.executable, "-c", "import sys; sys.stdin.read()"],
+        stdin=subprocess.PIPE, env=env, **hidden_subprocess_kwargs(),
+    ) as process:
+        created_at = get_process_create_time(process.pid)
+        assert created_at is not None
+        cases = {
+            "legacy-local": {},
+            "local-with-expired-lease": {"runner_device": "this-device", "lease_until": time.time() - 60},
+            "copied-another-attempt": {"_attempt_id": "another-attempt"},
+            "copied-another-device": {"runner_device": "other-device"},
+            "reused-pid": {"pid_create_times": [created_at - 10]},
+        }
+        for name, overrides in cases.items():
+            _add_task(workspace, name)
+            update_task_info(str(workspace / TASKS_DIR / name), lambda info: info.update({
+                "status": "running", "run_index": 1, "runner_host": host, "lease_until": time.time() + 60,
+                "pids": [process.pid], "pid_create_times": [created_at], "_attempt_id": attempt,
+                **overrides,
+            }))
+        runtime = _build_runtime(workspace, owns_task_lifecycle=False)
+        try:
+            client = TestClient(create_app(runtime))
+            expected = {"legacy-local", "local-with-expired-lease"}
+            for query in ("?summary=true&compact=true", "?summary=true", ""):
+                response = client.get(f"/api/tasks{query}")
+                assert response.status_code == 200
+                items = response.json()["items"]
+                assert {item["name"] for item in items if item["local_process_verified"]} == expected
+                assert {item["status"] for item in items} == {"running"}
+            assert client.get("/api/tasks/legacy-local").json()["local_process_verified"] is True
+            assert client.get("/api/tasks/local-with-expired-lease").json()["runner_lease_expired"] is True
+
+            assert process.stdin is not None
+            process.stdin.close()
+            process.wait(timeout=5)
+            assert client.get("/api/tasks/legacy-local").json()["local_process_verified"] is False
+        finally:
+            runtime.shutdown()
 
 
 def test_created_batch_only_starts_its_first_attempt_and_reports_skips(tmp_path):
