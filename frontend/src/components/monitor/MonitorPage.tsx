@@ -1161,7 +1161,10 @@ export default function MonitorPage() {
 
         return { ...appendMonitorLogContent(state, chunks), logOffset: nextOffset, logIdentity: nextIdentity }
       })
-      if (logAppended) markLogActivity(selectedTaskRef.current)
+      if (logAppended) {
+        const { logIdentity, logOffset } = useMonitorStore.getState()
+        markLogActivity(selectedTaskRef.current, activeLog === QUEUE_LOG_NAME ? '' : logIdentity, logOffset)
+      }
     }
   }, [markLogActivity])
 
@@ -1406,7 +1409,7 @@ export default function MonitorPage() {
         // The first incremental read can contain backlog accumulated while disconnected.
         pollHistoryEndRef.current = logs.file_size ?? null
       } else if (logs.content && logs.offset > Math.max(currentOffset, pollHistoryEndRef.current)) {
-        markLogActivity(selectedTaskRef.current)
+        markLogActivity(selectedTaskRef.current, requestedLog === QUEUE_LOG_NAME ? '' : nextIdentity, logs.offset)
       }
       const cursorChanged = shouldReplaceContent
         || logs.offset !== currentOffset || nextIdentity !== currentIdentity

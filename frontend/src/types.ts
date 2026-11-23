@@ -119,7 +119,6 @@ export interface Task {
   task_source?: string
   task_source_host?: string
   runner_lease_expired?: boolean | null
-  log_position?: { identity: string; size: number }
   lease_heartbeat?: number | null
   cancel_requested_at?: number | string | null
   lease_until?: number | string | null
@@ -319,6 +318,13 @@ export interface GeneratorPreview {
   count: number
   items: PreviewItem[]
   task_kind: TaskKind
+}
+
+export interface MonitorLogPosition {
+  name: string
+  run_index: number
+  identity: string
+  size: number
 }
 
 export interface TaskLogs {

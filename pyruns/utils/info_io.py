@@ -452,6 +452,24 @@ def validate_task_log_path(task_dir: str, filename: str) -> str:
     return _task_log_path(task_dir, filename, create_directory=False)
 
 
+def stat_task_run_log(task_dir: str, run_index: int) -> os.stat_result | None:
+    """Read a known run's metadata with one probe per managed directory and file."""
+    absolute = _workspace_abspath(task_dir)
+    log_dir = os.path.join(absolute, RUN_LOGS_DIR)
+    try:
+        validate_tasks_root(os.path.dirname(absolute))
+        for directory in (absolute, log_dir):
+            info = os.lstat(directory)
+            if not stat.S_ISDIR(info.st_mode) or _stat_is_link_or_reparse(info):
+                return None
+        info = os.lstat(os.path.join(log_dir, f"run{run_index}.log"))
+    except (OSError, ValueError):
+        return None
+    if not stat.S_ISREG(info.st_mode) or _stat_is_link_or_reparse(info):
+        return None
+    return info
+
+
 def prepare_task_log_path(task_dir: str, filename: str) -> str:
     """Return a safe writable task log path, creating its directory when needed."""
 

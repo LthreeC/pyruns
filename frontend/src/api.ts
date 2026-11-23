@@ -2,6 +2,7 @@ import type {
   Dashboard,
   GeneratorPreview,
   GeneratorResult,
+  MonitorLogPosition,
   Task,
   TaskLogs,
   TaskPage,
@@ -421,6 +422,11 @@ export const renameTask = (name: string, newName: string) =>
   request<{ ok: boolean; task: Task }>(`/api/tasks/${encodeURIComponent(name)}/rename?include_tracks=false`, {
     method: 'POST',
     body: JSON.stringify({ new_name: newName }),
+  })
+
+export const getMonitorLogPositions = (taskNames: string[], signal: AbortSignal) =>
+  request<{ items: MonitorLogPosition[] }>('/api/monitor/log-positions', {
+    method: 'POST', body: JSON.stringify({ task_names: taskNames }), signal,
   })
 
 export const getTaskLogs = (name: string, options: {

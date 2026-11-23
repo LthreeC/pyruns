@@ -55,7 +55,7 @@ from pyruns.utils.process_utils import is_pid_running, kill_process
 from pyruns.utils.sort_utils import task_sort_key, filter_tasks, sort_tasks_for_manager
 from pyruns.utils.info_io import (
     load_task_info, save_task_info, update_task_info, load_record_data,
-    get_log_options, resolve_log_path, validate_task_name, task_info_lock,
+    get_log_options, resolve_log_path, stat_task_run_log, validate_task_name, task_info_lock,
     MAX_RUN_HISTORY_SLOTS, MAX_TASK_INFO_BYTES,
 )
 from pyruns.utils.task_files import (
@@ -545,12 +545,15 @@ def test_task_info_rejects_simulated_reparse_workspace_ancestor(tmp_path, simula
 
     workspace = tmp_path / DEFAULT_ROOT_NAME / "train"
     task_dir = workspace / "tasks" / "safe"
-    task_dir.mkdir(parents=True)
+    log_dir = task_dir / RUN_LOGS_DIR
+    log_dir.mkdir(parents=True)
+    (log_dir / "run1.log").write_bytes(b"local output")
     (task_dir / TASK_INFO_FILENAME).write_text('{"name":"safe"}', encoding="utf-8")
     simulate_reparse(workspace)
 
     with pytest.raises(ValueError, match="Managed workspace path must not contain"):
         info_io.validate_task_directory(str(task_dir))
+    assert stat_task_run_log(str(task_dir), 1) is None
 
 
 def test_task_info_rejects_reparse_tasks_root_without_following_it(tmp_path, simulate_reparse):
@@ -618,6 +621,7 @@ def test_task_info_and_logs_reject_nested_symlink_escapes(tmp_path):
     with pytest.raises(ValueError, match="workspace boundary"):
         load_task_info(str(task_dir), raise_error=True)
     assert get_log_options(str(task_dir)) == {}
+    assert stat_task_run_log(str(task_dir), 1) is None
     empty_preview, _ = build_task_preview_and_search(task_kind=TASK_KIND_SHELL, config_text="# only comments\n")
     assert empty_preview == "(empty shell script)"
 

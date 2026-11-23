@@ -861,69 +861,66 @@ class _RouteRuntime:
         return call
 
 
-def test_monitor_list_observes_only_current_logs_of_live_running_tasks(tmp_path, monkeypatch):
+def test_monitor_log_positions_sample_current_runs_without_refreshing_task_lists(tmp_path, monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+
     from pyruns.web import app as web_app
-    from pyruns.web.runtime import TaskPage
 
-    tasks = []
-    paths = {}
-    for name, status, expired in [("shared", "running", False), ("copied", "running", True),
-                                  ("local", "running", None), ("finished", "completed", False)]:
-        task_dir = tmp_path / TASKS_DIR / name
-        log_dir = task_dir / "run_logs"
-        log_dir.mkdir(parents=True)
-        log = log_dir / "run2.log"
-        log.write_bytes(b"saved output")
-        paths[name] = log
-        tasks.append({"name": name, "dir": str(task_dir), "status": status, "run_index": 2,
-                      "runner_lease_expired": expired, "local_process_verified": name == "local"})
-
+    workspace = _make_workspace(tmp_path, "observe")
+    _add_task(workspace, "writer", status="running", log_text="older run")
+    _add_task(workspace, "finished", status="completed", log_text="finished output")
+    task_dir = workspace / TASKS_DIR / "writer"
+    log = task_dir / "run_logs" / "run2.log"
+    log.write_bytes(b"saved output")
+    update_task_info(str(task_dir), lambda info: info.update(run_index=2))
+    runtime = _build_runtime(workspace, owns_task_lifecycle=False)
     inspected = []
     entered = threading.Event()
     release = threading.Event()
-    validate = web_app.validate_task_log_path
+    stat_log = web_app.stat_task_run_log
 
-    def tracked(task_dir, filename):
-        inspected.append((Path(task_dir).name, filename))
+    def tracked(task_dir, run_index):
+        inspected.append((Path(task_dir).name, run_index))
         entered.set()
-        assert release.wait(4), "the list response waited on the log sampler"
-        return validate(task_dir, filename)
+        assert release.wait(4), "the task list waited on the log sampler"
+        return stat_log(task_dir, run_index)
 
-    monkeypatch.setattr(web_app, "validate_task_log_path", tracked)
-    client = TestClient(create_app(_RouteRuntime({"list_tasks": TaskPage(tasks, 4, 0, 50, False, {})})))
+    monkeypatch.setattr(web_app, "stat_task_run_log", tracked)
+    client = TestClient(create_app(runtime))
+    names = {"task_names": ["writer", "finished", "missing", "writer"]}
 
     def positions():
-        items = client.get("/api/tasks?compact=true&include_logs=true").json()["items"]
-        return {item["name"]: item["log_position"] for item in items if "log_position" in item}
+        response = client.post("/api/monitor/log-positions", json=names)
+        assert response.status_code == 200, response.text
+        return response.json()["items"]
 
-    def wait_for_positions(predicate):
-        deadline = time.monotonic() + 3
-        while time.monotonic() < deadline:
-            samples = positions()
-            if predicate(samples):
-                return samples
-            time.sleep(0.02)
-        pytest.fail("Monitor did not publish the expected log positions")
+    try:
+        with client, ThreadPoolExecutor(max_workers=1) as pool:
+            assert positions() == []  # An unopened Monitor does not load the task registry.
+            assert client.get("/api/tasks?summary=true&compact=true&include_logs=true").status_code == 200
+            assert not inspected
+            future = pool.submit(positions)
+            try:
+                assert entered.wait(2)
+                assert client.get("/api/tasks?summary=true&compact=true&include_logs=true&refresh=false").status_code == 200
+                assert inspected == [("writer", 2)]
+            finally:
+                release.set()
+            first, = future.result(timeout=4)
+            assert first == {"name": "writer", "run_index": 2, "identity": first["identity"], "size": len(b"saved output")}
+            assert first["identity"]
+            assert positions() == [first]
+            assert inspected == [("writer", 2)]
 
-    with client:
-        ordinary = client.get("/api/tasks?summary=true").json()
-        assert not inspected
-        assert all("log_position" not in item for item in ordinary["items"])
-
-        try:
-            assert positions() == {}
-            assert entered.wait(2)
-            assert positions() == {}
-            assert inspected == [("shared", "run2.log")]
-        finally:
-            release.set()
-
-        first = wait_for_positions(lambda samples: set(samples) == {"shared", "local"})
-        assert inspected == [("shared", "run2.log"), ("local", "run2.log")]
-        with paths["shared"].open("ab") as handle:
-            handle.write(b" appended")
-        expected = {**first["shared"], "size": len(b"saved output appended")}
-        wait_for_positions(lambda samples: samples.get("shared") == expected)
+            monkeypatch.setattr(web_app, "MONITOR_LOG_SAMPLE_TTL_SEC", 0)
+            with log.open("ab") as handle:
+                handle.write(b" appended")
+            assert positions() == [{**first, "size": len(b"saved output appended")}]
+            assert inspected == [("writer", 2), ("writer", 2)]
+            too_many = {"task_names": ["writer"] * (web_app.MAX_MONITOR_LOG_POSITIONS + 1)}
+            assert client.post("/api/monitor/log-positions", json=too_many).status_code == 400
+    finally:
+        runtime.shutdown()
 
 
 def test_local_server_rejects_cross_origin_and_dns_rebinding_requests():

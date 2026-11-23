@@ -1288,6 +1288,11 @@ class PyrunsRuntime:
         return os.path.normcase(os.path.abspath(self.root_dir)), task
 
     @_with_stable_workspace
+    def get_running_log_sources(self, task_names: list[str]) -> dict[str, tuple[str, int]]:
+        manager = self._task_manager
+        return manager.get_running_log_sources(task_names) if manager is not None else {}
+
+    @_with_stable_workspace
     def list_tasks(
         self,
         *,

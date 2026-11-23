@@ -38,7 +38,7 @@ async function prepareMonitor(page: Page, extraTasks: Record<string, unknown>[] 
     }) as typeof window.fetch
     Object.assign(window, { WebSocket: ControlledSocket, monitorTransportTest: state })
   })
-  const task = { name: 'live-task', status: 'running', run_index: 1, task_kind: 'shell' }
+  const task = { name: 'live-task', status: 'running', run_index: 1, task_kind: 'shell', runner_lease_expired: false }
   const tasks = [task, ...extraTasks]
   await page.route('**/api/tasks?*', route => route.fulfill({ json: {
     items: tasks, total: tasks.length, offset: 0, limit: 200, has_more: false,
@@ -90,11 +90,7 @@ function stream(page: Page, content: string, offset: number, identity = 'origina
 
 test('Monitor animates a task row while new output keeps arriving', async ({ page }) => {
   await page.emulateMedia({ reducedMotion: 'no-preference' })
-  const shared = { name: 'shared-writer', status: 'running', run_index: 1, task_kind: 'shell',
-    log_position: { identity: 'shared-file', size: 10 } }
-  const copied = { name: 'git-snapshot', status: 'running', run_index: 1, task_kind: 'shell',
-    runner_location: 'remote', runner_lease_expired: true }
-  const rows = await prepareMonitor(page, [shared, copied])
+  const rows = await prepareMonitor(page)
   const header = page.locator('.task-status-badge .task-status-dot')
   const row = (name: string) => page.locator(`[data-monitor-page-task="${name}"]`)
   const active = 'data-log-activity'
@@ -104,18 +100,6 @@ test('Monitor animates a task row while new output keeps arriving', async ({ pag
   await page.clock.runFor(150)
   await expect(rows).toContainText(first.trim())
   await expect(header).not.toHaveAttribute(active)
-
-  shared.log_position.size = 20
-  await page.getByRole('button', { name: 'Refresh tasks', exact: true }).click()
-  await expect(row('shared-writer')).toHaveAttribute(active, 'true')
-  await expect(row('git-snapshot')).not.toHaveAttribute(active)
-  await page.clock.runFor(2700)
-  await expect(row('shared-writer')).not.toHaveAttribute(active)
-  shared.log_position = { identity: 'replacement', size: 40 }
-  const refreshed = page.waitForResponse(response => new URL(response.url()).pathname === '/api/tasks')
-  await page.getByRole('button', { name: 'Refresh tasks', exact: true }).click()
-  await refreshed
-  await expect(row('shared-writer')).not.toHaveAttribute(active)
 
   const end = byteLength(initial + first + second)
   await stream(page, second, end, 'original', false, true)
@@ -135,12 +119,121 @@ test('Monitor animates a task row while new output keeps arriving', async ({ pag
   expect((await snapshot(page)).reads.length).toBe(reads)
   await page.emulateMedia({ reducedMotion: 'reduce' })
   expect(await strip.evaluate(el => getComputedStyle(el, '::after').animationName)).toBe('none')
-  await page.clock.runFor(2700)
+  await page.clock.runFor(45_000)
+  await expect(strip).toBeVisible()
+  await page.clock.fastForward(46_000)
   await expect(header).not.toHaveAttribute(active)
   await expect(strip).toHaveCount(0)
   await stream(page, second, end, 'original', false, true)
   await page.clock.runFor(150)
   await expect(header).not.toHaveAttribute(active)
+})
+
+test('Monitor observes new log output after switching to a finished task without refreshing the list', async ({ page }) => {
+  const shared = { name: 'shared-writer', status: 'running', run_index: 1, task_kind: 'shell', runner_lease_expired: false }
+  const copied = { name: 'git-snapshot', status: 'running', run_index: 1, task_kind: 'shell',
+    runner_location: 'remote', runner_lease_expired: true }
+  const history = { name: 'finished-task', status: 'completed', run_index: 1, task_kind: 'shell' }
+  const sharedPosition = { name: shared.name, run_index: 1, identity: 'shared-file', size: 10 }
+  const livePosition = { name: 'live-task', run_index: 1, identity: 'original', size: byteLength(initial) }
+  const polls: string[][] = []
+  let lists = 0
+  page.on('request', request => {
+    if (new URL(request.url()).pathname === '/api/tasks') lists++
+  })
+  await page.route('**/api/monitor/log-positions', route => {
+    const names: string[] = route.request().postDataJSON().task_names
+    polls.push(names)
+    return route.fulfill({ json: { items: [sharedPosition, livePosition].filter(position => names.includes(position.name)) } })
+  })
+  await page.route('**/api/tasks/finished-task?*', route => route.fulfill({ json: history }))
+  await page.route('**/api/tasks/finished-task/logs?*', route => route.fulfill({ json: {
+    selected_log: 'run1.log', available_logs: ['run1.log'], log_identity: 'history',
+    content: 'finished output\n', offset: byteLength('finished output\n'),
+  } }))
+  await prepareMonitor(page, [shared, copied, history])
+  const row = (name: string) => page.locator(`[data-monitor-page-task="${name}"]`)
+  const active = 'data-log-activity'
+  const end = byteLength(initial + first)
+  await stream(page, first, end, 'original', false, true)
+  await page.clock.runFor(150)
+  await expect(row('live-task')).toHaveAttribute(active, 'true')
+  const listBaseline = lists
+  await page.clock.runFor(2000)
+  await expect.poll(() => polls.at(-1)).toEqual(['shared-writer'])
+  await expect(row(shared.name)).not.toHaveAttribute(active)
+
+  const historyLoaded = page.waitForResponse(response => new URL(response.url()).pathname === '/api/tasks/finished-task/logs')
+  await row(history.name).click()
+  await historyLoaded
+  await page.clock.runFor(250)
+  await expect(page.getByRole('region', { name: 'Read-only logs for finished-task' }).locator('.xterm-rows')).toContainText('finished output')
+  sharedPosition.size = 20
+  livePosition.size = end + byteLength(second)
+  await page.clock.runFor(2000)
+  await expect.poll(() => polls.at(-1)).toEqual(['live-task', 'shared-writer'])
+  await expect(row('live-task')).toHaveAttribute(active, 'true')
+  await expect(row(shared.name)).toHaveAttribute(active, 'true')
+  await expect(row(copied.name)).not.toHaveAttribute(active)
+
+  sharedPosition.identity = 'replacement'
+  sharedPosition.size = 40
+  await page.clock.runFor(30_000)
+  await expect(row(shared.name)).toHaveAttribute(active, 'true')
+  await expect(row('live-task')).toHaveAttribute(active, 'true')
+  expect(lists).toBe(listBaseline)
+  livePosition.size += byteLength(second)
+  const continued = page.waitForResponse(response => new URL(response.url()).pathname === '/api/monitor/log-positions')
+  await page.clock.runFor(2000)
+  await continued
+  await page.clock.fastForward(59_000)
+  await expect(row(shared.name)).not.toHaveAttribute(active)
+  await expect(row('live-task')).toHaveAttribute(active, 'true')
+  await page.clock.fastForward(32_000)
+  await expect(row('live-task')).not.toHaveAttribute(active)
+
+  await page.evaluate(() => {
+    Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => 'hidden' })
+    document.dispatchEvent(new Event('visibilitychange'))
+  })
+  const count = polls.length
+  await page.clock.runFor(8000)
+  expect(polls).toHaveLength(count)
+})
+
+test('returning to Monitor restores recent activity before reading logs again', async ({ page }) => {
+  const other = { name: 'quiet-task', status: 'running', run_index: 1, task_kind: 'shell', runner_lease_expired: false }
+  let polls = 0
+  await page.route('**/api/monitor/log-positions', route => {
+    polls++
+    return route.fulfill({ json: { items: [] } })
+  })
+  await prepareMonitor(page, [other])
+  const row = page.locator('[data-monitor-page-task="live-task"]')
+  const active = 'data-log-activity'
+  const home = page.getByRole('link', { name: 'Home', exact: true })
+  const monitor = page.getByRole('link', { name: 'Monitor', exact: true })
+
+  await stream(page, first, byteLength(initial + first), 'original', false, true)
+  await page.clock.runFor(150)
+  await expect(row).toHaveAttribute(active, 'true')
+  await expect.poll(() => polls).toBeGreaterThan(0)
+
+  await home.click()
+  await expect(row).toHaveCount(0)
+  const pollCount = polls
+  await page.clock.fastForward(10_000)
+  expect(polls).toBe(pollCount)
+  await monitor.click()
+  // The API returns no samples and virtual time is still paused.
+  await expect(row).toHaveAttribute(active, 'true')
+
+  await home.click()
+  await expect(row).toHaveCount(0)
+  await page.clock.fastForward(85_000)
+  await monitor.click()
+  await expect(row).toBeVisible()
+  await expect(row).not.toHaveAttribute(active)
 })
 
 for (const reportsSize of [true, false]) test(

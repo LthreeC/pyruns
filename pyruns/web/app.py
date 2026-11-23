@@ -10,7 +10,6 @@ import queue
 import secrets
 import signal
 import socket
-import stat
 import sys
 import threading
 import time
@@ -41,7 +40,7 @@ from pyruns._config import (
 from pyruns.core.task_manager import TaskStateConflict
 from pyruns.utils.events import log_emitter
 from pyruns.utils.file_io import map_disk_reads
-from pyruns.utils.info_io import MAX_RUN_HISTORY_SLOTS, validate_task_log_path
+from pyruns.utils.info_io import MAX_RUN_HISTORY_SLOTS, stat_task_run_log, validate_task_log_path
 from pyruns.utils.log_io import log_file_identity
 from pyruns.utils.shell_runtime import get_follow_shell_runtime
 from pyruns.utils.search_query import DEFAULT_MAX_SEARCH_RESULTS, SearchQueryError
@@ -96,7 +95,7 @@ MAX_TASK_BATCH_ITEMS = 10_000
 MAX_TASK_PAGE_SIZE = 10_000
 MAX_MONITOR_LOG_POSITIONS = 200
 MONITOR_LOG_SAMPLE_SIZE = 32
-MONITOR_LOG_SAMPLE_INTERVAL_SEC = 2.0
+MONITOR_LOG_SAMPLE_TTL_SEC = 1.5
 MONITOR_LOG_CACHE_SIZE = 800
 MAX_TASK_NOTES_CHARS = 1_000_000
 MAX_ENVIRONMENT_ITEMS = 1_024
@@ -230,62 +229,47 @@ def _compact_monitor_task(task: dict[str, Any]) -> dict[str, Any]:
 
 
 def _monitor_log_position(key: tuple[str, int]) -> dict[str, Any] | None:
-    task_dir, run_index = key
-    try:
-        path = validate_task_log_path(task_dir, f"run{run_index}.log")
-        info = os.stat(path, follow_symlinks=False)
-    except (OSError, ValueError):
-        return None
-    if not stat.S_ISREG(info.st_mode) or not info.st_ino:
+    info = stat_task_run_log(*key)
+    if info is None or not info.st_ino:
         return None
     return {"identity": f"{info.st_dev:x}:{info.st_ino:x}", "size": info.st_size}
 
 
 class _MonitorLogPositions:
-    """Sample current log metadata without making task list requests wait on disk."""
+    """Share a bounded, read-only metadata sampler between Monitor tabs."""
 
     def __init__(self) -> None:
         self._cache: dict[tuple[str, int], tuple[float, dict[str, Any] | None]] = {}
-        self._pending: asyncio.Task[None] | None = None
-        self._next_sample_at = 0.0
+        self._sample_lock = asyncio.Lock()
 
-    def attach(self, items: list[dict[str, Any]]) -> None:
-        # Only the server event loop reads or publishes samples. The worker
-        # receives plain path and run keys and holds no workspace lock.
-        candidates: dict[tuple[str, int], float] = {}
-        for item in items[:MAX_MONITOR_LOG_POSITIONS]:
-            if item.get("status") != "running" or not (
-                item.get("runner_lease_expired") is False or item.get("local_process_verified")
-            ):
-                continue
-            task_dir, run_index = item.get("dir"), item.get("run_index")
-            if not isinstance(task_dir, str) or not os.path.isabs(task_dir) or not isinstance(run_index, int) or run_index < 1:
-                continue
-            key = (task_dir, run_index)
-            sampled_at, position = self._cache.get(key, (0.0, None))
-            if position is not None:
-                item["log_position"] = position
-            candidates[key] = sampled_at
-        now = time.monotonic()
-        if candidates and self._pending is None and now >= self._next_sample_at:
-            # Rotate through the least recently sampled rows on large pages.
-            keys = sorted(candidates, key=candidates.__getitem__)[:MONITOR_LOG_SAMPLE_SIZE]
-            self._next_sample_at = now + MONITOR_LOG_SAMPLE_INTERVAL_SEC
-            self._pending = asyncio.create_task(self._sample(keys))
+    def _sample_time(self, key: tuple[str, int]) -> float:
+        sample = self._cache.get(key)
+        return sample[0] if sample is not None else float("-inf")
 
-    async def _sample(self, keys: list[tuple[str, int]]) -> None:
-        try:
-            positions = await run_in_threadpool(lambda: map_disk_reads(keys, _monitor_log_position, max_workers=4))
-            sampled_at = time.monotonic()
-            for key, position in zip(keys, positions, strict=True):
-                self._cache.pop(key, None)
-                self._cache[key] = (sampled_at, position)
-            while len(self._cache) > MONITOR_LOG_CACHE_SIZE:
-                self._cache.pop(next(iter(self._cache)))
-        except Exception:
-            logger.debug("Could not sample Monitor log positions", exc_info=True)
-        finally:
-            self._pending = None
+    async def read(self, sources: dict[str, tuple[str, int]]) -> list[dict[str, Any]]:
+        if not sources:
+            return []
+        async with self._sample_lock:
+            cutoff = time.monotonic() - MONITOR_LOG_SAMPLE_TTL_SEC
+            # Rotate large pages through the oldest samples. Concurrent tabs
+            # reuse recent results, including missing logs.
+            due = [key for key in dict.fromkeys(sources.values()) if self._sample_time(key) <= cutoff]
+            keys = sorted(due, key=self._sample_time)[:MONITOR_LOG_SAMPLE_SIZE]
+            if keys:
+                # The worker holds no workspace or task-manager lock.
+                positions = await run_in_threadpool(lambda: map_disk_reads(keys, _monitor_log_position, max_workers=4))
+                sampled_at = time.monotonic()
+                for key, position in zip(keys, positions, strict=True):
+                    self._cache.pop(key, None)
+                    self._cache[key] = (sampled_at, position)
+                while len(self._cache) > MONITOR_LOG_CACHE_SIZE:
+                    self._cache.pop(next(iter(self._cache)))
+            return [
+                {"name": name, "run_index": key[1], **position}
+                for name, key in sources.items()
+                if (sample := self._cache.get(key)) is not None and sample[0] >= cutoff
+                and (position := sample[1]) is not None
+            ]
 
 
 def _authority_parts(
@@ -378,6 +362,10 @@ class TaskBatchActionRequest(RequestModel):
 class TaskBatchDeleteRequest(RequestModel):
     """Batch delete payload."""
 
+    task_names: list[str] = Field(default_factory=list)
+
+
+class MonitorLogPositionsRequest(RequestModel):
     task_names: list[str] = Field(default_factory=list)
 
 
@@ -1194,10 +1182,14 @@ def create_app(
                 limit=limit, refresh=refresh, force_refresh=force_refresh,
                 summary=summary, compact=compact, sort_mode=sort, search_field=search_field,
             )
-        result = serialize_page(page)
-        if not query and compact and include_logs:
-            monitor_log_positions.attach(result["items"])
-        return result
+        return serialize_page(page)
+
+    @app.post("/api/monitor/log-positions")
+    async def get_monitor_log_positions(payload: MonitorLogPositionsRequest) -> dict[str, Any]:
+        if len(payload.task_names) > MAX_MONITOR_LOG_POSITIONS:
+            raise HTTPException(status_code=400, detail=f"At most {MAX_MONITOR_LOG_POSITIONS} tasks can be sampled")
+        sources = await run_in_threadpool(get_runtime().get_running_log_sources, payload.task_names)
+        return {"items": await monitor_log_positions.read(sources)}
 
     @app.post("/api/tasks/reorder")
     def reorder_tasks(

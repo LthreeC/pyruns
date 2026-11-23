@@ -694,6 +694,16 @@ class TaskManager:
             return self.serialize_task(snapshot, summary=True, compact=compact)
         return self._finalize_full_task_snapshot(snapshot, include_tracks=include_tracks) if snapshot is not None else None
 
+    def get_running_log_sources(self, task_names: list[str]) -> dict[str, tuple[str, int]]:
+        """Look up current run logs without refreshing task metadata or probing PIDs."""
+        with self._lock:
+            return {
+                name: (task["dir"], run_index)
+                for name in task_names
+                if (task := self._tasks_by_name.get(name)) is not None and task.get("status") == "running"
+                and isinstance(run_index := task.get("run_index"), int) and run_index > 0
+            }
+
     def get_task_summary_page(
         self,
         *,

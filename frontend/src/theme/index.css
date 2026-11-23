@@ -872,7 +872,7 @@ dialog::backdrop {
     position: absolute;
     inset: 0;
     background: linear-gradient(90deg, transparent 17%, var(--monitor-log-color) 45% 55%, transparent 83%);
-    animation: monitor-log-sweep 1.65s linear infinite;
+    animation: monitor-log-sweep 2.4s steps(60, jump-none) infinite;
   }
 }
 @keyframes monitor-log-sweep {
