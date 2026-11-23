@@ -12,7 +12,7 @@ import sys
 import threading
 import time
 from dataclasses import dataclass, field
-from concurrent.futures import CancelledError
+from concurrent.futures import CancelledError, Future
 from contextlib import contextmanager
 from contextvars import ContextVar
 from functools import wraps
@@ -23,6 +23,7 @@ from omegaconf import DictConfig
 
 import pyruns._config as _cfg
 from pyruns._config import (
+    CONFIG_FILENAME,
     CONFIG_DEFAULT_FILENAME,
     SCRIPT_INFO_FILENAME,
     TASK_INFO_FILENAME,
@@ -62,6 +63,7 @@ from pyruns.utils.config_utils import (
     load_config_text,
     list_template_files,
     preview_config_line,
+    template_task_entry,
     to_container,
     validate_config_types_against_template,
 )
@@ -78,14 +80,14 @@ from pyruns.utils.info_io import (
     validate_workspace_directory,
 )
 from pyruns.utils.log_io import log_file_identity, read_last_bytes, read_last_lines, safe_read_log
-from pyruns.utils.file_io import read_bounded_bytes, regular_file_opener
+from pyruns.utils.file_io import map_disk_reads, read_bounded_bytes, regular_file_opener
 from pyruns.utils.log_search import LogSearch, LogSearchResult
 from pyruns.utils.process_utils import hidden_subprocess_kwargs
 from pyruns.utils.settings import ensure_settings_file, load_settings, save_settings_for_root
 from pyruns.utils.shell_runtime import get_shell_runtime_for_workspace
 from pyruns.utils.sort_utils import filter_tasks, sort_tasks_for_manager
-from pyruns.utils.runner_device import local_runner_host
-from pyruns.utils.task_storage import new_task_root, task_source, task_storage_scope, visible_task_roots
+from pyruns.utils.runner_device import local_runner_host, runner_location
+from pyruns.utils.task_storage import device_folder_host, new_task_root, task_source, task_storage_scope, visible_task_roots
 from pyruns.utils.search_query import DEFAULT_MAX_SEARCH_RESULTS, SearchBudget, SearchQuery
 from pyruns.utils.task_files import (
     MAX_TASK_PAYLOAD_BYTES,
@@ -482,6 +484,7 @@ class PyrunsRuntime:
         self._tasks_loaded = False
         self._log_search = LogSearch()
         self._conda_envs_cache: Dict[str, Any] | None = None
+        self._template_scan: tuple[int, Future[List[Dict[str, str]]]] | None = None
         self.reload(root_dir)
 
     def _check_expected_workspace(self, workspace_root: str | None = None) -> None:
@@ -682,7 +685,7 @@ class PyrunsRuntime:
             task_manager.shutdown()
 
     @_with_stable_workspace
-    def change_run_root(self, new_root: str) -> Dict[str, Any]:
+    def change_run_root(self, new_root: str, *, include_templates: bool = True) -> Dict[str, Any]:
         """Switch the active workspace after validation."""
         resolved_root = self._normalize_path(new_root)
         if not self._has_workspace_markers(resolved_root):
@@ -690,7 +693,7 @@ class PyrunsRuntime:
                 f"Run Root must contain {TASKS_DIR}/, {CONFIG_DEFAULT_FILENAME}, or {SCRIPT_INFO_FILENAME}"
             )
         self.reload(resolved_root)
-        return self.get_workspace_info()
+        return self.get_workspace_info(include_templates=include_templates)
 
     @_with_stable_workspace
     def get_workspace_info(self, *, include_templates: bool = True) -> Dict[str, Any]:
@@ -714,6 +717,11 @@ class PyrunsRuntime:
             working_root = self._normalize_path(os.path.dirname(script_path))
         else:
             working_root = ""
+        default_template = None
+        if workspace_kind != _cfg.WORKSPACE_KIND_SHELL:
+            default_path = os.path.join(self.root_dir, CONFIG_DEFAULT_FILENAME).replace("\\", "/")
+            if os.path.isfile(default_path):
+                default_template = {"value": default_path, "label": self._default_template_label(script_info)}
         return {
             "run_root": self.root_dir,
             "working_root": working_root,
@@ -724,6 +732,7 @@ class PyrunsRuntime:
             "script_name": str(script_info.get("script_name", "") or ""),
             "config_default_source": str(script_info.get("config_default_source", "") or ""),
             "config_default_source_name": str(script_info.get("config_default_source_name", "") or ""),
+            "default_template": default_template,
             "project_root": project_root,
             "workspace_kind": workspace_kind,
             "workspace_ready": workspace_ready,
@@ -987,93 +996,94 @@ class PyrunsRuntime:
             self._conda_envs_cache = None
         return self.get_runtime_info(refresh_providers=refresh_providers)
 
-    @_with_stable_workspace
     def list_templates(self) -> List[Dict[str, str]]:
-        """Return loadable template options for the Generator page."""
-        script_info = load_script_info(self.root_dir)
-        if normalize_workspace_kind(script_info.get("workspace_kind")) == _cfg.WORKSPACE_KIND_SHELL:
-            return self.list_shell_templates(script_info)
-        options = list_template_files(self.root_dir)
-        source_name = str(script_info.get("config_default_source_name", "") or "")
-        result = []
-        for value, label in options.items():
-            display_label = label
-            if source_name and os.path.basename(value) == CONFIG_DEFAULT_FILENAME:
-                display_label = f"{label} (from {source_name})"
-            result.append({"value": value, "label": display_label})
+        """Share a catalog read without holding the workspace lock during disk I/O."""
+        with self._workspace_lock:
+            self._check_expected_workspace()
+            root_dir, tasks_dir, epoch = self.root_dir, self.tasks_dir, self._workspace_epoch
+            pending = self._template_scan
+            if pending is None or pending[0] != epoch:
+                pending = (epoch, Future())
+                self._template_scan = pending
+                owns_scan = True
+            else:
+                owns_scan = False
+        future = pending[1]
+        if owns_scan:
+            try:
+                future.set_result(self._read_template_options(root_dir, tasks_dir))
+            except BaseException as exc:
+                future.set_exception(exc)
+            finally:
+                with self._workspace_lock:
+                    if self._template_scan is pending:
+                        self._template_scan = None
+        result = future.result()
+        with self._workspace_lock:
+            if epoch != self._workspace_epoch:
+                raise WorkspaceChangedError("Workspace changed; reload the workspace before retrying.")
         return result
+
+    @staticmethod
+    def _default_template_label(script_info: Dict[str, Any]) -> str:
+        source_name = str(script_info.get("config_default_source_name", "") or "")
+        if source_name:
+            return f"{CONFIG_DEFAULT_FILENAME} (from {source_name})"
+        return CONFIG_DEFAULT_FILENAME
+
+    def _read_template_options(self, root_dir: str, tasks_dir: str) -> List[Dict[str, str]]:
+        script_info = load_script_info(root_dir)
+        if normalize_workspace_kind(script_info.get("workspace_kind")) == _cfg.WORKSPACE_KIND_SHELL:
+            return self._list_shell_templates(tasks_dir)
+        return [
+            {"value": value, "label": self._default_template_label(script_info) if os.path.isabs(value) else label}
+            for value, label in list_template_files(root_dir).items()
+        ]
 
     @_with_stable_workspace
     def list_shell_templates(self, script_info: Dict[str, Any] | None = None) -> List[Dict[str, str]]:
         """Return existing shell task payloads that can seed shell-mode tasks."""
+        return self._list_shell_templates(self.tasks_dir)
 
+    @staticmethod
+    def _shell_template_payload(task_dir: str) -> tuple[str, Dict[str, Any]]:
+        resolved_paths: dict[str, str | None] = {}
+        info = load_task_metadata(task_dir, _resolved_paths=resolved_paths)
+        if normalize_task_kind(info.get("task_kind")) != _cfg.TASK_KIND_SHELL:
+            return "", info
+        configured_file = str(info.get("config_file", "") or "")
+        for name in dict.fromkeys((configured_file, *_cfg.SHELL_CONFIG_FILENAMES)):
+            if not name:
+                continue
+            try:
+                payload = resolve_task_payload_path(task_dir, name, _resolved_paths=resolved_paths)
+            except ValueError:
+                continue
+            if os.path.isfile(payload):
+                return payload, info
+        return "", info
+
+    def _list_shell_templates(self, tasks_root: str) -> List[Dict[str, str]]:
         items: List[Dict[str, str]] = []
 
-        for tasks_dir in visible_task_roots(self.tasks_dir):
+        def load_entry(task_dir: str) -> Dict[str, Any] | None:
+            payload, info = self._shell_template_payload(task_dir)
+            return template_task_entry(task_dir, payload, info) if payload else None
+
+        for tasks_dir in visible_task_roots(tasks_root):
             validate_tasks_root(tasks_dir)
             if not os.path.isdir(tasks_dir):
                 continue
-            task_entries: List[Dict[str, Any]] = []
-            for dir_name in sorted(os.listdir(tasks_dir)):
-                if dir_name.startswith("."):
-                    continue
-                task_dir = os.path.join(tasks_dir, dir_name)
-                if not os.path.isdir(task_dir):
-                    continue
-                task_info = load_task_metadata(task_dir)
-                if normalize_task_kind(task_info.get("task_kind")) != _cfg.TASK_KIND_SHELL:
-                    continue
-
-                configured_file = str(task_info.get("config_file", "") or "")
-                candidates = [configured_file] if configured_file else []
-                candidates.extend(name for name in _cfg.SHELL_CONFIG_FILENAMES if name not in candidates)
-
-                payload_name = ""
-                for name in candidates:
-                    if not name:
-                        continue
-                    try:
-                        payload_path = resolve_task_payload_path(task_dir, name)
-                    except ValueError:
-                        continue
-                    if os.path.isfile(payload_path):
-                        payload_name = os.path.relpath(payload_path, task_dir)
-                        break
-                if not payload_name:
-                    continue
-
-                value = os.path.join(os.path.basename(tasks_dir), dir_name, payload_name).replace("\\", "/")
-                try:
-                    fallback_mtime = os.path.getmtime(os.path.join(task_dir, _cfg.TASK_INFO_FILENAME))
-                except OSError:
-                    try:
-                        fallback_mtime = os.path.getmtime(os.path.join(task_dir, payload_name))
-                    except OSError:
-                        fallback_mtime = 0.0
-                task_entries.append(
-                    {
-                        "name": dir_name,
-                        "status": task_info.get("status", "pending"),
-                        "created_at": task_info.get("created_at")
-                        or (
-                            time.strftime("%Y-%m-%d_%H-%M-%S", time.localtime(fallback_mtime))
-                            if fallback_mtime
-                            else ""
-                        ),
-                        "start_times": task_info.get("start_times", []),
-                        "finish_times": task_info.get("finish_times", []),
-                        "pinned": task_info.get("pinned", False),
-                        "task_order": task_info.get("task_order"),
-                        "_template_path": value,
-                    }
-                )
-
+            with os.scandir(tasks_dir) as entries:
+                folders = sorted(entry.path for entry in entries
+                                 if not entry.name.startswith(".") and entry.is_dir(follow_symlinks=False))
+            task_entries = [entry for entry in map_disk_reads(folders, load_entry) if entry is not None]
             for task in sort_tasks_for_manager(task_entries):
                 items.append({"value": str(task["_template_path"]), "label": str(task["name"])})
 
         return items
 
-    def _fallback_template_label(self, path: str, template_value: str, script_info: Dict[str, Any]) -> str:
+    def _fallback_template_label(self, path: str, script_info: Dict[str, Any]) -> str:
         """Return a readable label for templates loaded outside the picker list."""
 
         workspace_kind = normalize_workspace_kind(script_info.get("workspace_kind"))
@@ -1133,11 +1143,24 @@ class PyrunsRuntime:
         content = self._read_template_text(path, template_value)
 
         script_info = load_script_info(self.root_dir)
-        label = next(
-            (item["label"] for item in self.list_templates() if item["value"] == path or item["value"] == template_value),
-            self._fallback_template_label(path, template_value, script_info),
-        )
         workspace_kind = normalize_workspace_kind(script_info.get("workspace_kind"))
+        default_path = os.path.join(self.root_dir, CONFIG_DEFAULT_FILENAME)
+        parts = str(template_value).split("/")
+        if workspace_kind != _cfg.WORKSPACE_KIND_SHELL and os.path.normcase(path) == os.path.normcase(self._normalize_path(default_path)):
+            label = self._default_template_label(script_info)
+        elif len(parts) >= 3 and not parts[1].startswith(".") and parts[0] in {
+            os.path.basename(root) for root in visible_task_roots(self.tasks_dir)
+        }:
+            task_dir = os.path.join(self.root_dir, parts[0], parts[1])
+            if workspace_kind == _cfg.WORKSPACE_KIND_SHELL:
+                payload, _ = self._shell_template_payload(task_dir)
+            else:
+                payload = os.path.join(task_dir, CONFIG_FILENAME)
+            label = parts[1] if payload and os.path.normcase(self._normalize_path(payload)) == os.path.normcase(path) else (
+                self._fallback_template_label(path, script_info)
+            )
+        else:
+            label = self._fallback_template_label(path, script_info)
         suffix = os.path.splitext(path)[1].lower()
         mode_hint = "shell" if (
             workspace_kind == _cfg.WORKSPACE_KIND_SHELL
@@ -1644,7 +1667,7 @@ class PyrunsRuntime:
         return self.get_task(task_name, include_tracks=include_tracks) or task
 
     @_with_stable_workspace
-    def cancel_task(self, task_name: str, *, include_tracks: bool = True) -> Dict[str, Any]:
+    def cancel_task(self, task_name: str, *, include_tracks: bool = True, local_only: bool = False) -> Dict[str, Any]:
         """Request cancellation from the runner that owns the task."""
         manager = self.task_manager
         task = manager.get_task(task_name, summary=True)
@@ -1659,6 +1682,11 @@ class PyrunsRuntime:
             if status in {"completed", "failed", "cancelled"}:
                 return self.get_task(task_name, include_tracks=include_tracks) or task
             raise ValueError(f"Task '{task_name}' cannot be cancelled")
+        if local_only:
+            remote_folder = task_storage_scope(task_dir) == "remote"
+            if remote_folder or runner_location(info, manager.runner_host) == "remote":
+                host = info.get("runner_host") or (device_folder_host(task_source(task_dir)) if remote_folder else "")
+                raise ValueError(f"Stop this task on {host or 'the execution device'}.")
         requested_run_index = active_task_run_index(info)
         requested_attempt_id = str(info.get("_attempt_id", "") or "")
         self.invalidate_cache([task_name])
@@ -1905,7 +1933,7 @@ class PyrunsRuntime:
 
         with self._workspace_lock:
             workspace_root = os.path.normcase(os.path.abspath(self.root_dir))
-            workspace = self.get_workspace_info()
+            workspace = self.get_workspace_info(include_templates=False)
         initial_dir = str(workspace.get("working_root", "") or workspace.get("project_root", "") or os.getcwd())
         shell_path = choose_shell_file(initial_dir)
         if not shell_path:
@@ -2217,7 +2245,7 @@ class PyrunsRuntime:
         return self.metrics_sampler.get_process_details(pid)
 
     @_with_stable_workspace
-    def open_shell_workspace(self) -> Dict[str, Any]:
+    def open_shell_workspace(self, *, include_templates: bool = True) -> Dict[str, Any]:
         """Prepare and activate the project-level shell workspace."""
 
         with self._workspace_lock:
@@ -2225,7 +2253,7 @@ class PyrunsRuntime:
             current_root = self.root_dir or os.getenv(_cfg.ENV_KEY_ROOT, _cfg.ROOT_DIR)
         shell_root = bootstrap_shell_workspace(current_root)
         self.reload(shell_root)
-        return self.get_workspace_info()
+        return self.get_workspace_info(include_templates=include_templates)
 
     @_with_stable_workspace
     def create_tasks_from_template(
@@ -2253,7 +2281,7 @@ class PyrunsRuntime:
             raise ValueError(err)
 
         generator = self.task_generator if storage == default_storage else self._task_generator_factory(root)
-        workspace_kind = self.get_workspace_info(include_templates=False).get("workspace_kind", _cfg.WORKSPACE_KIND_SCRIPT)
+        workspace_kind = normalize_workspace_kind(load_script_info(self.root_dir).get("workspace_kind"))
         editor_mode = str(mode or "form").strip().lower()
 
         if workspace_kind == _cfg.WORKSPACE_KIND_SHELL:
@@ -2334,7 +2362,7 @@ class PyrunsRuntime:
     ) -> Dict[str, Any]:
         """Preview task expansion without creating tasks."""
 
-        workspace_kind = self.get_workspace_info().get("workspace_kind", _cfg.WORKSPACE_KIND_SCRIPT)
+        workspace_kind = normalize_workspace_kind(load_script_info(self.root_dir).get("workspace_kind"))
         editor_mode = str(mode or "form").strip().lower()
 
         if workspace_kind == _cfg.WORKSPACE_KIND_SHELL:
@@ -2452,12 +2480,14 @@ class PyrunsRuntime:
         self,
         script_path: str,
         config_path: str | None = None,
+        *,
+        include_templates: bool = True,
     ) -> Dict[str, Any]:
         """Prepare and activate a workspace selected in the launcher."""
 
         workspace = bootstrap_workspace(script_path, config_path or None)
         self.reload(workspace)
-        return self.get_workspace_info()
+        return self.get_workspace_info(include_templates=include_templates)
 
     def validate_launcher_path(self, kind: str, path: str, script_path: str | None = None) -> Dict[str, Any]:
         """Validate a manually entered launcher path without changing workspace state."""
@@ -2525,7 +2555,7 @@ class PyrunsRuntime:
         if not native_picker_available():
             raise ValueError("Native file picker is unavailable on this server. Enter the path manually.")
 
-        current_script = self.get_workspace_info().get("script_path", "")
+        current_script = self.get_workspace_info(include_templates=False).get("script_path", "")
         initial_dir = os.path.dirname(str(current_script or "")) or os.getcwd()
         script_path = choose_script_file(initial_dir)
         if not script_path:
@@ -2560,20 +2590,20 @@ class PyrunsRuntime:
             "kind": "manual",
         }
 
-    def pick_and_open_launcher_workspace(self) -> Dict[str, Any]:
+    def pick_and_open_launcher_workspace(self, *, include_templates: bool = True) -> Dict[str, Any]:
         """Open a native script picker and activate the chosen workspace."""
 
         if not native_picker_available():
             raise ValueError("Native file picker is unavailable on this server. Enter the path manually.")
 
-        current_script = self.get_workspace_info().get("script_path", "")
+        current_script = self.get_workspace_info(include_templates=False).get("script_path", "")
         initial_dir = os.path.dirname(str(current_script or "")) or os.getcwd()
         script_path = choose_script_file(initial_dir)
         if not script_path:
             raise ValueError("No script selected.")
-        return self.open_launcher_workspace(script_path)
+        return self.open_launcher_workspace(script_path, include_templates=include_templates)
 
-    def pick_and_open_shell_workspace(self) -> Dict[str, Any]:
+    def pick_and_open_shell_workspace(self, *, include_templates: bool = True) -> Dict[str, Any]:
         """Open a native folder picker and activate that directory's shell workspace."""
 
         if not native_picker_available():
@@ -2589,10 +2619,10 @@ class PyrunsRuntime:
         if not selected_dir:
             raise ValueError("No directory selected.")
 
-        return self.open_shell_workspace_at(selected_dir)
+        return self.open_shell_workspace_at(selected_dir, include_templates=include_templates)
 
     @_with_stable_workspace
-    def open_shell_workspace_at(self, project_dir: str) -> Dict[str, Any]:
+    def open_shell_workspace_at(self, project_dir: str, *, include_templates: bool = True) -> Dict[str, Any]:
         """Activate a shell workspace for a user-entered project directory."""
 
         selected_dir = normalize_path(project_dir)
@@ -2602,4 +2632,4 @@ class PyrunsRuntime:
         project_root = normalize_path(os.path.join(selected_dir, _cfg.DEFAULT_ROOT_NAME))
         workspace = bootstrap_shell_workspace(project_root)
         self.reload(workspace)
-        return self.get_workspace_info()
+        return self.get_workspace_info(include_templates=include_templates)

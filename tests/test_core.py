@@ -1083,6 +1083,54 @@ def test_task_manager_expired_local_lease_uses_process_identity(
     assert killed == []
 
 
+@pytest.mark.parametrize(
+    ("status", "stop_requested", "owner", "expected_status"),
+    [
+        ("running", True, "gone", "cancelled"),
+        ("running", False, "gone", "failed"),
+        ("queued", True, "gone", "cancelled"),
+        ("running", True, "live", "running"),
+        ("running", True, "remote", "running"),
+    ],
+)
+def test_task_manager_rechecks_local_runner_before_lease_expires(
+    tmp_path, monkeypatch, status, stop_requested, owner, expected_status,
+):
+    from pyruns.utils.runner_device import local_runner_host
+
+    monkeypatch.setattr("pyruns.utils.runner_device.local_runner_device", lambda: "this-device")
+    monkeypatch.setattr("pyruns.core.task_manager.kill_process", lambda *_args, **_kwargs: pytest.fail("unexpected kill"))
+    tasks_dir = tmp_path / "tasks"
+    task = TaskGenerator(root_dir=str(tasks_dir)).create_task("job", {"value": 1})
+    manager = _make_task_manager(tasks_dir, owns_task_lifecycle=False, reconcile_unowned_running=True)
+    runner_pid = os.getpid() if owner == "live" else 987654321
+    lease_until = time.time() + 120
+    update_task_info(task["dir"], lambda info: info.update(
+        status=status, run_index=int(status == "running"),
+        runner_id=f"{local_runner_host()}:{runner_pid}:test-runner", runner_host=local_runner_host(),
+        runner_device="other-device" if owner == "remote" else "this-device", lease_until=lease_until,
+        pids=[987654322] if status == "running" else [], pid_create_times=[1.0] if status == "running" else [],
+        cancel_requested_at="2026-11-24_10-00-00" if stop_requested else None,
+    ))
+
+    manager.refresh_from_disk(force_all=True)
+    manager.refresh_from_disk(force_all=True)
+
+    observed = manager.get_task(task["name"])
+    info = load_task_info(task["dir"])
+    assert observed["status"] == info["status"] == expected_status
+    if expected_status in {"cancelled", "failed"}:
+        assert "runner_id" not in info
+        if status == "running":
+            assert info["run_statuses"] == [expected_status]
+            assert info["finish_times"][0]
+        else:
+            assert info["run_index"] == 0
+    else:
+        assert info["lease_until"] == lease_until
+        assert info["cancel_requested_at"]
+
+
 def test_task_manager_does_not_fail_runner_that_renews_during_stale_reconciliation(
     tmp_path,
     monkeypatch,
@@ -1128,7 +1176,7 @@ def test_task_manager_does_not_fail_runner_that_renews_during_stale_reconciliati
 
     monkeypatch.setattr(manager, "_mark_failed_on_disk", renew_then_mark)
 
-    updated, changed = manager._fail_unowned_running_info_if_needed(
+    updated, changed = manager._reconcile_unowned_task_info(
         "renewed",
         str(task_dir),
         stale_info,
@@ -2243,15 +2291,18 @@ def test_task_manager_request_cancel_keeps_retrying_a_persisted_local_request(tm
     manager = _make_task_manager(tasks_dir)
     _mark_task_owned_by_manager(manager, "runner", task_dir)
     monkeypatch.setattr(manager, "cancel_task", lambda *_args, **_kwargs: False)
+    timestamps = iter(("2026-11-24_10-00-00", "2026-11-24_10-00-01"))
+    monkeypatch.setattr("pyruns.core.task_manager.get_now_str", lambda: next(timestamps))
 
-    assert manager.request_task_cancel(
-        "runner",
-        expected_runner_id=manager.runner_id,
-        expected_run_index=1,
-    ) is False
+    for _ in range(2):
+        assert manager.request_task_cancel(
+            "runner",
+            expected_runner_id=manager.runner_id,
+            expected_run_index=1,
+        ) is False
     info = load_task_info(str(task_dir))
     assert info["status"] == "running"
-    assert info["cancel_requested_at"]
+    assert info["cancel_requested_at"] == "2026-11-24_10-00-00"
 
 
 def test_task_manager_request_cancel_rejects_unverified_stop_with_stale_marker(tmp_path, monkeypatch):
@@ -3729,7 +3780,7 @@ def test_task_manager_parallel_directory_scan_keeps_order_and_skips_unsafe_paths
 
     monkeypatch.setattr(task_manager_module, "validate_workspace_directory", observed_validate)
     monkeypatch.setattr(task_manager_module, "validate_tasks_root", observed_validate_root)
-    monkeypatch.setattr(manager, "_parallel_loading_worthwhile", lambda *_: True)
+    monkeypatch.setattr("pyruns.utils.file_io._parallel_loading_worthwhile", lambda *_: True)
 
     ok, names = manager._scan_task_dir_names()
 
@@ -3925,7 +3976,7 @@ def test_task_manager_parallel_refresh_preserves_order_and_error_semantics(tmp_p
         return probe(task, check_payload=check_payload)
 
     monkeypatch.setattr(manager, "_probe_refresh_task", observed_probe)
-    monkeypatch.setattr(manager, "_parallel_loading_worthwhile", lambda *_: True)
+    monkeypatch.setattr("pyruns.utils.file_io._parallel_loading_worthwhile", lambda *_: True)
 
     with pytest.raises(FileNotFoundError):
         manager.refresh_from_disk(check_all=True, raise_on_error=True)
@@ -3958,7 +4009,7 @@ def test_task_manager_loads_many_task_dirs_in_order(tmp_path, monkeypatch, sampl
     clock = MagicMock(wraps=task_manager_module.time)
     clock.perf_counter.side_effect = [value for wall, _ in samples for value in (0.0, wall)]
     clock.thread_time.side_effect = [value for _, cpu in samples for value in (0.0, cpu)]
-    monkeypatch.setattr(task_manager_module, "time", clock)
+    monkeypatch.setattr("pyruns.utils.file_io.time", clock)
 
     loaded = manager._load_task_dirs(names)
 
@@ -3978,7 +4029,7 @@ def test_task_manager_strict_discovery_keeps_state_on_parallel_load_error(tmp_pa
     for index in range(9):
         generator.create_task(f"task-{index}", {"value": index})
     manager = _make_task_manager(tasks_dir, lazy_scan=None, owns_task_lifecycle=False)
-    monkeypatch.setattr(manager, "_parallel_loading_worthwhile", lambda *_: True)
+    monkeypatch.setattr("pyruns.utils.file_io._parallel_loading_worthwhile", lambda *_: True)
 
     with pytest.raises(ValueError):
         manager.sync_task_dirs_from_disk(raise_on_error=True)
@@ -5182,7 +5233,7 @@ def test_task_manager_renews_starting_run_before_child_pid_is_published(tmp_path
             assert refreshed["lease_until"] > time.time()
             observer = _make_task_manager(tasks_dir, lazy_scan=None)
             try:
-                current, changed = observer._fail_unowned_running_info_if_needed(
+                current, changed = observer._reconcile_unowned_task_info(
                     task["name"], task["dir"], refreshed,
                 )
                 assert not changed
@@ -5653,7 +5704,7 @@ def test_task_manager_stale_reconciliation_preserves_new_local_run(tmp_path, mon
         return original_mark_failed(*args, **kwargs)
 
     monkeypatch.setattr(manager, "_mark_failed_on_disk", restart_then_mark)
-    info, changed = manager._fail_unowned_running_info_if_needed("alpha", task["dir"], stale_info)
+    info, changed = manager._reconcile_unowned_task_info("alpha", task["dir"], stale_info)
 
     assert changed is False
     assert info["status"] == "running"

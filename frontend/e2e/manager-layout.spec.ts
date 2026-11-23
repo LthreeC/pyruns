@@ -89,7 +89,7 @@ test('manager drag keeps the grid in place and animates the new order only when 
     const grip = (await source.locator('[data-task-drag-handle]').boundingBox())!
     const before = (await source.boundingBox())!
     const destination = (await target.boundingBox())!
-    const icon = overIcon ? (await target.locator('.task-card-actions .lucide-trash2').boundingBox())! : null
+    const icon = overIcon ? (await target.getByRole('button', { name: /^View logs for / }).boundingBox())! : null
     await page.mouse.move(grip.x + grip.width / 2, grip.y + grip.height / 2)
     await page.mouse.down()
     await page.mouse.move(
@@ -157,9 +157,15 @@ test('manager groups its toolbar and offers direct delete and keyboard drag', as
     await expect(common).toHaveCSS('border-block-start-color', lightColors.running.stripe)
     await expect(common.locator('.task-status-dot')).toHaveCSS('border-top-style', 'solid')
     await expect(common.locator('.task-status-dot')).toHaveCSS('background-color', lightColors.running.fill)
-    await expect(common.getByRole('button', { name: /^Stop / })).toBeEnabled()
     await expect(common.getByRole('button', { name: /^Pin / })).toBeEnabled()
   }
+  await expect(runningCard.getByRole('button', { name: /^Stop / })).toBeEnabled()
+  for (const remote of [reportedCard, remoteRunningCard, remoteQueuedCard]) {
+    await expect(remote.getByRole('button', { name: /^Stop / })).toHaveCount(0)
+    await expect(remote.getByRole('button', { name: /^Delete / })).toHaveCount(0)
+  }
+  await expect(reportedCard.getByText('Stop on gpu-worker-02', { exact: true })).toBeVisible()
+  await expect(remoteRunningCard.getByText('Stop on gpu-worker-03', { exact: true })).toBeVisible()
   const otherDeviceDot = remoteQueuedCard.locator('.task-status-dot')
   await expect(remoteQueuedCard).toHaveCSS('border-block-start-color', lightColors.queued.stripe)
   await expect(otherDeviceDot).toHaveCSS('border-top-style', 'dashed')
@@ -167,7 +173,7 @@ test('manager groups its toolbar and offers direct delete and keyboard drag', as
   await expect(otherDeviceDot).toHaveCSS('border-top-color', lightColors.queued.label)
   await expect(otherDeviceDot).toHaveCSS('background-color', lightColors.queued.fill)
   await expect(otherDeviceDot).toHaveCSS('background-clip', 'content-box')
-  await expect(remoteQueuedCard.getByRole('button', { name: /^Stop / })).toHaveCount(0)
+  await expect(remoteQueuedCard.getByText('Stop on gpu-worker-04', { exact: true })).toBeVisible()
   await expect(remoteQueuedCard.getByRole('button', { name: /^Pin / })).toBeEnabled()
   await expect(runningCard).toHaveCSS('box-shadow', /0px 1px 1px/)
   await expect(runningCard).toHaveCSS('border-inline-start-width', '1px')

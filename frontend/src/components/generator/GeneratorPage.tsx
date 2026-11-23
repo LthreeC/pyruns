@@ -42,7 +42,7 @@ import CodeTextEditor from '@/components/shared/CodeTextEditor'
 import ToggleSwitch from '@/components/shared/ToggleSwitch'
 import { PARAM_TYPE_STYLES } from '@/theme/tokens'
 import * as api from '@/api'
-import type { GeneratorPreview, PreviewItem, ShellRuntimeInfo } from '@/types'
+import type { GeneratorPreview, PreviewItem, ShellRuntimeInfo, TemplateContent } from '@/types'
 import { parseConfigYaml, parseIntegerInput, stringifyConfigYaml } from '@/utils/configYaml'
 import {
   configPathId, configPathFromId, formatConfigPath, getConfigValue,
@@ -59,6 +59,7 @@ const TREE_OUTLINE_WIDTH_STORAGE_KEY = 'pyruns.generatorTreeOutlineWidth'
 const DEFAULT_TREE_OUTLINE_WIDTH = 244
 const MIN_TREE_OUTLINE_WIDTH = 200
 const MAX_TREE_OUTLINE_WIDTH = 380
+const TEMPLATE_PICKER_WINDOW_SIZE = 24
 type GenerationStatus = 'idle' | 'previewing' | 'creating' | 'created' | 'error'
 type FormLayoutMode = 'grid' | 'tree'
 type GeneratorDisplayMode = FormLayoutMode | 'yaml'
@@ -205,6 +206,11 @@ interface TemplatePickerProps {
   searchPlaceholder: string
   emptyLabel?: string
   allowEmpty?: boolean
+  compact: boolean
+  loading: boolean
+  loadError: string
+  onOpen: () => void
+  onRetry: () => void
   onChange: (value: string) => void
 }
 
@@ -215,16 +221,23 @@ function TemplatePicker({
   searchPlaceholder,
   emptyLabel = 'No matching templates',
   allowEmpty = false,
+  compact,
+  loading,
+  loadError,
+  onOpen,
+  onRetry,
   onChange,
 }: TemplatePickerProps) {
   const [open, setOpen] = useState(false)
   const [templateFilter, setTemplateFilter] = useState('')
   const [activeIndex, setActiveIndex] = useState(0)
+  const [listScrollTop, setListScrollTop] = useState(0)
   const pickerRef = useRef<HTMLDivElement | null>(null)
   const inputRef = useRef<HTMLInputElement | null>(null)
   const triggerRef = useRef<HTMLButtonElement | null>(null)
+  const listRef = useRef<HTMLDivElement | null>(null)
   const listboxId = useId()
-  const selectedOption = options.find(option => option.value === value)
+  const selectedOption = useMemo(() => options.find(option => option.value === value), [options, value])
   const buttonLabel = selectedOption?.label || placeholder
   const normalizedFilter = templateFilter.trim().toLowerCase()
   const filteredOptions = useMemo(() => {
@@ -236,11 +249,17 @@ function TemplatePicker({
     ...(emptyOptionVisible ? [{ value: '', label: placeholder }] : []),
     ...filteredOptions,
   ], [emptyOptionVisible, filteredOptions, placeholder])
-  const disabled = options.length === 0 && !allowEmpty
-
+  const windowed = visibleOptions.length > 80
+  const rowHeight = compact ? 44 : 28
+  const firstOption = windowed
+    ? Math.max(0, Math.min(visibleOptions.length - TEMPLATE_PICKER_WINDOW_SIZE, Math.floor(listScrollTop / rowHeight) - 4))
+    : 0
+  const endOption = windowed ? firstOption + TEMPLATE_PICKER_WINDOW_SIZE : visibleOptions.length
+  const activeOptionVisible = activeIndex >= firstOption && activeIndex < endOption
   const closePicker = useCallback((restoreFocus = false) => {
     setOpen(false)
     setTemplateFilter('')
+    setListScrollTop(0)
     if (restoreFocus) {
       window.setTimeout(() => triggerRef.current?.focus(), 0)
     }
@@ -249,6 +268,7 @@ function TemplatePicker({
   useEffect(() => {
     if (!open) return
 
+    onOpen()
     setTemplateFilter('')
     const focusTimer = window.setTimeout(() => inputRef.current?.focus(), 0)
     const handlePointerDown = (event: MouseEvent) => {
@@ -263,7 +283,7 @@ function TemplatePicker({
       window.clearTimeout(focusTimer)
       document.removeEventListener('mousedown', handlePointerDown)
     }
-  }, [closePicker, open])
+  }, [closePicker, onOpen, open])
 
   useEffect(() => {
     if (!open) return
@@ -276,15 +296,35 @@ function TemplatePicker({
     if (!open || !visibleOptions[activeIndex]) return
 
     const scrollFrame = window.requestAnimationFrame(() => {
-      document.getElementById(`${listboxId}-option-${activeIndex}`)?.scrollIntoView({ block: 'nearest' })
+      const list = listRef.current
+      if (!windowed || !list) {
+        document.getElementById(`${listboxId}-option-${activeIndex}`)?.scrollIntoView({ block: 'nearest' })
+        return
+      }
+      const top = activeIndex * rowHeight
+      if (top < list.scrollTop) list.scrollTop = top
+      else if (top + rowHeight > list.scrollTop + list.clientHeight) list.scrollTop = top + rowHeight - list.clientHeight
+      setListScrollTop(list.scrollTop)
     })
     return () => window.cancelAnimationFrame(scrollFrame)
-  }, [activeIndex, listboxId, open, visibleOptions])
+  }, [activeIndex, listboxId, open, rowHeight, visibleOptions, windowed])
 
   const selectValue = useCallback((nextValue: string) => {
     onChange(nextValue)
     closePicker(true)
   }, [closePicker, onChange])
+
+  const loadFeedback = loadError && (
+    <div role="alert" className="flex items-start gap-2 bg-rose-500/10 px-3 py-2 text-xs text-rose-700 dark:text-rose-300">
+      <span className="min-w-0 flex-1 break-words">{t('Templates could not be loaded.')} {translateMessage(loadError)}</span>
+      <button type="button" disabled={loading} onClick={() => {
+        onRetry()
+        if (open) inputRef.current?.focus()
+      }} className="touch-target min-h-11 shrink-0 rounded-md border border-rose-500/25 px-2 font-medium hover:bg-rose-500/10 disabled:cursor-wait disabled:opacity-60">
+        {loading ? t('Retrying...') : t('Retry')}
+      </button>
+    </div>
+  )
 
   return (
     <div
@@ -324,7 +364,6 @@ function TemplatePicker({
       <button
         ref={triggerRef}
         type="button"
-        disabled={disabled}
         aria-haspopup="listbox"
         aria-expanded={open}
         title={buttonLabel}
@@ -340,6 +379,7 @@ function TemplatePicker({
         <span className="min-w-0 flex-1 truncate">{buttonLabel}</span>
         <ChevronDown className={clsx('h-3 w-3 flex-none text-txt-tertiary transition-transform', open && 'rotate-180')} />
       </button>
+      {!open && loadFeedback}
 
       {open && (
         <div className="absolute left-0 right-0 top-[calc(100%+4px)] z-50 overflow-hidden rounded-md border border-border bg-surface-raised shadow-md">
@@ -355,35 +395,46 @@ function TemplatePicker({
               aria-autocomplete="list"
               aria-controls={listboxId}
               aria-expanded={open}
-              aria-activedescendant={visibleOptions[activeIndex] ? `${listboxId}-option-${activeIndex}` : undefined}
+              aria-activedescendant={activeOptionVisible ? `${listboxId}-option-${activeIndex}` : undefined}
               className="touch-input h-11 w-full rounded-md border border-border-subtle bg-surface-overlay px-2 pl-7 text-base text-txt-primary outline-none transition-colors placeholder:text-txt-tertiary focus:border-accent focus:ring-2 focus:ring-accent/15 min-[701px]:h-7 min-[701px]:text-xs"
             />
           </div>
-          <div id={listboxId} role="listbox" className="max-h-[min(18rem,50vh)] overflow-y-auto py-1">
+          {loadFeedback}
+          {loading && !loadError && <div role="status" className="px-3 py-2 text-xs text-txt-secondary">{t('Loading templates...')}</div>}
+          <div ref={listRef} id={listboxId} role="listbox" className="max-h-[min(18rem,50vh)] overflow-y-auto"
+            onScroll={event => { if (windowed) setListScrollTop(event.currentTarget.scrollTop) }}>
+            {firstOption > 0 && <div aria-hidden="true" style={{ height: firstOption * rowHeight }} />}
             {visibleOptions.length > 0 ? (
-              visibleOptions.map((option, index) => (
-                <button
-                  key={option.value || '__empty__'}
-                  id={`${listboxId}-option-${index}`}
-                  type="button"
-                  role="option"
-                  tabIndex={-1}
-                  aria-selected={option.value === value}
-                  title={option.value}
-                  onClick={() => selectValue(option.value)}
-                  onMouseEnter={() => setActiveIndex(index)}
-                  className={clsx(
-                    'touch-target block min-h-11 w-full px-3 py-1.5 text-left text-sm transition-colors hover:bg-surface-overlay min-[701px]:min-h-0 min-[701px]:text-xs',
-                    index === activeIndex && 'bg-surface-overlay',
-                    option.value === value ? 'text-accent' : 'text-txt-primary',
-                  )}
-                >
-                  <span className="block truncate">{option.label}</span>
-                </button>
-              ))
-            ) : (
+              visibleOptions.slice(firstOption, endOption).map((option, offset) => {
+                const index = firstOption + offset
+                return (
+                  <button
+                    key={option.value || '__empty__'}
+                    id={`${listboxId}-option-${index}`}
+                    type="button"
+                    role="option"
+                    tabIndex={-1}
+                    aria-selected={option.value === value}
+                    aria-posinset={windowed ? index + 1 : undefined}
+                    aria-setsize={windowed ? visibleOptions.length : undefined}
+                    title={option.value}
+                    style={windowed ? { height: rowHeight } : undefined}
+                    onClick={() => selectValue(option.value)}
+                    onMouseEnter={() => setActiveIndex(index)}
+                    className={clsx(
+                      'touch-target block min-h-11 w-full px-3 py-1.5 text-left text-sm transition-colors hover:bg-surface-overlay min-[701px]:min-h-0 min-[701px]:text-xs',
+                      index === activeIndex && 'bg-surface-overlay',
+                      option.value === value ? 'text-accent' : 'text-txt-primary',
+                    )}
+                  >
+                    <span className="block truncate">{option.label}</span>
+                  </button>
+                )
+              })
+            ) : !loading && !loadError && (
               <div className="px-3 py-2 text-xs text-txt-tertiary">{t(emptyLabel)}</div>
             )}
+            {endOption < visibleOptions.length && <div aria-hidden="true" style={{ height: (visibleOptions.length - endOption) * rowHeight }} />}
           </div>
         </div>
       )}
@@ -575,7 +626,8 @@ export default function GeneratorPage() {
   const workspaceEpoch = useWorkspaceStore(state => state.workspaceEpoch)
   const theme = useThemeStore(state => state.theme)
   const {
-    templates,
+    templates: listedTemplates,
+    templateListUpdatedAt,
     selectedTemplate,
     templateContent,
     viewMode,
@@ -590,6 +642,7 @@ export default function GeneratorPage() {
     dirty,
     loading,
     fetchTemplates,
+    invalidateTemplateList,
     loadTemplate,
     clearTemplate,
     setViewMode,
@@ -627,11 +680,17 @@ export default function GeneratorPage() {
   const templateListRequestSeqRef = useRef(0)
   const lastWorkspaceDefaultKeyRef = useRef('')
 
-  const refreshTemplatesWithFeedback = useCallback(async () => {
+  const defaultTemplateOption = workspace?.default_template
+  const templates = useMemo(() => (
+    defaultTemplateOption && listedTemplates.length === 0 && templateListUpdatedAt === null
+      ? [defaultTemplateOption] : listedTemplates
+  ), [defaultTemplateOption, listedTemplates, templateListUpdatedAt])
+
+  const refreshTemplatesWithFeedback = useCallback(async (reuse = false) => {
     const requestId = ++templateListRequestSeqRef.current
     setTemplateListLoading(true)
     try {
-      await fetchTemplates()
+      await fetchTemplates(reuse)
       if (requestId === templateListRequestSeqRef.current) {
         setTemplateLoadError('')
       }
@@ -645,6 +704,9 @@ export default function GeneratorPage() {
       }
     }
   }, [fetchTemplates])
+  const handleTemplatePickerOpen = useCallback(() => {
+    void refreshTemplatesWithFeedback(true)
+  }, [refreshTemplatesWithFeedback])
 
   const confirmTemplateReplacement = useCallback(async () => {
     if (!useGeneratorStore.getState().dirty) {
@@ -658,13 +720,14 @@ export default function GeneratorPage() {
     })
   }, [])
 
-  const loadTemplateWithFeedback = useCallback(async (value: string) => {
-    if (!(await confirmTemplateReplacement())) {
+  const loadTemplateWithFeedback = useCallback(async (value: string, content?: TemplateContent) => {
+    const epoch = useWorkspaceStore.getState().workspaceEpoch
+    if (!(await confirmTemplateReplacement()) || epoch !== useWorkspaceStore.getState().workspaceEpoch) {
       return false
     }
     setError('')
     try {
-      await loadTemplate(value)
+      await loadTemplate(value, content)
       return true
     } catch (err: any) {
       setError(err?.message || 'Could not load template')
@@ -725,7 +788,7 @@ export default function GeneratorPage() {
   }, [compactGeneratorLayout])
 
   useEffect(() => {
-    if (isShellWorkspace) {
+    if (isShellWorkspace || useGeneratorStore.getState().loading) {
       if (viewMode !== 'shell') {
         setViewMode('shell')
       }
@@ -812,11 +875,15 @@ export default function GeneratorPage() {
   }, [resizingGeneratorSettings])
 
   useEffect(() => {
-    if (!workspace?.run_root) {
-      return
-    }
-    refreshTemplatesWithFeedback()
+    templateListRequestSeqRef.current += 1
+    setTemplateLoadError('')
+    setTemplateListLoading(false)
+    // Older servers and workspaces without config_default can still offer a
+    // first task config as the starting template.
+    if (workspace?.run_root && !isShellWorkspace && !defaultTemplateOption) void refreshTemplatesWithFeedback(true)
   }, [
+    defaultTemplateOption,
+    isShellWorkspace,
     refreshTemplatesWithFeedback,
     workspace?.config_default_source,
     workspace?.config_default_source_name,
@@ -952,7 +1019,10 @@ export default function GeneratorPage() {
     configDefaultSourceName
     && pathLeaf(selectedTemplate) === 'config_default.yaml'
   )
-  const selectedTemplateListed = templates.some(template => template.value === selectedTemplate)
+  const selectedTemplateListed = useMemo(
+    () => templates.some(template => template.value === selectedTemplate),
+    [selectedTemplate, templates],
+  )
   const shellTemplateSelectValue = selectedTemplateListed ? selectedTemplate : ''
 
   useEffect(() => {
@@ -983,18 +1053,15 @@ export default function GeneratorPage() {
     setViewMode('form')
   }, [setViewMode])
   const handlePickShellFile = useCallback(async () => {
+    const epoch = useWorkspaceStore.getState().workspaceEpoch
     setError('')
     try {
       const content = await api.pickGeneratorShellFile()
-      const loaded = await loadTemplateWithFeedback(content.value)
-      if (!loaded) {
-        return
-      }
-      await fetchTemplates()
+      if (epoch === useWorkspaceStore.getState().workspaceEpoch) await loadTemplateWithFeedback(content.value, content)
     } catch (err: any) {
-      setError(err?.message || 'Failed to load shell script')
+      if (epoch === useWorkspaceStore.getState().workspaceEpoch) setError(err?.message || 'Failed to load shell script')
     }
-  }, [fetchTemplates, loadTemplateWithFeedback])
+  }, [loadTemplateWithFeedback])
 
   const doCreate = useCallback(async (payload: GenerationPayload = currentGenerationPayload) => {
     const requestId = ++createRequestSeqRef.current
@@ -1031,9 +1098,7 @@ export default function GeneratorPage() {
         source: result.items[0]?.task_source ?? payload.task_storage,
       })
       setGenerationStatus('created')
-      // The tasks already exist. Refreshing available templates must not delay
-      // their success result or keep the creation action busy.
-      void fetchTemplates().catch(() => {})
+      invalidateTemplateList()
     } catch (err: any) {
       if (!requestIsCurrent()) {
         return
@@ -1045,7 +1110,7 @@ export default function GeneratorPage() {
         setGenerating(false)
       }
     }
-  }, [currentGenerationPayload, fetchTemplates, setDirty, workspace?.run_root])
+  }, [currentGenerationPayload, invalidateTemplateList, setDirty, workspace?.run_root])
 
   const handleGenerate = useCallback(async () => {
     setError('')
@@ -1100,6 +1165,11 @@ export default function GeneratorPage() {
               options={templates}
               placeholder={t('Select template')}
               searchPlaceholder={t('Search templates')}
+              compact={compactGeneratorLayout}
+              loading={templateListLoading}
+              loadError={templateLoadError}
+              onOpen={handleTemplatePickerOpen}
+              onRetry={refreshTemplatesWithFeedback}
               onChange={value => { void loadTemplateWithFeedback(value) }}
             />
           ) : (
@@ -1111,6 +1181,11 @@ export default function GeneratorPage() {
                 searchPlaceholder={t('Search tasks')}
                 emptyLabel={t('No matching tasks')}
                 allowEmpty
+                compact={compactGeneratorLayout}
+                loading={templateListLoading}
+                loadError={templateLoadError}
+                onOpen={handleTemplatePickerOpen}
+                onRetry={refreshTemplatesWithFeedback}
                 onChange={value => {
                   if (value) {
                     void loadTemplateWithFeedback(value)
@@ -1207,24 +1282,6 @@ export default function GeneratorPage() {
 
         </div>}
       </div>
-
-      {templateLoadError && (
-        <div
-          role="alert"
-          className="flex flex-wrap items-center gap-2 border-b border-rose-500/20 bg-rose-500/10 px-3 py-2 text-xs text-rose-700 dark:text-rose-300"
-        >
-          <AlertTriangle className="h-3.5 w-3.5 flex-none" />
-          <span className="min-w-0 flex-1 break-words">{t('Templates could not be loaded.')} {translateMessage(templateLoadError)}</span>
-          <button
-            type="button"
-            className="touch-target inline-flex min-h-11 flex-none items-center justify-center rounded-md border border-rose-500/25 px-3 py-1.5 font-medium transition-colors hover:bg-rose-500/10 disabled:cursor-wait disabled:opacity-60"
-            disabled={templateListLoading}
-            onClick={() => { void refreshTemplatesWithFeedback() }}
-          >
-            {templateListLoading ? t('Retrying...') : t('Retry')}
-          </button>
-        </div>
-      )}
 
       <div ref={generatorBodyRef} className={generatorBodyClassName}>
         <div className={generatorEditorClassName}>

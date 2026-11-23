@@ -30,6 +30,7 @@ import type {
 import { recordGpuWaitReceipt } from './utils/gpuWait'
 
 const BASE = ''
+const WORKSPACE_METADATA_HEADERS = { 'X-Pyruns-Include-Templates': 'false' }
 
 export class ApiError extends Error {
   readonly status: number
@@ -184,12 +185,12 @@ async function request<T>(url: string, init?: RequestInit): Promise<T> {
 }
 
 export const getWorkspace = () => withConnectionTimeout(signal => request<WorkspaceInfo>('/api/workspace', {
-  signal, headers: { 'X-Pyruns-Include-Templates': 'false' },
+  signal, headers: WORKSPACE_METADATA_HEADERS,
 }))
 export const setRunRoot = (path: string) =>
-  request<WorkspaceInfo>('/api/workspace/run-root', { method: 'POST', body: JSON.stringify({ path }) })
+  request<WorkspaceInfo>('/api/workspace/run-root', { method: 'POST', headers: WORKSPACE_METADATA_HEADERS, body: JSON.stringify({ path }) })
 export const openShellWorkspace = () =>
-  request<WorkspaceInfo>('/api/workspace/shell', { method: 'POST' })
+  request<WorkspaceInfo>('/api/workspace/shell', { method: 'POST', headers: WORKSPACE_METADATA_HEADERS })
 export const getRuntimeInfo = (refreshProviders = true) =>
   request<RuntimeInfo>(refreshProviders ? '/api/runtime' : '/api/runtime?refresh_providers=false')
 export const updateRuntimeInfo = (payload: Partial<{
@@ -204,8 +205,8 @@ export const updateRuntimeInfo = (payload: Partial<{
   request<RuntimeInfo>(`/api/runtime?refresh_providers=${refreshProviders}`, { method: 'PATCH', body: JSON.stringify(payload) })
 
 export const getTemplates = (signal?: AbortSignal) => request<{ items: { value: string; label: string }[] }>('/api/templates', { signal })
-export const getTemplateContent = (value: string) =>
-  request<TemplateContent>(`/api/templates/content?value=${encodeURIComponent(value)}`)
+export const getTemplateContent = (value: string, signal?: AbortSignal) =>
+  request<TemplateContent>(`/api/templates/content?value=${encodeURIComponent(value)}`, { signal })
 export const pickGeneratorShellFile = () =>
   request<TemplateContent>('/api/generator/pick-shell-file', { method: 'POST' })
 
@@ -390,7 +391,7 @@ export const runTask = (name: string) =>
   })
 
 export const cancelTask = (name: string) =>
-  request<{ ok: boolean; task: Task }>(`/api/tasks/${encodeURIComponent(name)}/cancel?include_tracks=false`, { method: 'POST' })
+  request<{ ok: boolean; task: Task }>(`/api/tasks/${encodeURIComponent(name)}/cancel?include_tracks=false&local_only=true`, { method: 'POST' })
 
 export const pinTask = (name: string, pinned?: boolean) =>
   request<{ ok: boolean; task: Task }>(`/api/tasks/${encodeURIComponent(name)}/pin?include_tracks=false`, {
@@ -507,6 +508,7 @@ export const validateLauncherPath = (kind: 'python' | 'shell' | 'config', path: 
 export const openLauncherWorkspace = (scriptPath: string, configPath?: string) =>
   request<WorkspaceInfo>('/api/launcher/open', {
     method: 'POST',
+    headers: WORKSPACE_METADATA_HEADERS,
     body: JSON.stringify({ script_path: scriptPath, config_path: configPath }),
   })
 
@@ -520,13 +522,14 @@ export const pickLauncherConfigPath = (scriptPath: string) =>
   })
 
 export const pickLauncherScript = () =>
-  request<WorkspaceInfo>('/api/launcher/pick-script', { method: 'POST' })
+  request<WorkspaceInfo>('/api/launcher/pick-script', { method: 'POST', headers: WORKSPACE_METADATA_HEADERS })
 
 export const pickLauncherShellRoot = () =>
-  request<WorkspaceInfo>('/api/launcher/pick-shell-root', { method: 'POST' })
+  request<WorkspaceInfo>('/api/launcher/pick-shell-root', { method: 'POST', headers: WORKSPACE_METADATA_HEADERS })
 
 export const openLauncherShellRoot = (path: string) =>
   request<WorkspaceInfo>('/api/launcher/open-shell-root', {
     method: 'POST',
+    headers: WORKSPACE_METADATA_HEADERS,
     body: JSON.stringify({ path }),
   })

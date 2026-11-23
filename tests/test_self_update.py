@@ -132,11 +132,11 @@ def test_peer_loads_published_release_after_request_was_replaced(tmp_path, monke
         peer.close()
 
 
-def test_restart_of_updated_ui_does_not_wait_for_busy_peers(tmp_path, monkeypatch):
+@pytest.mark.parametrize("writable_coordination", [True, False])
+def test_local_restart_does_not_wait_for_busy_peers(tmp_path, monkeypatch, writable_coordination):
     state_dir = str(tmp_path / "state")
     store = CoordinationStore(state_dir)
     monkeypatch.setattr(self_update.UiUpdateCoordinator, "_start_monitor", lambda self: None)
-    monkeypatch.setattr(self_update.UiUpdateCoordinator, "_installed_version", staticmethod(lambda _fallback: "0.3.21"))
     peer = process_record(record_id="b" * 32, kind="ui")
     peer.update(phase="serving", active_count=3, restart_active_count=3)
     store.write_record("instances", peer["id"], peer)
@@ -146,13 +146,84 @@ def test_restart_of_updated_ui_does_not_wait_for_busy_peers(tmp_path, monkeypatc
     )
     runtime = _Runtime(0)
     coordinator.attach(runtime)
+    monkeypatch.setattr(
+        coordinator, "refresh_installed_version", lambda **_kwargs: pytest.fail("restart must not probe before handoff"),
+    )
     try:
+        if not writable_coordination:
+            coordinator._coordination_error = "The shared coordination directory is unavailable."
+            monkeypatch.setattr(coordinator._store, "locked", lambda: pytest.fail("local restart must not take the shared lock"))
         assert coordinator.prepare_restart(runtime)
         handoff = coordinator.handoff()
-        assert (handoff["operation"], handoff["target_version"], handoff["request_id"]) == ("restart", "0.3.21", "")
+        assert (handoff["operation"], handoff["target_version"], handoff["request_id"]) == ("restart", "", "")
         assert store.read_request() is None
+        with store.locked():
+            assert [record["id"] for record in store.live_records_locked("instances")] == [peer["id"]]
     finally:
         coordinator.close()
+
+
+def test_manual_restart_cannot_take_over_accepted_upgrade():
+    runtime = _Runtime(0)
+    coordinator = self_update.UiUpdateCoordinator(lambda: None, current_version="0.3.20", isolated_upgrades=True)
+    assert coordinator.prepare(runtime, target_version="0.3.21")
+    upgrade = coordinator.operation_response()
+
+    with pytest.raises(self_update.UpdateCheckError, match="update is already in progress"):
+        coordinator.prepare_restart(runtime)
+
+    assert coordinator.operation_response() == upgrade
+    assert coordinator.handoff()["operation"] == "upgrade"
+
+
+def test_local_restart_can_retry_without_a_confirmed_version(monkeypatch):
+    runtime = _Runtime(1)
+    shutdowns = []
+    coordinator = self_update.UiUpdateCoordinator(
+        lambda: shutdowns.append(True), current_version="0.3.20", isolated_upgrades=True,
+    )
+    monkeypatch.setattr(coordinator, "_start_monitor", lambda: None)
+    monkeypatch.setattr(
+        coordinator, "refresh_installed_version", lambda **_kwargs: pytest.fail("restart must not probe before handoff"),
+    )
+    monkeypatch.setattr(self_update, "SCHEDULED_OPERATION_RETRY_SECONDS", 0)
+
+    assert not coordinator.prepare_restart(runtime, defer_if_busy=True)
+    state, scheduled = coordinator.operation_status()
+    assert state == "waiting"
+    assert scheduled is not None and scheduled["target_version"] == ""
+    runtime.active_count = 0
+    coordinator._monitor_tick()
+
+    assert shutdowns == [True]
+    assert coordinator.handoff()["target_version"] == ""
+
+
+@pytest.mark.parametrize("visible", ["0.3.20", "0.3.21"])
+def test_plain_restart_resolves_and_launches_the_visible_version(tmp_path, monkeypatch, visible):
+    probes, replacements = [], []
+    release = tmp_path / "release" if visible == "0.3.21" else None
+
+    def select_release(fallback):
+        probes.append(fallback)
+        return visible, release
+
+    monkeypatch.setattr(self_update, "selected_release", select_release)
+    monkeypatch.setattr(self_update, "_replace_current_process", lambda *args: replacements.append(args))
+    monkeypatch.setattr(self_update, "run_pip_upgrade", lambda *_args: pytest.fail("restart must not install packages"))
+
+    self_update.restart_ui_after_handoff(
+        port=8123, token="private-token", previous_version="0.3.20", request_id="",
+        instance_id="", state_dir="", installed_version="", owner=True,
+    )
+
+    assert probes == ["0.3.20"]
+    [(command, environment)] = replacements
+    assert command == self_update.module_command("pyruns.web.app", "--port", "8123", "--no-browser", release=release)
+    assert environment[self_update.UI_TOKEN_ENV] == "private-token"
+    assert json.loads(environment[self_update.UI_UPDATE_RESULT_ENV]) == {
+        "ok": True, "previous_version": "0.3.20", "installed_version": visible, "exit_code": 0, "operation": "restart",
+    }
 
 
 def test_windows_release_launcher_leaves_interrupt_cleanup_to_cli(tmp_path, monkeypatch):
@@ -213,6 +284,73 @@ def _publish_update_request(
     with store.locked():
         store.write_request_locked(request)
     return store
+
+
+@pytest.mark.parametrize("release_becomes_visible", [True, False])
+def test_update_reuses_completed_request_before_release_is_visible(tmp_path, monkeypatch, release_becomes_visible):
+    store = _publish_update_request(
+        tmp_path / "coordination", "a" * 32, "b" * 32, stage="completed", isolated=True,
+        result={"ok": True, "previous_version": "0.3.20", "installed_version": "0.3.21", "exit_code": 0},
+    )
+    completed = store.read_request()
+    clock = 100.0
+    restarts = []
+
+    def advance(seconds):
+        nonlocal clock
+        clock += seconds
+
+    def select_release(_fallback):
+        return ("0.3.21", tmp_path / "release") if release_becomes_visible and clock >= 102 else ("0.3.20", None)
+
+    monkeypatch.setattr(self_update.UiUpdateCoordinator, "_start_monitor", lambda self: None)
+    monkeypatch.setattr(self_update, "selected_release", select_release)
+    monkeypatch.setattr(self_update, "LOCAL_RELEASE_WAIT_SECONDS", 3.0)
+    monkeypatch.setattr(self_update.time, "monotonic", lambda: clock)
+    monkeypatch.setattr(self_update.time, "sleep", advance)
+    monkeypatch.setattr(self_update, "run_pip_upgrade", lambda *_a, **_kw: pytest.fail("a peer must not reinstall"))
+    monkeypatch.setattr(self_update, "relaunch_ui", lambda **kwargs: restarts.append(kwargs))
+    coordinator = self_update.UiUpdateCoordinator(
+        lambda: None, state_dir=store.state_dir, shared=True, current_version="0.3.20", isolated_upgrades=True,
+    )
+    runtime = _Runtime(0)
+    coordinator.attach(runtime)
+    try:
+        assert coordinator.installed_version == "0.3.20"
+        assert coordinator.prepare(runtime, target_version="0.3.21")
+        # The monitor must leave the accepted local restart to the HTTP response.
+        coordinator._monitor_tick()
+        assert coordinator.operation_response()["operation"] == "restart"
+        handoff = coordinator.handoff()
+        assert handoff["request_id"] == ""
+        self_update.restart_ui_after_handoff(
+            port=8123, token="browser-token", previous_version="0.3.20",
+            request_id=handoff["request_id"], state_dir=handoff["state_dir"], instance_id=handoff["instance_id"],
+            installed_version=handoff["target_version"], owner=True,
+        )
+        result = restarts[0]["result"]
+        assert result["operation"] == "restart"
+        assert result["ok"] is release_becomes_visible
+        assert result["installed_version"] == ("0.3.21" if release_becomes_visible else "0.3.20")
+        assert clock == (102.0 if release_becomes_visible else 103.0)
+        assert store.read_request() == completed
+    finally:
+        coordinator.close()
+
+
+@pytest.mark.parametrize("staged", [True, False])
+def test_updater_reuses_release_that_becomes_visible_after_admission(tmp_path, monkeypatch, staged):
+    release = tmp_path / "release" if staged else None
+    store = _publish_update_request(tmp_path / "state", "a" * 32, "b" * 32, stage="draining", isolated=True)
+    monkeypatch.setattr(self_update, "selected_release", lambda _fallback: ("0.3.21", release))
+    monkeypatch.setattr(self_update, "create_release_directory", lambda: pytest.fail("no staging directory needed"))
+    monkeypatch.setattr(self_update, "run_pip_upgrade", lambda *_a, **_kw: pytest.fail("release is already on disk"))
+    result = self_update.run_coordinated_update(
+        state_dir=store.state_dir, request_id="b" * 32, instance_id="a" * 32,
+        previous_version="0.3.20", target_version="0.3.21",
+    )
+    assert result["ok"] and result["installed_version"] == "0.3.21"
+    assert store.read_request()["result"] == result
 
 
 def test_update_coordinator_requires_idle_runtime_and_gates_new_starts():
@@ -1074,13 +1212,16 @@ def test_staged_upgrade_never_publishes_on_top_of_another_request(tmp_path, monk
     )
     monkeypatch.setattr(update_release, "installation_root", lambda: tmp_path)
     monkeypatch.setattr(self_update, "LOCAL_RELEASE_WAIT_SECONDS", 0)
-    monkeypatch.setattr(self_update, "selected_release", lambda _fallback: ("0.4.1", tmp_path) if published else ("0.3.0", None))
+    visible = False
+    monkeypatch.setattr(self_update, "selected_release", lambda _fallback: ("0.4.1", tmp_path) if visible else ("0.3.0", None))
     monkeypatch.setattr(self_update, "publish_release", lambda *_args: pytest.fail("the old request must not publish"))
 
     def install(previous_version, *, target_version, install_root):
+        nonlocal visible
         assert install_root.is_dir()
         with store.locked():
             store.write_request_locked(newer_request)
+            visible = published
         return {"ok": True, "previous_version": previous_version, "installed_version": target_version, "exit_code": 0}
 
     monkeypatch.setattr(self_update, "run_pip_upgrade", install)
@@ -1163,6 +1304,25 @@ def test_waiter_reloads_verified_release_even_after_request_replacement(tmp_path
     )
     assert result["ok"] is True and result["installed_version"] == "0.4.1"
     assert store.read_request()["result"] == {"ok": False}
+
+
+def test_waiter_does_not_load_in_place_metadata_until_shared_install_completes(tmp_path, monkeypatch):
+    result = {"ok": True, "previous_version": "0.3.0", "installed_version": "0.4.0", "exit_code": 0}
+    store = _publish_update_request(
+        tmp_path / "state", "a" * 32, "b" * 32, stage="updating", target_version="0.4.0",
+    )
+    active = store.read_request()
+    responses = iter([active, {**active, "stage": "completed", "result": result}])
+    sleeps = []
+    monkeypatch.setattr(CoordinationStore, "read_request", lambda _store: next(responses))
+    monkeypatch.setattr(self_update, "selected_release", lambda _fallback: ("0.4.0", None))
+    monkeypatch.setattr(self_update, "_query_installed_version", lambda _fallback: "0.4.0")
+    monkeypatch.setattr(self_update.time, "sleep", sleeps.append)
+    assert self_update.wait_for_coordinated_update(
+        state_dir=store.state_dir, request_id="b" * 32, instance_id="c" * 32,
+        previous_version="0.3.0", target_version="0.4.0",
+    ) == result
+    assert sleeps == [0.2]
 
 
 def test_coordinated_waiter_times_out_and_restarts_available_version(tmp_path, monkeypatch):

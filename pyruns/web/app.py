@@ -851,23 +851,24 @@ def create_app(
             return 4401, "UI authentication required"
         return None
 
+    def include_workspace_templates(request: Request) -> bool:
+        return request.headers.get("X-Pyruns-Include-Templates") != "false"
+
     @app.get("/api/workspace")
     def get_workspace(request: Request) -> dict[str, Any]:
-        if request.headers.get("X-Pyruns-Include-Templates") == "false":
-            return get_runtime().get_workspace_info(include_templates=False)
-        return get_runtime().get_workspace_info()
+        return get_runtime().get_workspace_info(include_templates=include_workspace_templates(request))
 
     @app.post("/api/workspace/run-root")
-    def set_run_root(payload: RunRootRequest) -> dict[str, Any]:
+    def set_run_root(payload: RunRootRequest, request: Request) -> dict[str, Any]:
         try:
-            return get_runtime().change_run_root(payload.path)
+            return get_runtime().change_run_root(payload.path, include_templates=include_workspace_templates(request))
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     @app.post("/api/workspace/shell")
-    def open_shell_workspace() -> dict[str, Any]:
+    def open_shell_workspace(request: Request) -> dict[str, Any]:
         try:
-            return get_runtime().open_shell_workspace()
+            return get_runtime().open_shell_workspace(include_templates=include_workspace_templates(request))
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -978,19 +979,20 @@ def create_app(
         return get_runtime().validate_launcher_path(kind, path, script)
 
     @app.post("/api/launcher/open")
-    def open_launcher_workspace(payload: LauncherOpenRequest) -> dict[str, Any]:
+    def open_launcher_workspace(payload: LauncherOpenRequest, request: Request) -> dict[str, Any]:
         try:
             return get_runtime().open_launcher_workspace(
                 payload.script_path,
                 payload.config_path,
+                include_templates=include_workspace_templates(request),
             )
         except (FileNotFoundError, ValueError) as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     @app.post("/api/launcher/pick-script")
-    def pick_launcher_script() -> dict[str, Any]:
+    def pick_launcher_script(request: Request) -> dict[str, Any]:
         try:
-            return get_runtime().pick_and_open_launcher_workspace()
+            return get_runtime().pick_and_open_launcher_workspace(include_templates=include_workspace_templates(request))
         except (FileNotFoundError, ValueError) as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -1009,16 +1011,16 @@ def create_app(
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     @app.post("/api/launcher/pick-shell-root")
-    def pick_launcher_shell_root() -> dict[str, Any]:
+    def pick_launcher_shell_root(request: Request) -> dict[str, Any]:
         try:
-            return get_runtime().pick_and_open_shell_workspace()
+            return get_runtime().pick_and_open_shell_workspace(include_templates=include_workspace_templates(request))
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     @app.post("/api/launcher/open-shell-root")
-    def open_launcher_shell_root(payload: ShellRootOpenRequest) -> dict[str, Any]:
+    def open_launcher_shell_root(payload: ShellRootOpenRequest, request: Request) -> dict[str, Any]:
         try:
-            return get_runtime().open_shell_workspace_at(payload.path)
+            return get_runtime().open_shell_workspace_at(payload.path, include_templates=include_workspace_templates(request))
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -1259,9 +1261,9 @@ def create_app(
         return {"ok": True, "task": task}
 
     @app.post("/api/tasks/{task_name}/cancel")
-    def cancel_task(task_name: str, include_tracks: bool = True) -> dict[str, Any]:
+    def cancel_task(task_name: str, include_tracks: bool = True, local_only: bool = False) -> dict[str, Any]:
         try:
-            task = get_runtime().cancel_task(task_name, include_tracks=include_tracks)
+            task = get_runtime().cancel_task(task_name, include_tracks=include_tracks, local_only=local_only)
         except KeyError as exc:
             raise HTTPException(status_code=404, detail=f"Task '{task_name}' not found") from exc
         except ValueError as exc:
@@ -2021,19 +2023,29 @@ def create_app(
             "restart_required": restart_required,
             "instance_id": app.state.instance_id,
             "update_supported": update_supported,
-            "update_state": state if update_supported else "unavailable",
+            "restart_supported": coordinator is not None,
+            "update_state": state,
             "scheduled_operation": scheduled_operation,
             "last_update": app.state.update_result,
         }
 
     @app.get("/api/system/update/check")
     def check_pyruns_update() -> dict[str, Any]:
-        if app.state.update_coordinator is None or not app.state.update_coordinator.supported:
+        coordinator = app.state.update_coordinator
+        if coordinator is None or not coordinator.supported:
             raise HTTPException(
                 status_code=503,
                 detail="Update checks are available only in the normal 'pyr ui' server.",
             )
         try:
+            installed = coordinator.installed_upgrade_version()
+            if installed:
+                return {
+                    "current_version": __version__,
+                    "latest_version": installed,
+                    "update_available": True,
+                    "operation": "restart",
+                }
             return check_latest_version(__version__)
         except LatestVersionCheckError as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
@@ -2061,13 +2073,11 @@ def create_app(
             raise HTTPException(status_code=503, detail=str(exc)) from exc
         if ready:
             background_tasks.add_task(coordinator.trigger_shutdown)
-        state, scheduled_operation = coordinator.operation_status()
         return {
             "ok": True,
             "instance_id": app.state.instance_id,
             "version": __version__,
-            "state": state,
-            "scheduled_operation": scheduled_operation,
+            **coordinator.operation_response(),
         }
 
     @app.post("/api/system/restart", status_code=202)
@@ -2076,7 +2086,7 @@ def create_app(
         payload: SystemOperationRequest | None = None,
     ) -> dict[str, Any]:
         coordinator = app.state.update_coordinator
-        if coordinator is None or not coordinator.supported:
+        if coordinator is None:
             raise HTTPException(
                 status_code=503,
                 detail="Full-process restarts are available only in the normal 'pyr ui' server.",
@@ -2091,13 +2101,11 @@ def create_app(
             raise HTTPException(status_code=503, detail=str(exc)) from exc
         if ready:
             background_tasks.add_task(coordinator.trigger_shutdown)
-        state, scheduled_operation = coordinator.operation_status()
         return {
             "ok": True,
             "instance_id": app.state.instance_id,
             "version": __version__,
-            "state": state,
-            "scheduled_operation": scheduled_operation,
+            **coordinator.operation_response(),
         }
 
     @app.delete("/api/system/update/pending/{operation_id}")

@@ -21,6 +21,7 @@ from types import MappingProxyType
 from typing import Any, Callable, Collection, Dict, List, Literal, Mapping, Optional, overload
 
 from omegaconf import OmegaConf
+from psutil import pid_exists
 
 from pyruns._config import (
     DEFAULT_RUNNER_HEARTBEAT_SECONDS,
@@ -45,6 +46,7 @@ from pyruns.core.gpu_scheduler import (
     format_gpu_rule,
 )
 from pyruns.utils import get_logger, get_now_str
+from pyruns.utils.file_io import map_disk_reads
 from pyruns.utils.info_io import (
     MAX_RUN_HISTORY_SLOTS,
     NAMESPACE_OPERATION_KEY as _NAMESPACE_OPERATION_KEY,
@@ -1011,37 +1013,6 @@ class TaskManager:
                 return local
         return os.path.join(self.tasks_dir, name)
 
-    @staticmethod
-    def _parallel_loading_worthwhile(elapsed: float, cpu_time: float) -> bool:
-        return elapsed >= 0.008 and elapsed - cpu_time >= elapsed * 0.5
-
-    def _map_task_disk_io(self, items: list[Any], load: Callable[[Any], Any]) -> list[Any]:
-        """Preserve item order while parallelizing slow filesystem probes."""
-        if len(items) <= 8:
-            return [load(item) for item in items]
-
-        results = []
-        sample_count = min(3, len(items))
-        waiting_samples = 0
-        for index in range(sample_count):
-            started = time.perf_counter()
-            cpu_started = time.thread_time()
-            results.append(load(items[index]))
-            elapsed = time.perf_counter() - started
-            cpu_time = time.thread_time() - cpu_started
-            if self._parallel_loading_worthwhile(elapsed, cpu_time):
-                waiting_samples += 1
-            # One transient stall is not representative of the remaining batch.
-            if waiting_samples >= 2:
-                remaining = items[index + 1:]
-                if remaining:
-                    with ThreadPoolExecutor(max_workers=min(16, len(remaining))) as pool:
-                        results.extend(pool.map(load, remaining))
-                return results
-
-        results.extend(load(item) for item in items[sample_count:])
-        return results
-
     def _load_task_dirs(
         self,
         names: list[str],
@@ -1065,7 +1036,7 @@ class TaskManager:
                 name, raise_on_error=raise_on_error, _tasks_root_boundary=boundary,
             )
 
-        results = self._map_task_disk_io(names, load)
+        results = map_disk_reads(names, load)
         return [task for task in results if task is not None]
 
     def _scan_task_dir_names(
@@ -1106,7 +1077,7 @@ class TaskManager:
                 validate_tasks_root(root)
                 with os.scandir(root) as it:
                     candidates = [entry for entry in it if not entry.name.startswith(".")]
-                    for result in self._map_task_disk_io(candidates, inspect_entry):
+                    for result in map_disk_reads(candidates, inspect_entry):
                         if result:
                             name, mtime = result
                             entries.append((name, mtime, root))
@@ -1254,13 +1225,34 @@ class TaskManager:
         return cls._lease_until_value(info) > (time.time() if now is None else now)
 
     def _is_foreign_live_runner(self, info: Dict[str, Any]) -> bool:
+        """Honor another runner's lease unless its verified local PID is gone."""
         runner_id = str(info.get("runner_id", "") or "")
-        return bool(runner_id and runner_id != self.runner_id and self._lease_active(info))
+        if not runner_id or runner_id == self.runner_id or not self._lease_active(info):
+            return False
+        if runner_location(info, self.runner_host) == "local":
+            parts = runner_id.rsplit(":", 2)
+            if len(parts) == 3 and parts[0] == self.runner_host and parts[2]:
+                try:
+                    pid = int(parts[1])
+                except ValueError:
+                    return True
+                if pid > 0:
+                    return self._pid_may_exist(pid)
+        return True
+
+    @staticmethod
+    def _pid_may_exist(pid: int) -> bool:
+        try:
+            return pid_exists(pid)
+        except (OSError, OverflowError, ValueError):
+            return True
 
     def _is_current_runner(self, info: Dict[str, Any]) -> bool:
         return info.get("runner_id") == self.runner_id and runner_location(info, self.runner_host) != "remote"
 
-    def _queue_owned_elsewhere(self, info: Dict[str, Any], task_dir: str | None = None) -> bool:
+    def _queue_owned_elsewhere(
+        self, info: Dict[str, Any], task_dir: str | None = None, *, for_cancellation: bool = False,
+    ) -> bool:
         if task_storage_scope(task_dir or info.get("dir", "")) == "remote":
             return True
         if self._is_current_runner(info):
@@ -1273,7 +1265,11 @@ class TaskManager:
             if task_dir is not None:
                 return git_tracks_task(task_dir)
             return not info.get("dir") or self._legacy_queue_in_git(info["dir"])
-        return self._lease_active(info) or runner_location(info, self.runner_host) != "local"
+        if runner_location(info, self.runner_host) != "local":
+            return True
+        if for_cancellation and info.get("runner_id"):
+            return self._is_foreign_live_runner(info)
+        return self._lease_active(info)
 
     def _is_git_snapshot(self, info: Dict[str, Any], task_dir: str) -> bool:
         return task_storage_scope(task_dir) == "remote" or (
@@ -1298,21 +1294,21 @@ class TaskManager:
         inconclusive.
         """
 
+        if not self._is_current_runner(info) and runner_location(info, self.runner_host) != "local":
+            return True
+        if self._is_foreign_live_runner(info):
+            return True
         pid, created_at = self._current_process_identity(info)
-        foreign_runner_live = self._is_foreign_live_runner(info)
-        owner_may_be_remote = not self._is_current_runner(info) and runner_location(info, self.runner_host) != "local"
-        local_process_live = bool(
-            not owner_may_be_remote
-            and pid
-            and (
-                self._verified_run_process_time(info, pid, created_at) is not None
-                if created_at is not None
-                else is_pid_running(pid)
-            )
-        )
-        return bool(foreign_runner_live or owner_may_be_remote or local_process_live)
+        if not pid:
+            return False
+        if created_at is None:
+            return is_pid_running(pid)
+        if self._verified_run_process_time(info, pid, created_at) is not None:
+            return True
+        # A process may exist even though this account cannot inspect it.
+        return self._pid_may_exist(pid) and get_process_create_time(pid) is None
 
-    def _fail_unowned_running_info_if_needed(
+    def _reconcile_unowned_task_info(
         self,
         task_name: str,
         task_dir: str,
@@ -1335,24 +1331,29 @@ class TaskManager:
             if self.reconcile_unowned_running is None
             else self.reconcile_unowned_running
         )
+        status = normalize_task_status(info.get("status"))
         if (
             not reconcile_running or task_storage_scope(task_dir) == "remote"
-            or normalize_task_status(info.get("status")) != "running"
+            or status not in {"running", "queued"}
             or task_name in self._running_ids
         ):
             return info, False
-        if self._running_info_has_live_owner(info):
+        if status == "queued":
+            if not info.get("cancel_requested_at") or self._queue_owned_elsewhere(info, task_dir, for_cancellation=True):
+                return info, False
+        elif self._running_info_has_live_owner(info):
             return info, False
 
         try:
             self._mark_failed_on_disk(
                 {"name": task_name, "dir": task_dir, "run_index": run_slot_count(info)},
                 lock_timeout_sec=_STOP_TASK_INFO_LOCK_TIMEOUT_SEC,
-                expected_statuses={"running"},
+                expected_statuses={status},
                 require_no_live_owner=True,
                 expected_runner_id=str(info.get("runner_id", "") or ""),
                 expected_run_index=active_task_run_index(info),
                 expected_attempt_id=str(info.get("_attempt_id", "") or ""),
+                final_status="cancelled" if status == "queued" else "failed",
             )
         except (TaskClaimConflict, TaskStateConflict):
             updated = load_task_metadata(task_dir) or info
@@ -1364,7 +1365,7 @@ class TaskManager:
                 info, f"Could not persist final task metadata: {exc}",
             ), True
         updated = load_task_metadata(task_dir) or info
-        logger.warning("%s: local process identity is no longer live; marked %s", task_name, updated.get("status"))
+        logger.warning("%s: no live local owner for %s task; marked %s", task_name, status, updated.get("status"))
         return updated, True
 
     def _info_with_pending_terminal_write(self, info: Dict[str, Any], message: str) -> Dict[str, Any]:
@@ -1612,7 +1613,7 @@ class TaskManager:
         )
         task_name = dir_name
         if info:
-            info, _ = self._fail_unowned_running_info_if_needed(
+            info, _ = self._reconcile_unowned_task_info(
                 task_name, task_dir, info, raise_on_error=raise_on_error,
             )
         load_error = "; ".join(
@@ -1817,7 +1818,7 @@ class TaskManager:
             or task.get("_terminal_write_pending")
         ]
         check_payload = check_payload and (check_all or target_ids is not None)
-        probes = self._map_task_disk_io(
+        probes = map_disk_reads(
             current,
             lambda entry: self._probe_refresh_task(entry[0], check_payload=check_payload),
         )
@@ -1839,6 +1840,7 @@ class TaskManager:
                 continue
 
             try:
+                assert info_stat is not None
                 mtime_ns = info_stat.st_mtime_ns
                 if (
                     not force_all and task.get("_info_signature") == info_signature
@@ -1872,8 +1874,11 @@ class TaskManager:
                         str(task.get("name", "") or ""),
                     )
                 info = self._strip_queued_placeholder_run(info)
-                if task.get("_info_signature") == info_signature or task.get("_terminal_write_pending"):
-                    info, _ = self._fail_unowned_running_info_if_needed(
+                if (
+                    task.get("_info_signature") == info_signature or task.get("_terminal_write_pending")
+                    or (info.get("status") in {"running", "queued"} and info.get("cancel_requested_at"))
+                ):
+                    info, _ = self._reconcile_unowned_task_info(
                         task["name"], task["dir"], info, raise_on_error=raise_on_error,
                     )
                 else:
@@ -2903,7 +2908,8 @@ class TaskManager:
                     raise TaskStateConflict(
                         "task run changed before cancellation"
                     )
-            info["cancel_requested_at"] = requested_at
+            if not info.get("cancel_requested_at"):
+                info["cancel_requested_at"] = requested_at
             request_context["original_status"] = status
             request_context["run_index"] = current_run_index
             request_context["runner_id"] = str(info.get("runner_id", "") or "")
@@ -2915,8 +2921,10 @@ class TaskManager:
             # Only the execution host can confirm the end of a recorded run.
             if (
                 self._is_git_snapshot(info, task_dir)
-                or self._is_foreign_live_runner(info)
-                or (status == "queued" and self._queue_owned_elsewhere(info, task_dir))
+                or (
+                    self._queue_owned_elsewhere(info, task_dir, for_cancellation=True)
+                    if status == "queued" else self._is_foreign_live_runner(info)
+                )
             ):
                 request_context["action"] = "request_foreign"
                 return
@@ -4658,6 +4666,8 @@ class TaskManager:
             elif status == "queued":
                 if self._queue_owned_elsewhere(info, task_dir):
                     raise TaskClaimConflict("queued task already owned by another runner")
+                if info.get("cancel_requested_at"):
+                    raise TaskStateConflict("queued task already has a stop request")
                 if self._next_run_index(info) != run_index:
                     raise TaskStateConflict("queued task run changed before claim")
             else:
@@ -5733,7 +5743,7 @@ class TaskManager:
         expected_attempt_id: str | None = None,
         final_status: str = "failed",
     ) -> None:
-        """Persist a failed state and finalize the active run slot if needed."""
+        """Persist a terminal state and finalize the active run slot if needed."""
         if expected_attempt_id is None:
             expected_attempt_id = task.get("_attempt_id")
         finish_now = get_now_str()
@@ -5757,7 +5767,10 @@ class TaskManager:
                 raise TaskClaimConflict("task already owned by another runner")
             if require_no_live_owner:
                 if original_status == "queued":
-                    has_live_owner = self._queue_owned_elsewhere(task_info, task_dir)
+                    stopping = bool(task_info.get("cancel_requested_at"))
+                    if final_status == "cancelled" and not stopping:
+                        raise TaskStateConflict("queued stop request changed before terminal update")
+                    has_live_owner = self._queue_owned_elsewhere(task_info, task_dir, for_cancellation=stopping)
                 else:
                     has_live_owner = self._running_info_has_live_owner(task_info)
                 if has_live_owner:

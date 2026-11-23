@@ -674,21 +674,19 @@ class CoordinationStore:
         _atomic_write_json(self.request_path, recovered)
         return recovered
 
-    def active_request_locked(self, *, recover: bool = True) -> dict[str, Any] | None:
+    def current_request_locked(self, *, recover: bool = True) -> dict[str, Any] | None:
         request = self.read_request_locked()
-        if not self.request_is_active(request):
-            return None
-        assert request is not None
-        if self.request_is_stale(request):
-            if recover:
-                self.recover_stale_request_locked(request)
-            return None
+        if request is not None and self.request_is_stale(request):
+            return self.recover_stale_request_locked(request) if recover else None
         return request
+
+    def active_request_locked(self, *, recover: bool = True) -> dict[str, Any] | None:
+        request = self.current_request_locked(recover=recover)
+        return request if self.request_is_active(request) else None
 
     def read_request(self) -> dict[str, Any] | None:
         with self.locked():
-            self.active_request_locked(recover=True)
-            return self.read_request_locked()
+            return self.current_request_locked()
 
     def write_request_locked(self, request: dict[str, Any]) -> None:
         _atomic_write_json(self.request_path, request)

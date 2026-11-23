@@ -89,18 +89,16 @@ export default function Sidebar({ width = 220, compact = false, onRouteIntent }:
       className="app-navigation flex h-full flex-none flex-col border-r border-border-subtle"
       style={{ width }}
     >
-      <div>
-        <div className={clsx('flex h-12 items-center', compact ? 'justify-center gap-1 px-0' : 'gap-2 px-3')}>
-          <span className={clsx('inline-flex flex-none items-center justify-center rounded-lg text-accent-ink', compact ? 'h-6 w-5' : 'h-8 w-8 bg-accent/10')}>
+      <div data-sidebar-header className={clsx('flex flex-none items-center gap-1', compact ? 'flex-col' : 'h-12 px-2')}>
+        <div className={clsx('flex min-w-0 items-center gap-1.5', compact ? 'h-11' : 'flex-1')}>
+          <span className={clsx('inline-flex flex-none items-center justify-center rounded-lg text-accent-ink', compact ? 'h-6 w-5' : 'size-7 bg-accent/10')}>
             <Rocket aria-hidden="true" className="h-[18px] w-[18px]" />
           </span>
           {!compact && (
-            <div className="min-w-0 flex-1">
-              <div className="text-[15px] font-semibold tracking-tight text-txt-primary">Pyruns</div>
-            </div>
+            <span className="truncate text-[15px] font-semibold tracking-tight text-txt-primary">Pyruns</span>
           )}
-          <UpdateControl compact={compact || width < 220} />
         </div>
+        <UpdateControl compact={compact} showVersion={!compact && width >= 220} showRestartLabel={!compact && width >= 304} />
       </div>
 
       <nav className={clsx('flex flex-1 flex-col gap-0.5 overflow-y-auto pb-2 pt-1', compact ? 'px-2' : 'px-2.5')}>

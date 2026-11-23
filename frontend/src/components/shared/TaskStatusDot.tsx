@@ -1,5 +1,5 @@
 import { t } from '@/i18n'
-import { taskStatusLabel, taskStatusTone } from '@/theme/tokens'
+import { taskStatusLabel } from '@/theme/tokens'
 import type { Task } from '@/types'
 
 export default function TaskStatusDot({ task, decorative = false }: { task: Task; decorative?: boolean }) {
@@ -7,7 +7,7 @@ export default function TaskStatusDot({ task, decorative = false }: { task: Task
   return (
     <span
       className="task-status-dot"
-      data-task-tone={taskStatusTone(task)}
+      data-task-tone={task.status}
       data-dashed={task.task_storage === 'remote' || undefined}
       aria-hidden={decorative || undefined}
       role={decorative ? undefined : 'img'}

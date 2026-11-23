@@ -167,6 +167,7 @@ def test_system_info_exposes_instance_and_disables_updates_without_coordinator(m
     assert info.json()["version"] == __version__
     assert info.json()["instance_id"]
     assert info.json()["update_supported"] is False
+    assert info.json()["restart_supported"] is False
     assert info.json()["update_state"] == "unavailable"
     assert info.json()["installed_version"] == __version__
     assert info.json()["restart_required"] is False
@@ -239,7 +240,8 @@ def test_system_update_requires_idle_runtime_then_gates_task_starts():
     assert coordinator.handoff()["target_version"] == "0.4.0"
 
 
-def test_system_restart_reports_external_version_and_requires_manual_request(monkeypatch):
+@pytest.mark.parametrize("installed", ["0.3.0", "0.4.0"])
+def test_system_restart_is_available_with_or_without_new_files(monkeypatch, installed):
     from pyruns.web.self_update import UiUpdateCoordinator
 
     shutdowns = []
@@ -247,17 +249,19 @@ def test_system_restart_reports_external_version_and_requires_manual_request(mon
     coordinator = UiUpdateCoordinator(
         lambda: shutdowns.append("shutdown"),
         current_version="0.3.0",
+        isolated_upgrades=True,
     )
-    monkeypatch.setattr(coordinator, "_installed_version", lambda _fallback: "0.4.0")
+    monkeypatch.setattr(coordinator, "_installed_version", lambda _fallback: installed)
     client = TestClient(create_app(runtime, update_coordinator=coordinator))
 
     info = client.get("/api/system/info")
 
     assert info.status_code == 200
     assert info.json()["version"] == __version__
-    assert info.json()["installed_version"] == "0.4.0"
-    assert info.json()["restart_required"] is True
-    assert info.json()["update_state"] == "restart_required"
+    assert info.json()["installed_version"] == installed
+    assert info.json()["restart_supported"] is True
+    assert info.json()["restart_required"] is (installed != "0.3.0")
+    assert info.json()["update_state"] == ("restart_required" if installed != "0.3.0" else "idle")
     assert coordinator.requested is False
     assert shutdowns == []
 
@@ -265,8 +269,35 @@ def test_system_restart_reports_external_version_and_requires_manual_request(mon
 
     assert response.status_code == 202
     assert response.json()["state"] == "restarting"
+    assert response.json()["operation"] == "restart"
+    assert response.json()["target_version"] == ""
     assert coordinator.requested is True
     assert shutdowns == ["shutdown"]
+
+
+def test_system_update_check_offers_visible_shared_release_without_pypi(tmp_path, monkeypatch):
+    from pyruns.web.self_update import UiUpdateCoordinator
+
+    runtime = _RouteRuntime({"active_task_count": 0})
+    coordinator = UiUpdateCoordinator(
+        lambda: None, current_version=__version__, shared=True,
+        state_dir=str(tmp_path / "coordination"), isolated_upgrades=True,
+    )
+    monkeypatch.setattr(coordinator, "_start_monitor", lambda: None)
+    monkeypatch.setattr(coordinator, "_installed_version", lambda _fallback: "1.0.0")
+    monkeypatch.setattr("pyruns.web.app.check_latest_version", lambda _version: pytest.fail("PyPI is unnecessary"))
+    coordinator.attach(runtime)
+    client = TestClient(create_app(runtime, update_coordinator=coordinator))
+    try:
+        assert client.get("/api/system/update/check").json() == {
+            "current_version": __version__, "latest_version": "1.0.0", "update_available": True, "operation": "restart",
+        }
+        response = client.post("/api/system/update", json={"target_version": "1.0.0"})
+        assert response.status_code == 202
+        assert response.json()["operation"] == "restart"
+        assert coordinator.handoff()["request_id"] == ""
+    finally:
+        coordinator.close()
 
 
 def test_system_update_gates_generator_task_creation():
@@ -5299,7 +5330,7 @@ def test_web_main_restarts_idle_server_after_external_package_change(monkeypatch
     assert events[3][0] == "restart"
     restart = events[3][1]
     assert restart["owner"] is True
-    assert restart["installed_version"] == "0.4.0"
+    assert restart["installed_version"] == ""
     assert restart["request_id"] == ""
     assert restart["state_dir"]
 
@@ -5503,6 +5534,10 @@ def test_cancel_task_endpoint_requests_foreign_runner_cancellation(tmp_path, mon
     )
     runtime.task_manager.refresh_from_disk(task_ids=["alpha"], force_all=True)
     client = TestClient(create_app(runtime))
+    local_stop = client.post("/api/tasks/alpha/cancel", params={"local_only": True})
+    assert local_stop.status_code == 400
+    assert local_stop.json()["detail"] == "Stop this task on other-host."
+    assert not load_task_metadata(str(task_dir)).get("cancel_requested_at")
     requested_before_read = []
     original_read = track_store.read_tracks
 
@@ -6257,6 +6292,69 @@ def test_template_content_and_generator_create_endpoints(tmp_path):
     assert payload["recent_tasks"]
     assert payload["recent_tasks"][0]["config"] == {}
     assert payload["recent_tasks"][0]["records"] == []
+
+
+def test_template_content_and_preview_do_not_scan_the_catalog(tmp_path, monkeypatch):
+    workspace = _make_workspace(tmp_path, "main")
+    runtime = _build_runtime(workspace)
+    monkeypatch.setattr(runtime, "list_templates", lambda: pytest.fail("unexpected template catalog scan"))
+    client = TestClient(create_app(runtime))
+
+    response = client.get("/api/workspace", headers={"X-Pyruns-Include-Templates": "false"})
+    default = response.json()["default_template"]
+    assert default["value"].endswith("/config_default.yaml")
+    assert client.get("/api/templates/content", params={"value": default["value"]}).json()["label"] == default["label"]
+    preview = client.post("/api/generator/preview", json={"mode": "form", "yaml_text": "lr: 0.1 | 0.2\nmodel: tiny"})
+    assert preview.status_code == 200, preview.text
+    assert preview.json()["count"] == 2
+    switched = client.post("/api/workspace/run-root", json={"path": str(workspace)}, headers={"X-Pyruns-Include-Templates": "false"})
+    assert switched.status_code == 200
+    assert switched.json()["templates"] == []
+
+
+def test_slow_template_catalog_releases_workspace_and_rejects_stale_results(tmp_path, monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+    from pyruns.web.runtime import WorkspaceChangedError
+
+    first = _make_workspace(tmp_path, "first")
+    second = _make_workspace(tmp_path, "second")
+    runtime = _build_runtime(first)
+    entered, joined, release = threading.Event(), threading.Event(), threading.Event()
+    original_read = runtime._read_template_options
+    calls = []
+
+    def read(root, tasks):
+        calls.append(root)
+        if Path(root) == first:
+            entered.set()
+            assert release.wait(5)
+        return original_read(root, tasks)
+
+    monkeypatch.setattr(runtime, "_read_template_options", read)
+    with ThreadPoolExecutor(3) as pool:
+        try:
+            old_read = pool.submit(runtime.list_templates)
+            assert entered.wait(2)
+            future = runtime._template_scan[1]
+            original_result = future.result
+
+            def joined_result():
+                joined.set()
+                return original_result()
+
+            monkeypatch.setattr(future, "result", joined_result)
+            same_read = pool.submit(runtime.list_templates)
+            assert joined.wait(2)
+            assert pool.submit(runtime.get_workspace_info, include_templates=False).result(timeout=2)["templates"] == []
+            pool.submit(runtime.change_run_root, str(second), include_templates=False).result(timeout=2)
+            new_options = pool.submit(runtime.list_templates).result(timeout=2)
+            assert Path(new_options[0]["value"]).parent == second
+        finally:
+            release.set()
+        for pending in (old_read, same_read):
+            with pytest.raises(WorkspaceChangedError):
+                pending.result(timeout=2)
+    assert [Path(path) for path in calls] == [first, second]
 
 
 def test_template_content_rejects_paths_outside_workspace_boundary(tmp_path):

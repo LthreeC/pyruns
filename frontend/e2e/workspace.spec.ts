@@ -1,5 +1,44 @@
 import { expect, test, type Locator, type Page } from '@playwright/test'
 
+test('the production sidebar groups update and restart in the header', async ({ page, isMobile }) => {
+  if (!isMobile) await page.addInitScript(() => localStorage.setItem('pyruns.sidebarWidth', '336'))
+  await page.goto('/?token=pyruns-e2e-access-token')
+  const header = page.locator('[data-sidebar-header]')
+  const restart = header.getByRole('button', { name: 'Restart UI', exact: true })
+  const update = header.getByRole('button', { name: /Check for Pyruns updates/ })
+  await expect(restart).toBeEnabled()
+  await expect(update).toBeEnabled()
+  const checkLayout = async () => {
+    const updateBox = (await update.boundingBox())!
+    const restartBox = (await restart.boundingBox())!
+    const headerBox = (await header.boundingBox())!
+    expect(restartBox.x + restartBox.width).toBeLessThanOrEqual(headerBox.x + headerBox.width)
+    if (isMobile) {
+      expect(updateBox.x).toBe(restartBox.x)
+      expect(updateBox.y + updateBox.height).toBeLessThanOrEqual(restartBox.y)
+      expect(Math.min(restartBox.width, restartBox.height, updateBox.width, updateBox.height)).toBeGreaterThanOrEqual(44)
+    } else {
+      expect(updateBox.y).toBe(restartBox.y)
+      expect(updateBox.x + updateBox.width).toBeLessThanOrEqual(restartBox.x)
+      expect(headerBox.x + headerBox.width - restartBox.x - restartBox.width).toBeLessThanOrEqual(12)
+    }
+  }
+  await checkLayout()
+  if (!isMobile) {
+    const info = await (await page.request.get('/api/system/info')).json()
+    await expect(update).toHaveText(`v${info.version}`)
+    await expect(restart).toHaveText('Restart UI')
+    const resizer = page.getByRole('separator', { name: 'Resize navigation sidebar' })
+    await resizer.press('Home')
+    await expect(resizer).toHaveAttribute('aria-valuenow', '180')
+    await checkLayout()
+  }
+  await restart.click()
+  const dialog = page.getByRole('dialog', { name: /Restart .*UI|Restart Pyruns/ })
+  await expect(dialog.getByRole('button', { name: 'Restart UI', exact: true })).toBeVisible()
+  await dialog.getByRole('button', { name: 'Cancel', exact: true }).click()
+})
+
 test('idle UI update confirms, waits for a new instance, and reloads', async ({ page, isMobile }) => {
   let restarted = false
   let updateChecks = 0
@@ -50,6 +89,8 @@ test('idle UI update confirms, waits for a new instance, and reloads', async ({ 
 
   await page.goto('/?token=pyruns-e2e-access-token')
   const updateButton = page.getByRole('button', { name: /Check for Pyruns updates.*0\.3\.0/ })
+  const legacyRestart = page.locator('[data-sidebar-header]').getByRole('button', { name: 'Restart UI', exact: true })
+  await expect(legacyRestart).toBeEnabled()
   const homeLink = page.getByRole('link', { name: 'Home' })
   await expect(updateButton).toBeVisible()
   const updateBox = await updateButton.boundingBox()
@@ -126,7 +167,7 @@ test('busy update is refused without waiting and can be retried after tasks fini
 
 test('scheduled restart leaves the UI available and can be cancelled before it starts', async ({ page }) => {
   await page.clock.install()
-  const scheduled = { id: 'scheduled-restart', operation: 'restart', target_version: '0.4.0' }
+  const scheduled = { id: 'scheduled-restart', operation: 'restart', target_version: '' }
   let state = 'restart_required'
   let restartRequests = 0
   let cancellations = 0
@@ -156,12 +197,12 @@ test('scheduled restart leaves the UI available and can be cancelled before it s
     return route.fulfill({ json: { ok: true } })
   })
   await page.goto('/?token=pyruns-e2e-access-token')
-  const restartButton = page.getByRole('button', { name: /Restart Pyruns to load installed version 0\.4\.0/ })
-  const scheduledButton = page.getByRole('button', { name: 'Restart scheduled to load v0.4.0' })
+  const restartButton = page.getByRole('button', { name: 'Restart UI', exact: true })
+  const scheduledButton = page.getByRole('button', { name: 'Restart scheduled', exact: true })
   const scheduleRestart = async () => {
     await restartButton.click()
-    await page.getByRole('dialog', { name: 'Restart Pyruns to load v0.4.0?' })
-      .getByRole('button', { name: 'Restart Interfaces' }).click()
+    await page.getByRole('dialog', { name: 'Restart this Web UI?' })
+      .getByRole('button', { name: 'Restart UI', exact: true }).click()
     await expect(scheduledButton).toBeEnabled()
   }
   await scheduleRestart()
@@ -172,7 +213,7 @@ test('scheduled restart leaves the UI available and can be cancelled before it s
   await expect(scheduledButton).toBeEnabled()
   await page.reload()
   await scheduledButton.click()
-  await page.getByRole('dialog', { name: 'Restart scheduled to load v0.4.0' })
+  await page.getByRole('dialog', { name: 'Restart scheduled', exact: true })
     .getByRole('button', { name: 'Cancel schedule' }).click()
   await expect(restartButton).toBeEnabled()
   expect(cancellations).toBe(1)
@@ -342,7 +383,7 @@ test('update progress shows acknowledged and disconnected stages with elapsed ti
   await page.getByRole('button', { name: /Check for Pyruns updates/ }).click()
   await page.getByRole('dialog', { name: 'Update Pyruns to v0.4.0?' }).getByRole('button', { name: 'Update and Restart' }).click()
   const progress = page.getByRole('dialog', { name: 'Updating Pyruns' })
-  await expect(progress.getByText('Request accepted. Waiting for the interfaces to restart…')).toBeVisible()
+  await expect(progress.getByText('Request accepted. Waiting for installation and restart…')).toBeVisible()
   disconnected = true
   await page.clock.fastForward(1_000)
   await expect(progress.getByText('The service is temporarily unreachable. Waiting to reconnect…')).toBeVisible()
@@ -394,19 +435,21 @@ test('update control reports the current PyPI release without restarting', async
   expect(updateRequests).toBe(0)
 })
 
-test('external package change waits for a manual shared restart', async ({ page }) => {
+for (const installed of ['0.3.0', '0.4.0']) test(`manual restart loads disk files at v${installed}`, async ({ page }) => {
   let restarted = false
   let restartRequests = 0
   let updateChecks = 0
+  let updateRequests = 0
 
   await page.route('**/api/system/info', route => route.fulfill({
     json: {
-      version: restarted ? '0.4.0' : '0.3.0',
-      installed_version: '0.4.0',
-      restart_required: !restarted,
+      version: restarted ? installed : '0.3.0',
+      installed_version: installed,
+      restart_required: !restarted && installed !== '0.3.0',
       instance_id: restarted ? 'restarted-instance' : 'stale-instance',
-      update_supported: true,
-      update_state: restarted ? 'idle' : 'restart_required',
+      update_supported: installed !== '0.3.0' || restarted,
+      restart_supported: true,
+      update_state: restarted || installed === '0.3.0' ? 'idle' : 'restart_required',
       last_update: null,
     },
   }))
@@ -414,7 +457,13 @@ test('external package change waits for a manual shared restart', async ({ page 
     updateChecks += 1
     return route.fulfill({ status: 500, json: { detail: 'Version check should not run' } })
   })
+  await page.route('**/api/system/update', route => {
+    updateRequests += 1
+    return route.fulfill({ status: 500, json: { detail: 'Update should not run' } })
+  })
   await page.route('**/api/system/restart', route => {
+    expect(route.request().method()).toBe('POST')
+    expect(route.request().postDataJSON()).toEqual({ defer_if_busy: true })
     restartRequests += 1
     restarted = true
     return route.fulfill({
@@ -424,25 +473,95 @@ test('external package change waits for a manual shared restart', async ({ page 
         instance_id: 'stale-instance',
         version: '0.3.0',
         state: 'restarting',
+        operation: 'restart',
+        target_version: '',
       },
     })
   })
 
   await page.goto('/?token=pyruns-e2e-access-token')
-  const restartButton = page.getByRole('button', {
-    name: /Restart Pyruns to load installed version 0\.4\.0/,
-  })
+  const restartButton = page.getByRole('button', { name: 'Restart UI', exact: true })
   await expect(restartButton).toBeVisible()
   await restartButton.click()
 
-  const confirmation = page.getByRole('dialog', { name: 'Restart Pyruns to load v0.4.0?' })
+  const confirmation = page.getByRole('dialog', { name: 'Restart this Web UI?' })
   await expect(confirmation).toBeVisible()
-  await confirmation.getByRole('button', { name: 'Restart Interfaces' }).click()
+  await confirmation.getByRole('button', { name: 'Restart UI', exact: true }).click()
 
-  await expect(page.getByRole('dialog', { name: 'Restarting Pyruns' })).toBeVisible()
-  await expect(page.getByRole('button', { name: /Check for Pyruns updates.*0\.4\.0/ })).toBeVisible()
+  const progress = page.getByRole('dialog', { name: 'Restarting Pyruns' })
+  await expect(progress.getByText(/^Waited \d+s$/)).toBeVisible()
+  await expect(page.getByRole('button', { name: `Check for Pyruns updates, installed version ${installed}` })).toBeVisible()
   expect(restartRequests).toBe(1)
   expect(updateChecks).toBe(0)
+  expect(updateRequests).toBe(0)
+})
+
+for (const [status, detail] of [
+  [404, 'Not Found'],
+  [503, 'The running UI already matches the installed Pyruns version.'],
+] as const) test(`legacy restart refusal (${status}) explains how to reload the server`, async ({ page }) => {
+  let updateChecks = 0
+  await page.route('**/api/system/info', route => route.fulfill({ json: {
+    version: '0.3.0', installed_version: '0.3.0', restart_required: false,
+    instance_id: 'legacy-instance', update_supported: true, update_state: 'idle', last_update: null,
+  } }))
+  await page.route('**/api/system/restart', route => route.fulfill({ status, json: { detail } }))
+  await page.route('**/api/system/update/check', route => {
+    updateChecks += 1
+    return route.fulfill({ json: { current_version: '0.3.0', latest_version: '0.3.0', update_available: false } })
+  })
+
+  await page.goto('/?token=pyruns-e2e-access-token')
+  const restart = page.getByRole('button', { name: 'Restart UI', exact: true })
+  await expect(restart).toBeEnabled()
+  await restart.click()
+  await page.getByRole('dialog', { name: 'Restart this Web UI?' })
+    .getByRole('button', { name: 'Restart UI', exact: true }).click()
+  const failure = page.getByRole('dialog', { name: 'Could not restart Pyruns' })
+  await expect(failure).toContainText('run pyr ui from the environment with the updated build')
+  await expect(failure.getByRole('button', { name: 'Retry' })).toHaveCount(0)
+  expect(updateChecks).toBe(0)
+  await failure.getByRole('button', { name: 'Close' }).click()
+  await expect(restart).toBeFocused()
+  await page.getByRole('button', { name: /Check for Pyruns updates/ }).click()
+  await expect(page.getByText('Pyruns is up to date')).toBeVisible()
+  expect(updateChecks).toBe(1)
+})
+
+test('the sidebar respects explicitly unsupported UI restarts', async ({ page }) => {
+  await page.route('**/api/system/info', route => route.fulfill({ json: {
+    version: '0.3.0', installed_version: '0.3.0', restart_required: false, restart_supported: false,
+    instance_id: 'no-restart', update_supported: true, update_state: 'idle', last_update: null,
+  } }))
+  await page.goto('/?token=pyruns-e2e-access-token')
+  const restart = page.getByRole('button', { name: 'Restart UI', exact: true })
+  await expect(restart).toBeDisabled()
+  await expect(restart).toHaveAttribute('title', 'UI restart is unavailable on this server.')
+})
+
+test('update switches to local restart progress when the shared release was already installed', async ({ page }) => {
+  let started = false
+  await page.route('**/api/system/info', route => route.fulfill({ json: {
+    version: '0.3.0', installed_version: '0.3.0', restart_required: false, restart_supported: true,
+    instance_id: 'old-instance', update_supported: true, update_state: started ? 'restarting' : 'idle', last_update: null,
+  } }))
+  await page.route('**/api/system/update/check', route => route.fulfill({ json: {
+    current_version: '0.3.0', latest_version: '0.4.0', update_available: true,
+  } }))
+  await page.route('**/api/system/update', route => {
+    started = true
+    return route.fulfill({ status: 202, json: {
+      ok: true, instance_id: 'old-instance', state: 'restarting', operation: 'restart', target_version: '0.4.1',
+    } })
+  })
+
+  await page.goto('/?token=pyruns-e2e-access-token')
+  await page.getByRole('button', { name: /Check for Pyruns updates/ }).click()
+  await page.getByRole('dialog', { name: 'Update Pyruns to v0.4.0?' }).getByRole('button', { name: 'Update and Restart' }).click()
+  const progress = page.getByRole('dialog', { name: 'Restarting Pyruns' })
+  await expect(progress.getByText('Request accepted. Waiting for this interface to restart…')).toBeVisible()
+  await expect(progress.getByText(/Target v0\.4\.1/)).toBeVisible()
+  await expect(progress.getByText(/Live pip progress/)).toHaveCount(0)
 })
 
 test('a shared backend restart reloads a non-initiating interface', async ({ page }) => {
@@ -2555,14 +2674,75 @@ test('template list load failure has a retry that clears the error', async ({ pa
   }))
 
   await page.goto('/generator?token=pyruns-e2e-access-token')
+  await expect(page.getByRole('textbox', { name: 'Task Prefix' })).toBeVisible()
+  expect(attempts).toBe(0)
+  await page.getByRole('button', { name: 'Load task' }).click()
   const templateError = page.getByRole('alert').filter({ hasText: 'Templates could not be loaded.' })
   await expect(templateError).toBeVisible()
   await templateError.getByRole('button', { name: 'Retry' }).click()
 
   await expect(templateError).toBeHidden()
-  await page.getByRole('button', { name: 'Load task' }).click()
   await expect(page.getByRole('option', { name: 'Task A' })).toBeVisible()
   expect(attempts).toBe(2)
+})
+
+test('large template pickers keep keyboard selection and search across the full list', async ({ page }) => {
+  await mockReadyShellWorkspace(page)
+  const items = Array.from({ length: 1200 }, (_, index) => ({ value: `task-${index}`, label: `Task ${index}` }))
+  let listReads = 0
+  await page.route('**/api/templates', route => {
+    listReads += 1
+    return route.fulfill({ json: { items } })
+  })
+  await page.route('**/api/templates/content?*', route => {
+    const value = new URL(route.request().url()).searchParams.get('value') || ''
+    return route.fulfill({ json: { value, label: items.find(item => item.value === value)?.label,
+      path: `/tmp/${value}.sh`, content: 'echo ready', mode_hint: 'shell', read_only: false, parsed_config: null } })
+  })
+
+  await page.goto('/generator?token=pyruns-e2e-access-token')
+  await page.getByRole('button', { name: 'Load task' }).click()
+  const box = page.getByRole('listbox')
+  const search = page.getByRole('combobox', { name: 'Search tasks' })
+  await expect(box.getByRole('option', { name: 'Task 0', exact: true })).toBeVisible()
+  await expect(box.getByRole('option')).toHaveCount(24)
+  await search.press('End')
+  const last = box.getByRole('option', { name: 'Task 1199', exact: true })
+  await expect(last).toBeInViewport()
+  await expect(last).toHaveAttribute('aria-setsize', '1201')
+  await expect(search).toHaveAttribute('aria-activedescendant', /option-1200$/)
+  await search.press('Enter')
+
+  await page.getByRole('button', { name: 'Task 1199', exact: true }).click()
+  await search.fill('Task 675')
+  await expect(box.getByRole('option')).toHaveCount(1)
+  await box.getByRole('option', { name: 'Task 675', exact: true }).click()
+  await expect(page.getByRole('button', { name: 'Task 675', exact: true })).toBeVisible()
+  expect(listReads).toBe(1)
+})
+
+test('Generator reads the workspace default without loading the template catalog', async ({ page }) => {
+  const defaultValue = '/work/config_default.yaml'
+  let catalogReads = 0
+  await page.route('**/api/workspace', route => route.fulfill({ json: {
+    run_root: '/work', tasks_dir: '/work/tasks', workspace_kind: 'script', workspace_ready: true,
+    script_path: '/work/train.py', script_name: 'train', settings: {}, templates: [],
+    default_template: { value: defaultValue, label: 'config_default.yaml' },
+  } }))
+  await page.route('**/api/templates', route => {
+    catalogReads += 1
+    return route.fulfill({ json: { items: [{ value: defaultValue, label: 'config_default.yaml' }] } })
+  })
+  await page.route('**/api/templates/content?*', route => {
+    expect(new URL(route.request().url()).searchParams.get('value')).toBe(defaultValue)
+    return route.fulfill({ json: { value: defaultValue, label: 'config_default.yaml', path: defaultValue,
+      content: 'lr: 0.01\n', mode_hint: 'yaml', read_only: true, parsed_config: { lr: 0.01 } } })
+  })
+  await page.goto('/generator?token=pyruns-e2e-access-token')
+  await expect(page.getByRole('textbox', { name: 'lr parameter value', exact: true })).toHaveValue('0.01')
+  expect(catalogReads).toBe(0)
+  await page.getByRole('button', { name: 'config_default.yaml', exact: true }).click()
+  await expect.poll(() => catalogReads).toBe(1)
 })
 
 test('generator keeps shell scripts scrollable and preserves drafts across navigation', async ({ page, isMobile }) => {

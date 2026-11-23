@@ -1239,7 +1239,7 @@ def test_react_generator_keeps_workspace_default_selected_after_create():
 
     assert "loadTemplate(generatedTemplateValue)" not in generator
     assert "buildGeneratedTemplateValue" not in generator
-    assert "await fetchTemplates()" in generator
+    assert "invalidateTemplateList()" in generator
     assert "firstTaskName: result.items[0]?.name || ''" in generator
 
 

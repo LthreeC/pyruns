@@ -120,9 +120,9 @@ test('task source and uncertainty remain distinct from running and log connectiv
     status_counts: { pending: 2, queued: 0, running: 2, completed: 0, failed: 0, cancelled: 0 },
   } }))
   await page.route('**/api/tasks/remote-task?*', route => route.fulfill({ json: task }))
-  await page.route('**/api/tasks/remote-task/cancel?*', route => {
-    task.cancel_requested_at = Date.now() / 1000
-    return route.fulfill({ json: { ok: true, task } })
+  const remoteStopRequests: string[] = []
+  page.on('request', request => {
+    if (new URL(request.url()).pathname === '/api/tasks/remote-task/cancel') remoteStopRequests.push(request.url())
   })
   for (const observed of [task, local]) {
     await page.route(`**/api/tasks/${observed.name}/logs?*`, route => route.fulfill({ json: {
@@ -132,10 +132,11 @@ test('task source and uncertainty remain distinct from running and log connectiv
   }
   await page.routeWebSocket('**/api/tasks/events?*', socket => socket.send(JSON.stringify({ type: 'ready' })))
   await page.goto('/manager?token=pyruns-e2e-access-token')
-  await expect(page.getByText('gpu-worker-02', { exact: true })).toBeVisible()
+  await expect(page.getByText('Stop on gpu-worker-02', { exact: true })).toBeVisible()
   await expect(page.getByText('Runner status awaiting confirmation', { exact: true })).toBeVisible()
   await expect(page.getByTitle('The recorded runner lease has expired. This does not confirm that the process stopped; waiting for a verified result.')).toBeVisible()
   const card = page.locator('[data-task-card="remote-task"]')
+  await expect(card.getByRole('button', { name: /^Stop remote-task$/ })).toHaveCount(0)
   await expect(card.getByText('Last reported running', { exact: true })).toBeVisible()
   await expect(card.getByRole('button', { name: 'Open details for remote-task' })).toHaveAccessibleDescription('Last reported running')
   const localCard = page.locator('[data-task-card="local-task"]')
@@ -174,20 +175,11 @@ test('task source and uncertainty remain distinct from running and log connectiv
   const title = page.locator('.monitor-task-title')
   await expect(header.getByText('Running', { exact: true })).toBeVisible()
   await recordedRow.click()
-  await header.getByRole('button', { name: 'Stop', exact: true }).click()
-  await page.getByRole('button', { name: 'Stop Task', exact: true }).click()
-  const stoppingRow = page.getByRole('button', { name: 'View remote-task, stopping', exact: true })
-  const stoppingDot = stoppingRow.getByRole('img', { name: 'Stopping', exact: true })
-  await expect(stoppingDot).toHaveCSS('border-top-style', 'solid')
-  await expect(stoppingDot).toHaveAttribute('data-task-tone', 'stopping')
-  await expect(stoppingRow.locator('.animate-pulse')).toHaveCount(0)
-  await expect(header.getByText('Stopping', { exact: true }).first()).toBeVisible()
-  await expect(header.getByRole('button', { name: 'Stopping', exact: true })).toBeDisabled()
+  await expect(header.getByText('Last reported running', { exact: true })).toBeVisible()
+  await expect(header.getByRole('button', { name: 'Stop', exact: true })).toHaveCount(0)
   const execution = title.getByRole('group', { name: 'Execution source' })
-  await expect(execution.getByText('gpu-worker-02', { exact: true })).toBeVisible()
-  const warning = execution.getByTitle('Cancellation was requested. Waiting for the runner to confirm the result.')
-  await expect(warning).toBeVisible()
-  await expect(warning).toHaveText('Cancellation awaiting confirmation')
+  await expect(execution.getByText('Stop on gpu-worker-02', { exact: true })).toBeVisible()
+  const warning = execution.getByText('Runner status awaiting confirmation', { exact: true })
   await expect(execution).toHaveCSS('white-space', 'nowrap')
   const taskBox = (await title.getByText('remote-task', { exact: true }).boundingBox())!
   const sourceBox = (await execution.boundingBox())!
@@ -196,7 +188,7 @@ test('task source and uncertainty remain distinct from running and log connectiv
   await page.screenshot({ path: testInfo.outputPath('monitor-execution.png') })
   if (!isMobile) {
     await page.setViewportSize({ width: 1920, height: 900 })
-    await expect(warning.getByText('Cancellation awaiting confirmation')).toHaveCSS('position', 'static')
+    await expect(warning).toHaveCSS('position', 'static')
     await page.screenshot({ path: testInfo.outputPath('monitor-execution-wide.png') })
   }
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true)
@@ -207,6 +199,58 @@ test('task source and uncertainty remain distinct from running and log connectiv
   await expect(cancelledDot).toHaveCSS('border-top-style', 'solid')
   await expect(cancelledDot).toHaveAttribute('data-task-tone', 'cancelled')
   await expect(header.getByText('Cancelled', { exact: true })).toBeVisible()
+  expect(remoteStopRequests).toEqual([])
+})
+
+test('Manager and Monitor allow retrying a pending local stop', async ({ page }) => {
+  const task = {
+    name: 'local-run', status: 'running', task_kind: 'shell', task_identity: 'local-stop',
+    dir: '/runs/local-run', config_file: 'config.sh', task_storage: 'shared', runner_location: 'local',
+    run_index: 1, pids: [123], local_process_verified: true, cancel_requested_at: Date.now() / 1000,
+    start_times: ['2026-11-24_10-00-00'], finish_times: [], run_statuses: ['running'],
+    config: {}, env: {}, records: [], tracks: [], _load_error: 'Temporary read error',
+  }
+  let requests = 0
+  await page.route('**/api/tasks?*', route => route.fulfill({ json: {
+    items: [task], total: 1, offset: 0, limit: 50, has_more: false,
+    status_counts: { [task.status]: 1 },
+  } }))
+  await page.route('**/api/tasks/local-run?*', route => route.fulfill({ json: task }))
+  await page.route('**/api/tasks/local-run/cancel?*', route => {
+    expect(new URL(route.request().url()).searchParams.get('local_only')).toBe('true')
+    requests += 1
+    if (requests === 2) {
+      task.status = 'cancelled'
+      task.run_statuses = ['cancelled']
+    }
+    return route.fulfill({ json: { ok: true, task } })
+  })
+  await page.route('**/api/tasks/local-run/logs?*', route => route.fulfill({ json: {
+    task_name: task.name, content: 'hello\n', offset: 6, selected_log: 'run1.log',
+    available_logs: ['run1.log'], log_identity: 'log-1',
+  } }))
+  await page.routeWebSocket('**/api/tasks/events?*', socket => socket.send(JSON.stringify({ type: 'ready' })))
+  await page.routeWebSocket('**/api/tasks/local-run/logs/stream?*', () => {})
+
+  await page.goto('/manager?token=pyruns-e2e-access-token')
+  const card = page.locator('[data-task-card="local-run"]')
+  const retryCard = card.getByRole('button', { name: 'Stop local-run', exact: true })
+  await expect(card.getByText('Running', { exact: true })).toBeVisible()
+  await expect(card).toHaveAttribute('data-task-tone', 'running')
+  await retryCard.click()
+  await page.getByRole('button', { name: 'Stop Task', exact: true }).click()
+  await expect.poll(() => requests).toBe(1)
+  await expect(page.getByRole('dialog')).toHaveCount(0)
+  await expect(retryCard).toBeEnabled()
+
+  await page.goto('/monitor')
+  const header = page.locator('.monitor-header')
+  await expect(header.getByText('Running', { exact: true })).toBeVisible()
+  await header.getByRole('button', { name: 'Stop', exact: true }).click()
+  await page.getByRole('button', { name: 'Stop Task', exact: true }).click()
+  await expect.poll(() => requests).toBe(2)
+  await expect(header.getByText('Cancelled', { exact: true })).toBeVisible()
+  await expect(header.getByRole('button', { name: 'Run', exact: true })).toBeEnabled()
 })
 
 test('source checkboxes filter both task views and allow an empty selection', async ({ page }, testInfo) => {

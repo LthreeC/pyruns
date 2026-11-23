@@ -33,7 +33,9 @@ let dashboardRequestSeq = 0
 let metricsRequestSeq = 0
 let generatorTemplateListRequestSeq = 0
 let generatorTemplateListController: AbortController | null = null
+let generatorTemplateListPending: Promise<void> | null = null
 let generatorTemplateRequestSeq = 0
+let generatorTemplateController: AbortController | null = null
 let generatorDraftVersion = 0
 let workspaceRequestSeq = 0
 let launcherOpenPromise: Promise<boolean> | null = null
@@ -46,6 +48,7 @@ const MANAGER_SORT_STORAGE_KEY = 'pyruns_manager_sort'
 const GENERATOR_COLS_STORAGE_KEY = 'pyruns_generator_cols'
 const GENERATOR_STORAGE_PREFERENCE_KEY = 'pyruns_generator_task_storage'
 const GENERATOR_TIMESTAMP_PREFERENCE_KEY = 'pyruns_generator_append_timestamp'
+const GENERATOR_TEMPLATE_CACHE_MS = 15_000
 const TASK_SOURCES_PREFERENCE_KEY = 'pyruns_task_sources'
 const PINNED_PARAMS_STORAGE_KEY = 'pyruns_pinned_params_v2'
 export const MANAGER_TASK_PAGE_SIZE = 50
@@ -228,7 +231,10 @@ function resetWorkspaceScopedState(nextWorkspaceKey: string) {
   generatorTemplateListRequestSeq += 1
   generatorTemplateListController?.abort()
   generatorTemplateListController = null
+  generatorTemplateListPending = null
   generatorTemplateRequestSeq += 1
+  generatorTemplateController?.abort()
+  generatorTemplateController = null
   generatorDraftVersion += 1
   useTaskStore.setState({
     sources: DEFAULT_SOURCES,
@@ -283,6 +289,7 @@ function resetWorkspaceScopedState(nextWorkspaceKey: string) {
   const storage = readWorkspacePreference(GENERATOR_STORAGE_PREFERENCE_KEY, nextWorkspaceKey)
   useGeneratorStore.setState({
     templates: [],
+    templateListUpdatedAt: null,
     selectedTemplate: '',
     templateContent: null,
     viewMode: 'form',
@@ -1167,6 +1174,7 @@ export const useDashboardStore = create<DashboardState>((set) => ({
 
 interface GeneratorState {
   templates: { value: string; label: string }[]
+  templateListUpdatedAt: number | null
   selectedTemplate: string
   templateContent: TemplateContent | null
   viewMode: GeneratorMode
@@ -1179,8 +1187,9 @@ interface GeneratorState {
   pinnedParams: string[]
   dirty: boolean
   loading: boolean
-  fetchTemplates: () => Promise<void>
-  loadTemplate: (value: string) => Promise<void>
+  fetchTemplates: (reuse?: boolean) => Promise<void>
+  invalidateTemplateList: () => void
+  loadTemplate: (value: string, loadedContent?: TemplateContent) => Promise<void>
   clearTemplate: () => void
   setViewMode: (m: GeneratorMode) => void
   setYamlText: (t: string) => void
@@ -1195,6 +1204,7 @@ interface GeneratorState {
 
 export const useGeneratorStore = create<GeneratorState>((set, get) => ({
   templates: [],
+  templateListUpdatedAt: null,
   selectedTemplate: '',
   templateContent: null,
   viewMode: 'form',
@@ -1209,36 +1219,59 @@ export const useGeneratorStore = create<GeneratorState>((set, get) => ({
     : readStoredStringArray('pyruns_pinned_params').map(key => configPathId(key.split('.').filter(Boolean))),
   dirty: false,
   loading: false,
-  async fetchTemplates() {
+  fetchTemplates(reuse = false) {
+    if (reuse && generatorTemplateListPending) return generatorTemplateListPending
+    const updatedAt = get().templateListUpdatedAt
+    if (reuse && updatedAt !== null && Date.now() - updatedAt < GENERATOR_TEMPLATE_CACHE_MS) return Promise.resolve()
     const requestId = ++generatorTemplateListRequestSeq
     const workspaceKey = currentWorkspaceKey()
     generatorTemplateListController?.abort()
     const controller = new AbortController()
     generatorTemplateListController = controller
     const timeout = setTimeout(() => controller.abort(new Error('Template list loading timed out. Retry to refresh.')), 10_000)
-    try {
-      const res = await api.getTemplates(controller.signal)
-      if (requestId === generatorTemplateListRequestSeq && workspaceKey === currentWorkspaceKey()) {
-        set({ templates: res.items })
+    const pending = (async () => {
+      try {
+        const res = await api.getTemplates(controller.signal)
+        controller.signal.throwIfAborted()
+        if (requestId === generatorTemplateListRequestSeq && workspaceKey === currentWorkspaceKey()) {
+          set({ templates: res.items, templateListUpdatedAt: Date.now() })
+        }
+      } catch (error) {
+        if (requestId === generatorTemplateListRequestSeq && workspaceKey === currentWorkspaceKey()) throw error
+      } finally {
+        clearTimeout(timeout)
+        if (generatorTemplateListController === controller) {
+          generatorTemplateListController = null
+          generatorTemplateListPending = null
+        }
       }
-    } catch (error) {
-      if (requestId === generatorTemplateListRequestSeq && workspaceKey === currentWorkspaceKey()) throw error
-    } finally {
-      clearTimeout(timeout)
-      if (generatorTemplateListController === controller) generatorTemplateListController = null
-    }
+    })()
+    generatorTemplateListPending = pending
+    return pending
   },
-  async loadTemplate(value: string) {
+  invalidateTemplateList() {
+    generatorTemplateListRequestSeq += 1
+    generatorTemplateListController?.abort()
+    generatorTemplateListController = null
+    generatorTemplateListPending = null
+    set({ templateListUpdatedAt: null })
+  },
+  async loadTemplate(value: string, loadedContent?: TemplateContent) {
     const requestId = ++generatorTemplateRequestSeq
     const draftVersion = generatorDraftVersion
     const workspaceKey = currentWorkspaceKey()
+    generatorTemplateController?.abort()
     if (!value) {
+      generatorTemplateController = null
       set({ selectedTemplate: '', templateContent: null, yamlText: '', shellText: '', dirty: false, loading: false })
       return
     }
+    const controller = new AbortController()
+    generatorTemplateController = controller
+    const timeout = setTimeout(() => controller.abort(new Error('Template loading timed out. Try again.')), 10_000)
     set({ loading: true })
     try {
-      const content = await api.getTemplateContent(value)
+      const content = loadedContent ?? await api.getTemplateContent(value, controller.signal)
       if (
         requestId !== generatorTemplateRequestSeq
         || draftVersion !== generatorDraftVersion
@@ -1246,6 +1279,7 @@ export const useGeneratorStore = create<GeneratorState>((set, get) => ({
       ) {
         return
       }
+      controller.signal.throwIfAborted()
       set({
         selectedTemplate: value,
         templateContent: content,
@@ -1254,7 +1288,11 @@ export const useGeneratorStore = create<GeneratorState>((set, get) => ({
         viewMode: content.mode_hint === 'shell' ? 'shell' : get().viewMode === 'shell' ? 'yaml' : get().viewMode,
         dirty: false,
       })
+    } catch (error) {
+      if (requestId === generatorTemplateRequestSeq && draftVersion === generatorDraftVersion && workspaceKey === currentWorkspaceKey()) throw error
     } finally {
+      clearTimeout(timeout)
+      if (generatorTemplateController === controller) generatorTemplateController = null
       if (requestId === generatorTemplateRequestSeq && workspaceKey === currentWorkspaceKey()) {
         set({ loading: false })
       }
@@ -1262,6 +1300,8 @@ export const useGeneratorStore = create<GeneratorState>((set, get) => ({
   },
   clearTemplate() {
     generatorTemplateRequestSeq += 1
+    generatorTemplateController?.abort()
+    generatorTemplateController = null
     generatorDraftVersion += 1
     set({ selectedTemplate: '', templateContent: null, yamlText: '', shellText: '', dirty: false, loading: false })
   },

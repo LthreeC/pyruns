@@ -11,13 +11,8 @@ export type TaskStatus = keyof typeof STATUS_LABELS
 
 export const ALL_STATUSES: TaskStatus[] = ['pending', 'queued', 'running', 'completed', 'failed', 'cancelled']
 
-export function isTaskStopping(task: { status: TaskStatus; cancel_requested_at?: number | string | null }) {
-  return (task.status === 'running' || task.status === 'queued') && Boolean(task.cancel_requested_at)
-}
-
 type TaskStatusDetails = {
   status: TaskStatus
-  cancel_requested_at?: number | string | null
   runner_location?: string
   runner_lease_expired?: boolean | null
   task_storage?: string
@@ -32,12 +27,7 @@ function taskActivityReport(task: TaskStatusDetails) {
   return task.runner_location === 'remote' ? 'remote' : null
 }
 
-export function taskStatusTone(task: TaskStatusDetails) {
-  return isTaskStopping(task) ? 'stopping' : task.status
-}
-
 export function taskStatusLabel(task: TaskStatusDetails) {
-  if (isTaskStopping(task)) return 'Stopping'
   const report = taskActivityReport(task)
   if (report === 'last') return task.status === 'running' ? 'Last reported running' : 'Last reported queued'
   if (report === 'remote') return task.status === 'running' ? 'Remote reports running' : 'Remote reports queued'

@@ -156,6 +156,7 @@ export interface WorkspaceInfo {
   script_name: string
   config_default_source?: string
   config_default_source_name?: string
+  default_template?: TemplateOption | null
   project_root?: string
   workspace_kind: WorkspaceKind
   workspace_ready: boolean
@@ -225,6 +226,7 @@ export interface UiUpdateResult {
   previous_version: string
   installed_version: string
   exit_code: number
+  operation?: 'restart'
   error?: string
 }
 
@@ -234,6 +236,7 @@ export interface SystemInfo {
   restart_required: boolean
   instance_id: string
   update_supported: boolean
+  restart_supported?: boolean
   update_state: string
   scheduled_operation?: UiScheduledOperation | null
   last_update: UiUpdateResult | null
@@ -244,6 +247,8 @@ export interface UiUpdateResponse {
   instance_id: string
   version: string
   state: string
+  operation?: 'upgrade' | 'restart' | null
+  target_version?: string
   scheduled_operation?: UiScheduledOperation | null
 }
 
@@ -258,6 +263,7 @@ export interface UiVersionCheck {
   current_version: string
   latest_version: string
   update_available: boolean
+  operation?: 'restart'
 }
 
 export interface TemplateOption {

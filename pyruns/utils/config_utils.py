@@ -14,7 +14,7 @@ from omegaconf._utils import get_omega_conf_dumper
 
 from pyruns._config import CONFIG_DEFAULT_FILENAME, CONFIG_FILENAME, MAX_CONFIG_FILE_BYTES
 from pyruns.utils.info_io import _replace_with_retry, load_task_metadata
-from pyruns.utils.file_io import read_bounded_bytes, regular_file_opener
+from pyruns.utils.file_io import map_disk_reads, read_bounded_bytes, regular_file_opener
 from pyruns.utils.sort_utils import normalize_task_search_text, sort_tasks_for_manager
 
 
@@ -358,6 +358,31 @@ def get_nested(data: Mapping[str, Any], full_key: str):
     return None, None, None
 
 
+def template_task_entry(task_dir: str, payload_path: str, info: Dict[str, Any]) -> Dict[str, Any]:
+    """Extract the sort keys and picker path for a single loadable task."""
+    from pyruns._config import TASK_INFO_FILENAME
+
+    created_at = info.get("created_at")
+    if not created_at:
+        for path in (os.path.join(task_dir, TASK_INFO_FILENAME), payload_path):
+            try:
+                mtime = os.path.getmtime(path)
+            except OSError:
+                continue
+            created_at = time.strftime("%Y-%m-%d_%H-%M-%S", time.localtime(mtime)) if mtime else ""
+            break
+    return {
+        "name": os.path.basename(task_dir),
+        "status": info.get("status", "pending"),
+        "created_at": created_at or "",
+        "start_times": info.get("start_times", []),
+        "finish_times": info.get("finish_times", []),
+        "pinned": info.get("pinned", False),
+        "task_order": info.get("task_order"),
+        "_template_path": os.path.relpath(payload_path, os.path.dirname(os.path.dirname(task_dir))).replace("\\", "/"),
+    }
+
+
 def list_template_files(run_root: str) -> Dict[str, str]:
     """
     Scan a Run Root directory for loadable YAML config files.
@@ -372,61 +397,28 @@ def list_template_files(run_root: str) -> Dict[str, str]:
 
     options: Dict[str, str] = {}
 
-    from pyruns._config import (
-        TASKS_DIR,
-        TASK_INFO_FILENAME,
-    )
+    from pyruns._config import TASKS_DIR
+    from pyruns.utils.task_storage import visible_task_roots
 
     # config_default.yaml is the canonical workspace template for the Generator.
     default_path = os.path.abspath(os.path.join(run_root, CONFIG_DEFAULT_FILENAME)).replace("\\", "/")
     if os.path.exists(default_path):
         options[default_path] = "config_default.yaml"
 
-    # config.yaml inside each task subfolder
-    from pyruns.utils.task_storage import visible_task_roots
+    def load_entry(task_dir: str) -> Dict[str, Any] | None:
+        cfg_path = os.path.join(task_dir, CONFIG_FILENAME)
+        if not os.path.isfile(cfg_path):
+            return None
+        return template_task_entry(task_dir, cfg_path, load_task_metadata(task_dir))
 
     for actual_tasks_dir in visible_task_roots(os.path.join(run_root, TASKS_DIR)):
         if not os.path.isdir(actual_tasks_dir):
             continue
         try:
-            task_entries: List[Dict[str, Any]] = []
-            for dir_name in sorted(os.listdir(actual_tasks_dir)):
-                if dir_name.startswith("."):
-                    continue
-                task_dir = os.path.join(actual_tasks_dir, dir_name)
-                if not os.path.isdir(task_dir):
-                    continue
-
-                cfg_path = os.path.join(task_dir, CONFIG_FILENAME)
-                if os.path.exists(cfg_path):
-                    info = load_task_metadata(task_dir)
-                    try:
-                        fallback_mtime = os.path.getmtime(os.path.join(task_dir, TASK_INFO_FILENAME))
-                    except OSError:
-                        try:
-                            fallback_mtime = os.path.getmtime(cfg_path)
-                        except OSError:
-                            fallback_mtime = 0.0
-
-                    rel_path = os.path.join(os.path.basename(actual_tasks_dir), dir_name, CONFIG_FILENAME).replace("\\", "/")
-                    task_entries.append(
-                        {
-                            "name": dir_name,
-                            "status": info.get("status", "pending"),
-                            "created_at": info.get("created_at")
-                            or (
-                                time.strftime("%Y-%m-%d_%H-%M-%S", time.localtime(fallback_mtime))
-                                if fallback_mtime
-                                else ""
-                            ),
-                            "start_times": info.get("start_times", []),
-                            "finish_times": info.get("finish_times", []),
-                            "pinned": info.get("pinned", False),
-                            "task_order": info.get("task_order"),
-                            "_template_path": rel_path,
-                        }
-                    )
-
+            with os.scandir(actual_tasks_dir) as entries:
+                folders = sorted(entry.path for entry in entries
+                                 if not entry.name.startswith(".") and entry.is_dir(follow_symlinks=False))
+            task_entries = [entry for entry in map_disk_reads(folders, load_entry) if entry is not None]
             for task in sort_tasks_for_manager(task_entries):
                 options[str(task["_template_path"])] = str(task["name"])
         except OSError:

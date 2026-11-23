@@ -1,9 +1,8 @@
 import type { Task } from '../types'
-import { isTaskStopping } from '../theme/tokens'
 
 // Progress-only list updates do not invalidate the larger detail payload.
 export function taskDetailRefreshKey(task: Task): string {
-  return JSON.stringify([task.task_identity || task.dir, task.run_index, task.status, isTaskStopping(task)])
+  return JSON.stringify([task.task_identity || task.dir, task.run_index, task.status])
 }
 
 // Task responses contain JSON values. Compare all fields so reused rows also

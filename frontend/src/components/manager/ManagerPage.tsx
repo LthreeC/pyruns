@@ -33,9 +33,10 @@ import ActionButton from '@/components/shared/ActionButton'
 import CompactSection from '@/components/shared/CompactSection'
 import TaskDetailPanel from './TaskDetailPanel'
 import type { Task, TaskSortMode } from '@/types'
-import { ALL_STATUSES, isTaskStopping, STATUS_LABELS, taskStatusLabel, taskStatusTone } from '@/theme/tokens'
+import { ALL_STATUSES, STATUS_LABELS, taskStatusLabel } from '@/theme/tokens'
 import { errorMessage } from '@/utils/errors'
 import { taskDetailRefreshKey } from '@/utils/taskSnapshots'
+import { canStopTask, describeTaskStop, isActiveTask, stopOnExecutionDevice, taskStopFeedback } from '@/utils/taskStop'
 import * as api from '@/api'
 
 const STATUS_OPTIONS = ['All', 'active', ...ALL_STATUSES] as const
@@ -54,10 +55,6 @@ type PendingTaskAction = 'run' | 'rerun' | 'cancel' | 'pin' | 'move' | 'delete'
 const DRAG_START_DISTANCE = 8
 const REORDER_TASK_LIMIT = 10_000
 const TASK_DETAIL_TIMEOUT_MS = 10_000
-
-function isActiveTask(task: Task) {
-  return task.status === 'running' || task.status === 'queued'
-}
 
 function isOrderMutation(action: PendingTaskAction) {
   return action === 'pin' || action === 'move'
@@ -400,7 +397,7 @@ export default function ManagerPage() {
 
   const selectedTasks = useMemo(() => tasks.filter(task => selectedIds.has(task.name)), [tasks, selectedIds])
   const runSelection = useMemo(() => selectedTasks.filter(task => task.task_storage !== 'remote'), [selectedTasks])
-  const deleteSelection = useMemo(() => selectedTasks.filter(task => task.task_storage !== 'remote' || !isActiveTask(task)), [selectedTasks])
+  const deleteSelection = useMemo(() => selectedTasks.filter(task => !stopOnExecutionDevice(task)), [selectedTasks])
   const visibleSelectedCount = selectedTasks.length
   const anyTaskActionPending = pendingTaskActions.size > 0
   const orderMutationPending = hasPendingOrderMutation(pendingTaskActions)
@@ -584,7 +581,7 @@ export default function ManagerPage() {
       notify({
         tone: 'success',
         title: action === 'cancel'
-          ? updatedTask?.status === 'cancelled' ? t("Task cancelled") : t("Cancel requested")
+          ? t(taskStopFeedback(updatedTask))
           : waitingForGpu
             ? t("Waiting for GPU capacity")
             : queued
@@ -1193,7 +1190,7 @@ export default function ManagerPage() {
       <ConfirmDialog
         open={Boolean(cancelTask)}
         title={t("Stop active task?")}
-        description={cancelTask ? t("Request cancellation for '{{name}}'? Its process tree will be stopped.", { name: cancelTask.name }) : ''}
+        description={cancelTask ? describeTaskStop(cancelTask) : ''}
         confirmLabel={t("Stop Task")}
         confirmVariant="danger"
         onConfirm={async () => {
@@ -1331,10 +1328,9 @@ const TaskCard = memo(function TaskCard({
 }) {
   useTranslation()
   const actionBtn = getActionButton(task)
-  const canDelete = task.task_storage !== 'remote' || !isActiveTask(task)
+  const canDelete = !stopOnExecutionDevice(task)
   const statusId = useId()
   const statusLabel = taskStatusLabel(task)
-  const stopping = isTaskStopping(task)
   const displayName = task.display_name ?? task.name
   const accessibleName = task.task_source_host ? `${displayName} · ${task.task_source_host}` : displayName
   const folderName = task.dir.split(/[\\/]/).pop() || task.dir
@@ -1343,7 +1339,7 @@ const TaskCard = memo(function TaskCard({
   const cardDescription = task._load_error || task.preview_text
   const dropIndicator = dropPlacement ? <DropIndicator placement={dropPlacement} axis={dropAxis || 'horizontal'} /> : null
   const taskPending = Boolean(pendingAction)
-  const gpuWait = task.status === 'queued' && !stopping ? task.gpu_wait : null
+  const gpuWait = task.status === 'queued' ? task.gpu_wait : null
   const gpuCapacity = gpuWait
     && typeof gpuWait.eligible_gpu_count === 'number'
     && typeof gpuWait.requested_gpu_count === 'number'
@@ -1353,7 +1349,7 @@ const TaskCard = memo(function TaskCard({
     <article
       data-task-card={task.name}
       data-task-status={task.status}
-      data-task-tone={taskStatusTone(task)}
+      data-task-tone={task.status}
       data-task-card-pinned={task.pinned ? 'true' : 'false'}
       data-selection-mode={selectMode}
       aria-busy={taskPending || undefined}
@@ -1480,7 +1476,7 @@ const TaskCard = memo(function TaskCard({
               <TaskIconButton
                 label={t('{{action}} {{name}}', { action: t(actionBtn.label), name: task.name })}
                 title={t(actionBtn.label)}
-                disabled={taskPending || stopping}
+                disabled={taskPending}
                 busy={pendingAction === actionBtn.action}
                 danger={actionBtn.action === 'cancel'}
                 onClick={() => void onTaskAction(task, actionBtn.action)}
@@ -1634,6 +1630,7 @@ function DropIndicator({ placement, axis }: { placement: DragPlacement; axis: 'h
 
 
 function getActionButton(task: Task) {
+  if (canStopTask(task)) return { label: 'Stop', action: 'cancel' as const, icon: Square }
   if (task._load_error || task.task_storage === 'remote') {
     return null
   }
@@ -1646,13 +1643,6 @@ function getActionButton(task: Task) {
         action: 'run' as const,
         icon: Play,
         label: 'Run',
-      }
-    case 'running':
-    case 'queued':
-      return {
-        action: 'cancel' as const,
-        icon: Square,
-        label: 'Stop',
       }
     case 'completed':
       return {

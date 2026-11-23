@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { AlertTriangle, Clock3, RefreshCw } from 'lucide-react'
+import { AlertTriangle, Clock3, Download, RefreshCw } from 'lucide-react'
 import clsx from 'clsx'
 
 import * as api from '@/api'
@@ -27,7 +27,15 @@ const UPDATE_NOTICE_PREFIX = 'pyruns.update.notice.'
 
 type FullProcessOperation = 'update' | 'restart'
 type UpdatePhase = 'requesting' | 'acknowledged' | 'disconnected' | 'verifying'
-interface UpdateFailure { title: string; detail: string }
+interface UpdateFailure {
+  title: string
+  detail: string
+  operation: FullProcessOperation
+  retryable?: boolean
+}
+
+const RESTART_DESCRIPTION = 'This restarts this Web UI using the files on disk. Tasks continue running. Save open drafts before continuing.'
+const LEGACY_RESTART_REFUSAL = 'The running UI already matches the installed Pyruns version.'
 
 function hasUnsavedWork() {
   return useRuntimeStore.getState().dirty || useGeneratorStore.getState().dirty
@@ -35,9 +43,12 @@ function hasUnsavedWork() {
 }
 
 function scheduledLabel(scheduled: UiScheduledOperation) {
-  return scheduled.operation === 'restart'
+  if (scheduled.operation === 'upgrade') {
+    return t('Update scheduled for v{{version}}', { version: scheduled.target_version })
+  }
+  return scheduled.target_version
     ? t('Restart scheduled to load v{{version}}', { version: scheduled.target_version })
-    : t('Update scheduled for v{{version}}', { version: scheduled.target_version })
+    : t('Restart scheduled')
 }
 
 function wait(milliseconds: number) {
@@ -122,20 +133,24 @@ function UpdateProgressDialog({
         </h2>
         <p id="pyruns-update-detail" aria-live="polite" className="mt-2 text-sm leading-6 text-txt-secondary">
           {t({
-            requesting: 'Requesting update or restart…',
-            acknowledged: 'Request accepted. Waiting for the interfaces to restart…',
+            requesting: restarting ? 'Requesting a UI restart…' : 'Requesting an update…',
+            acknowledged: restarting ? 'Request accepted. Waiting for this interface to restart…' : 'Request accepted. Waiting for installation and restart…',
             disconnected: 'The service is temporarily unreachable. Waiting to reconnect…',
             verifying: 'The restarted service responded. Loading the result…',
           }[phase])}
         </p>
         <p className="mt-2 text-xs tabular-nums text-txt-secondary">
-          {t('Target v{{version}} · Waited {{seconds}}s', { version: targetVersion, seconds: elapsed })}
+          {targetVersion
+            ? t('Target v{{version}} · Waited {{seconds}}s', { version: targetVersion, seconds: elapsed })
+            : t('Waited {{seconds}}s', { seconds: elapsed })}
         </p>
         {!restarting && <p className="mt-3 text-xs leading-5 text-txt-secondary">
           {t('The web service stops during installation. Live pip progress is unavailable until it returns; this page reconnects automatically.')}
         </p>}
         {takingLong && <p className="mt-3 text-xs text-amber-800 dark:text-amber-300">
-          {t('This is taking longer than usual. Reloading checks the service again; it does not start another installation.')}
+          {restarting
+            ? t('This is taking longer than usual. Reload to check if the service is back.')
+            : t('This is taking longer than usual. Reloading checks the service again; it does not start another installation.')}
         </p>}
         {takingLong && (
           <button
@@ -152,7 +167,9 @@ function UpdateProgressDialog({
   )
 }
 
-export default function UpdateControl({ compact = false }: { compact?: boolean }) {
+export default function UpdateControl({ compact, showVersion, showRestartLabel }: {
+  compact: boolean; showVersion: boolean; showRestartLabel: boolean
+}) {
   useTranslation()
   const [systemInfo, setSystemInfo] = useState<SystemInfo | null>(null)
   const [checking, setChecking] = useState(false)
@@ -167,13 +184,15 @@ export default function UpdateControl({ compact = false }: { compact?: boolean }
   const [failureOpen, setFailureOpen] = useState(false)
   const failureDialog = useRef<HTMLDialogElement>(null)
   const updateButton = useRef<HTMLButtonElement>(null)
+  const restartButton = useRef<HTMLButtonElement>(null)
   const instanceIdRef = useRef('')
   const systemInfoRevision = useRef(0)
   const reportedResults = useRef(new Set<string>())
   const notify = useToastStore(state => state.notify)
+  const restartSupported = systemInfo?.restart_supported ?? systemInfo?.update_supported ?? false
 
-  const showFailure = useCallback((title: string, detail: string) => {
-    setFailure({ title, detail })
+  const showFailure = useCallback((title: string, detail: string, operation: FullProcessOperation = 'update', retryable = true) => {
+    setFailure({ title, detail, operation, retryable })
     setFailureOpen(true)
   }, [])
   useEffect(() => {
@@ -183,7 +202,8 @@ export default function UpdateControl({ compact = false }: { compact?: boolean }
   }, [failureOpen])
   const closeFailure = () => {
     setFailureOpen(false)
-    window.requestAnimationFrame(() => updateButton.current?.focus())
+    const trigger = failure?.operation === 'restart' ? restartButton : updateButton
+    window.requestAnimationFrame(() => (trigger.current ?? updateButton.current)?.focus())
   }
 
   const reportUpdateResult = useCallback((info: SystemInfo) => {
@@ -199,22 +219,25 @@ export default function UpdateControl({ compact = false }: { compact?: boolean }
     } catch {
       // A blocked session store should not hide the update result.
     }
+    const restart = result.operation === 'restart'
     if (result.ok) {
       if (alreadySeen) return
       notify({
         tone: 'success',
-        title: t('Pyruns updated'),
+        title: t(restart ? 'Pyruns restarted' : 'Pyruns updated'),
         detail: result.installed_version || info.version,
       })
     } else {
-      const detail = result.error
+      const detail = restart
+        ? result.error || t('This interface restarted with version {{version}}.', { version: info.version })
+        : result.error
         ? t('Update failed: {{error}} Version {{version}} was restarted.', { error: result.error, version: info.version })
         : result.exit_code === 0
           ? t('pip completed without installing the confirmed release; version {{version}} was restarted.', { version: info.version })
           : result.exit_code === 124
             ? t('The update timed out; version {{version}} was restarted.', { version: info.version })
             : t('pip exited with code {{code}}; version {{version}} was restarted.', { code: result.exit_code, version: info.version })
-      setFailure({ title: t('Pyruns update failed'), detail })
+      setFailure({ title: t(restart ? 'Could not load the requested version' : 'Pyruns update failed'), detail, operation: restart ? 'restart' : 'update' })
       if (!alreadySeen) setFailureOpen(true)
     }
   }, [notify])
@@ -252,6 +275,7 @@ export default function UpdateControl({ compact = false }: { compact?: boolean }
           showFailure(
             scheduled.operation === 'restart' ? t('Could not restart Pyruns') : t('Could not update Pyruns'),
             scheduled.error,
+            scheduled.operation === 'restart' ? 'restart' : 'update',
           )
         }
       } catch {
@@ -299,7 +323,7 @@ export default function UpdateControl({ compact = false }: { compact?: boolean }
     }
   }, [reportUpdateResult, showFailure])
 
-  const waitForRestart = useCallback(async (previousInstanceId: string) => {
+  const waitForRestart = useCallback(async (previousInstanceId: string, operation: FullProcessOperation) => {
     const startedAt = Date.now()
     while (Date.now() - startedAt < UPDATE_RESTART_TIMEOUT_MS) {
       await wait(RESTART_POLL_MS)
@@ -322,7 +346,9 @@ export default function UpdateControl({ compact = false }: { compact?: boolean }
       if (info) setPhase('acknowledged')
       if (info && ['idle', 'restart_required'].includes(info.update_state)) {
         setSystemInfo(info)
-        throw new Error(t('Pyruns stopped the update before restarting. Check the terminal details and try again.'))
+        throw new Error(t(operation === 'restart'
+          ? 'Pyruns did not complete the restart. Check the terminal details and try again.'
+          : 'Pyruns stopped the update before restarting. Check the terminal details and try again.'))
       }
       if (Date.now() - startedAt >= SLOW_UPDATE_MS) {
         setTakingLong(true)
@@ -333,7 +359,7 @@ export default function UpdateControl({ compact = false }: { compact?: boolean }
     )
   }, [])
 
-  const handleUpdateResponse = useCallback(async (response: UiUpdateResponse) => {
+  const handleOperationResponse = useCallback(async (response: UiUpdateResponse, operation: FullProcessOperation) => {
     const scheduled = response.scheduled_operation
     if (response.state === 'waiting' && scheduled) {
       systemInfoRevision.current += 1
@@ -346,8 +372,10 @@ export default function UpdateControl({ compact = false }: { compact?: boolean }
       })
       return
     }
+    setOperation(operation)
+    if (response.target_version !== undefined) setTargetVersion(response.target_version)
     setPhase('acknowledged')
-    await waitForRestart(response.instance_id)
+    await waitForRestart(response.instance_id, operation)
   }, [notify, waitForRestart])
 
   const startUpdate = useCallback(async () => {
@@ -381,14 +409,19 @@ export default function UpdateControl({ compact = false }: { compact?: boolean }
       return
     }
 
-    const confirmed = await requestConfirmation({
+    let restarting = versionCheck.operation === 'restart'
+    const confirmed = await requestConfirmation(restarting ? {
+      title: t('Restart Pyruns to load v{{version}}?', { version: versionCheck.latest_version }),
+      description: t(RESTART_DESCRIPTION),
+      confirmLabel: t('Restart UI'),
+    } : {
       title: t('Update Pyruns to v{{version}}?', { version: versionCheck.latest_version }),
       description: t('The Web UI will briefly disconnect. Tasks continue running. Save open drafts before continuing.'),
       confirmLabel: t('Update and Restart'),
     })
     if (!confirmed) return
 
-    setOperation('update')
+    setOperation(restarting ? 'restart' : 'update')
     setPhase('requesting')
     setStartedAt(Date.now())
     setTargetVersion(versionCheck.latest_version)
@@ -399,29 +432,29 @@ export default function UpdateControl({ compact = false }: { compact?: boolean }
         UPDATE_START_TIMEOUT_MS,
         t('Pyruns did not acknowledge the update request within 30 seconds. Try again.'),
       )
-      await handleUpdateResponse(response)
+      if (response.operation) restarting = response.operation === 'restart'
+      await handleOperationResponse(response, restarting ? 'restart' : 'update')
     } catch (error) {
       setOperation(null)
-      showFailure(t('Could not update Pyruns'), errorMessage(error))
+      showFailure(t(restarting ? 'Could not restart Pyruns' : 'Could not update Pyruns'), errorMessage(error), restarting ? 'restart' : 'update')
     }
-  }, [checking, handleUpdateResponse, notify, operation, showFailure])
+  }, [checking, handleOperationResponse, notify, operation, showFailure])
 
   const startRestart = useCallback(async () => {
-    if (checking || operation || !systemInfo?.restart_required) return
+    if (checking || operation || !restartSupported) return
     setFailureOpen(false)
 
-    const targetVersion = systemInfo.installed_version || systemInfo.version
     const confirmed = await requestConfirmation({
-      title: t('Restart Pyruns to load v{{version}}?', { version: targetVersion }),
-      description: t('The Web UI will briefly disconnect. Tasks continue running. Save open drafts before continuing.'),
-      confirmLabel: t('Restart Interfaces'),
+      title: t('Restart this Web UI?'),
+      description: t(RESTART_DESCRIPTION),
+      confirmLabel: t('Restart UI'),
     })
     if (!confirmed) return
 
     setOperation('restart')
     setPhase('requesting')
     setStartedAt(Date.now())
-    setTargetVersion(targetVersion)
+    setTargetVersion('')
     setTakingLong(false)
     try {
       const response = await requestWithTimeout(
@@ -429,12 +462,17 @@ export default function UpdateControl({ compact = false }: { compact?: boolean }
         UPDATE_START_TIMEOUT_MS,
         t('Pyruns did not acknowledge the restart request within 30 seconds. Try again.'),
       )
-      await handleUpdateResponse(response)
+      await handleOperationResponse(response, 'restart')
     } catch (error) {
       setOperation(null)
-      showFailure(t('Could not restart Pyruns'), errorMessage(error))
+      const legacy = error instanceof api.ApiError
+        && (error.status === 404 || error.status === 405 || error.message === LEGACY_RESTART_REFUSAL)
+      const detail = legacy
+        ? t('This service is running an older Pyruns build. Stop it from its original terminal, then run pyr ui from the environment with the updated build.')
+        : errorMessage(error)
+      showFailure(t('Could not restart Pyruns'), detail, 'restart', !legacy)
     }
-  }, [checking, handleUpdateResponse, operation, systemInfo, showFailure])
+  }, [checking, handleOperationResponse, operation, restartSupported, showFailure])
 
   const cancelScheduled = async (scheduled: UiScheduledOperation) => {
     const confirmed = await requestConfirmation({
@@ -464,21 +502,25 @@ export default function UpdateControl({ compact = false }: { compact?: boolean }
     }
   }
 
-  if (!systemInfo) {
-    return (
-      <div
-        aria-hidden="true"
-        className={clsx('h-10 flex-none', compact ? 'w-10' : 'w-[78px]')}
-      />
-    )
-  }
+  if (!systemInfo) return null
   const restartRequired = systemInfo.restart_required
   const backendRestarting = systemInfo.update_state === 'restarting'
   const schedule = systemInfo.scheduled_operation
   const waiting = !backendRestarting && schedule && !schedule.error ? schedule : null
-  if (!systemInfo.update_supported && !failure && !waiting && !reloadReady) return null
+  const updateFailed = failure?.operation === 'update'
+  const showUpdateButton = systemInfo.update_supported || updateFailed || waiting || reloadReady
+  const showRestartButton = restartSupported || systemInfo.update_supported
+  if (!showUpdateButton && !showRestartButton) return null
   const busy = checking || operation !== null || backendRestarting
-  const showFailureButton = failure && !waiting && !reloadReady
+  const showFailureButton = updateFailed && !waiting && !reloadReady
+  const controlsClass = clsx(
+    'touch-target inline-flex items-center justify-center gap-1 rounded-md px-1.5 text-txt-secondary transition-colors enabled:hover:bg-surface-overlay enabled:hover:text-txt-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/35 disabled:opacity-60',
+    compact ? 'size-11' : 'h-10 min-w-8',
+  )
+  const restartLabel = !restartSupported ? t('UI restart is unavailable on this server.')
+    : restartRequired ? t('Restart Pyruns to load installed version {{installed}}; this interface is running {{current}}', {
+      installed: systemInfo.installed_version, current: systemInfo.version,
+    }) : t('Restart UI')
   let buttonLabel = t('Check for Pyruns updates, installed version {{version}}', { version: systemInfo.version })
   if (reloadReady) buttonLabel = t('Reload updated interface')
   else if (waiting) buttonLabel = scheduledLabel(waiting)
@@ -486,53 +528,47 @@ export default function UpdateControl({ compact = false }: { compact?: boolean }
   else if (checking) buttonLabel = t('Checking for Pyruns updates')
   else if (operation === 'update') buttonLabel = t('Updating Pyruns')
   else if (operation === 'restart' || backendRestarting) buttonLabel = t('Restarting Pyruns')
-  else if (restartRequired) buttonLabel = t(
-    'Restart Pyruns to load installed version {{installed}}; this interface is running {{current}}',
-    { installed: systemInfo.installed_version, current: systemInfo.version },
-  )
 
   return (
     <>
-      <button
-        ref={updateButton}
-        type="button"
-        onClick={() => {
-          if (reloadReady) window.location.reload()
-          else if (waiting) void cancelScheduled(waiting)
-          else if (failure) setFailureOpen(true)
-          else void (restartRequired ? startRestart() : startUpdate())
-        }}
-        disabled={!reloadReady && (cancelling || (showFailureButton ? checking || operation !== null : busy))}
-        aria-label={buttonLabel}
-        title={buttonLabel}
-        className={clsx(
-          'relative flex h-10 flex-none items-center justify-center gap-1 rounded-md text-txt-tertiary transition-colors hover:bg-surface-overlay hover:text-txt-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/35 disabled:cursor-wait disabled:opacity-60',
-          (waiting || reloadReady || restartRequired) && 'bg-amber-500/10 text-amber-700 hover:bg-amber-500/15 dark:text-amber-300',
-          compact ? 'h-11 w-10 sm:h-11' : 'w-[78px] px-1.5',
+      <div className={clsx('flex flex-none items-center gap-0.5', compact && 'flex-col')}>
+        {showUpdateButton && (
+          <button
+            ref={updateButton}
+            type="button"
+            onClick={() => {
+              if (reloadReady) window.location.reload()
+              else if (waiting) void cancelScheduled(waiting)
+              else if (updateFailed) setFailureOpen(true)
+              else void startUpdate()
+            }}
+            disabled={!reloadReady && (cancelling || (showFailureButton ? checking || operation !== null : busy))}
+            aria-label={buttonLabel}
+            title={buttonLabel}
+            className={clsx(controlsClass, 'disabled:cursor-wait', (waiting || reloadReady) && 'bg-amber-500/10 text-amber-700 dark:text-amber-300')}
+          >
+            {waiting && !reloadReady ? <Clock3 aria-hidden="true" className="size-4 shrink-0" />
+              : showFailureButton && !busy ? <AlertTriangle aria-hidden="true" className="size-4 shrink-0 text-rose-700 dark:text-rose-300" />
+                : checking || operation === 'update' || reloadReady ? <RefreshCw aria-hidden="true" className={clsx('size-4 shrink-0', !reloadReady && 'motion-safe:animate-spin')} />
+                  : <Download aria-hidden="true" className="size-4 shrink-0" />}
+            {showVersion && <span className="max-w-24 truncate font-mono text-[11px]">v{systemInfo.version}</span>}
+          </button>
         )}
-      >
-        {!compact && (
-          <span className="min-w-0 truncate font-mono text-[10px] text-txt-secondary">
-            v{restartRequired ? systemInfo.installed_version : systemInfo.version}
-          </span>
+        {showRestartButton && (
+          <button
+            ref={restartButton}
+            type="button"
+            onClick={() => void startRestart()}
+            disabled={!restartSupported || busy || Boolean(waiting) || cancelling || reloadReady}
+            aria-label={t('Restart UI')}
+            title={restartLabel}
+            className={clsx(controlsClass, 'whitespace-nowrap text-xs font-medium', restartSupported ? 'disabled:cursor-wait' : 'disabled:cursor-not-allowed', restartRequired && 'bg-amber-500/10 text-amber-800 dark:text-amber-300')}
+          >
+            <RefreshCw aria-hidden="true" className={clsx('size-4 shrink-0', (operation === 'restart' || backendRestarting) && 'motion-safe:animate-spin')} />
+            {showRestartLabel && <span>{t('Restart UI')}</span>}
+          </button>
         )}
-        {waiting && !reloadReady ? (
-          <Clock3 aria-hidden="true" className="h-3.5 w-3.5 flex-none" />
-        ) : showFailureButton && !busy ? <AlertTriangle aria-hidden="true" className="h-3.5 w-3.5 text-rose-700 dark:text-rose-300" /> : <RefreshCw
-          aria-hidden="true"
-          className={clsx(
-            'h-3.5 w-3.5 flex-none',
-            busy && 'animate-spin motion-reduce:animate-none',
-            restartRequired && !busy && 'text-amber-600 dark:text-amber-300',
-          )}
-        />}
-        {restartRequired && !waiting && !reloadReady && (
-          <span
-            aria-hidden="true"
-            className="absolute right-1 top-1 h-1.5 w-1.5 rounded-full bg-amber-500"
-          />
-        )}
-      </button>
+      </div>
       <UpdateProgressDialog operation={operation} takingLong={takingLong} phase={phase} startedAt={startedAt} targetVersion={targetVersion} />
       <dialog ref={failureDialog} aria-labelledby="pyruns-update-failure-title" onCancel={event => { event.preventDefault(); closeFailure() }}
         className="fixed inset-0 z-[160] m-auto max-h-[calc(100dvh-2rem)] w-[min(520px,calc(100vw-1.5rem))] overflow-y-auto rounded-md border border-border-subtle bg-surface-raised p-5 text-txt-primary shadow-xl backdrop:bg-black/55">
@@ -541,10 +577,10 @@ export default function UpdateControl({ compact = false }: { compact?: boolean }
         <div className="flex flex-wrap justify-end gap-2">
           <CopyButton value={failure?.detail || ''} text={t('Copy failure details')} label={t('Copy failure details')} />
           <button type="button" onClick={closeFailure} className="touch-target min-h-11 rounded-md border border-border px-3 text-sm">{t('Close')}</button>
-          <button type="button" disabled={busy || Boolean(waiting) || reloadReady || !systemInfo.update_supported} onClick={() => {
+          {failure?.retryable !== false && <button type="button" disabled={busy || Boolean(waiting) || reloadReady || !(failure?.operation === 'restart' ? restartSupported : systemInfo.update_supported)} onClick={() => {
             setFailure(null)
-            void (restartRequired ? startRestart() : startUpdate())
-          }} className="touch-target min-h-11 rounded-md bg-accent px-3 text-sm text-white disabled:opacity-50">{t('Retry')}</button>
+            void (failure?.operation === 'restart' ? startRestart() : startUpdate())
+          }} className="touch-target min-h-11 rounded-md bg-accent px-3 text-sm text-white disabled:opacity-50">{t('Retry')}</button>}
         </div>
       </dialog>
     </>

@@ -25,7 +25,7 @@ import { useLiveTime } from '@/hooks/useLiveTime'
 import RunInputView from './RunInputView'
 import { useTaskDetailDraftStore, useToastStore } from '@/store'
 import type { RunEnvironment, Task } from '@/types'
-import { isTaskStopping, taskStatusLabel } from '@/theme/tokens'
+import { taskStatusLabel } from '@/theme/tokens'
 import { errorMessage } from '@/utils/errors'
 import { formatElapsedDuration, formatStoredCommand, parseTaskTimestampMillis } from '@/utils/taskRuntime'
 import { summarizeGpuWait } from '@/utils/gpuWait'
@@ -1307,7 +1307,7 @@ function InfoTab({ task, active }: { task: Task; active: boolean }) {
         </section>
       )}
 
-      {gpuWait && !isTaskStopping(task) && (
+      {gpuWait && (
         <GPUWaitSummary wait={gpuWait} live={!fromOtherDevice} active={active} />
       )}
 
@@ -1395,8 +1395,7 @@ function InfoTab({ task, active }: { task: Task; active: boolean }) {
                 <summary className="flex min-h-11 cursor-pointer list-none items-center gap-2 py-2 text-xs transition-colors hover:bg-surface-overlay focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent/35">
                   <ChevronDown className="h-3.5 w-3.5 shrink-0 -rotate-90 text-txt-secondary transition-transform group-open:rotate-0" />
                   <span className="font-medium text-txt-primary">{t('Run #{{index}}', { index: run.index })}</span>
-                  <span className="text-txt-secondary">{run.index === displayedRunIndex && isTaskStopping(task)
-                    ? t('Stopping') : run.status || (run.index === task.run_index ? task.status : '')}</span>
+                  <span className="text-txt-secondary">{run.status || (run.index === task.run_index ? task.status : '')}</span>
                   <span className="ml-auto tabular-nums text-txt-secondary">{formatRunDuration(run.duration, run.start, run.finish)}</span>
                 </summary>
                 <div className="mb-3 ml-1.5 border-l border-border-subtle py-1 pl-4">

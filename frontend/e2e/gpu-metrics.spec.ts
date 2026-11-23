@@ -370,11 +370,14 @@ test('GPU wait ticks without new log or task events and catches up when visible'
   expect(reads).toBe(originalReads)
 
   task.cancel_requested_at = deadline - 3500
+  events!.send(JSON.stringify({ type: 'changed' }))
   await expect.poll(async () => {
     await page.clock.runFor(250)
-    return page.getByRole('button', { name: 'View quiet-queue, stopping' }).count()
-  }).toBe(1)
-  await expect(panel).toHaveCount(0)
+    return reads
+  }).toBeGreaterThan(originalReads)
+  await expect(page.getByRole('button', { name: 'View quiet-queue, queued' })).toBeVisible()
+  await expect(panel).toBeVisible()
+  await expect(page.locator('.monitor-header').getByRole('button', { name: 'Stop', exact: true })).toBeEnabled()
   task.status = 'cancelled'
   events!.send(JSON.stringify({ type: 'changed' }))
   await expect.poll(async () => {

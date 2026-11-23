@@ -59,7 +59,7 @@ import Pagination from '@/components/shared/Pagination'
 import TaskDetailPanel from '@/components/manager/TaskDetailPanel'
 import TaskExportDialog from './TaskExportDialog'
 import type { GPUWaitStatus, LogStreamMessage, Task, TaskSearchMatch } from '@/types'
-import { isTaskStopping, taskStatusLabel } from '@/theme/tokens'
+import { taskStatusLabel } from '@/theme/tokens'
 import { errorMessage } from '@/utils/errors'
 import * as api from '@/api'
 import {
@@ -82,6 +82,7 @@ import { pickInitialMonitorTask } from '@/utils/monitorSelection'
 import { taskDetailRefreshKey } from '@/utils/taskSnapshots'
 import { summarizeGpuWait } from '@/utils/gpuWait'
 import { formatElapsedDuration } from '@/utils/taskRuntime'
+import { canStopTask, describeTaskStop, taskStopFeedback } from '@/utils/taskStop'
 
 const MONITOR_SIDEBAR_WIDTH_STORAGE_KEY = 'pyruns.monitorSidebarWidthPct'
 const DEFAULT_MONITOR_SIDEBAR_WIDTH = 14
@@ -297,7 +298,6 @@ export default function MonitorPage() {
     )
   const runLogName = selectedTask ? `run${Math.max(selectedTask.run_index || 1, 1)}.log` : ''
   const liveLogName = selectedTask?.status === 'queued' ? QUEUE_LOG_NAME : runLogName
-  const stopping = taskActionPending === 'cancel' || Boolean(selectedTask && isTaskStopping(selectedTask))
   const isFollowingQueuedTask = queuedLiveLogTaskRef.current.taskName === selectedTask?.name
   const isLive = Boolean(!logMatch && selectedTask && (
     (selectedTask.status === 'queued' && (!selectedLog || selectedLog === QUEUE_LOG_NAME))
@@ -1475,6 +1475,7 @@ export default function MonitorPage() {
 
   const handleTaskAction = useCallback(async (action: 'run' | 'cancel') => {
     if (!selectedTaskName || !selectedTask || taskActionPending) return
+    if (action === 'cancel' && !canStopTask(selectedTask)) return
 
     const currentTaskName = selectedTaskName
     const requestedWorkspaceKey = workspaceKeyRef.current
@@ -1507,7 +1508,7 @@ export default function MonitorPage() {
       })
       notify({
         tone: 'success',
-        title: action === 'run' ? t("Task started") : task?.status === 'cancelled' ? t("Task cancelled") : t("Cancel requested"),
+        title: action === 'run' ? t("Task started") : t(taskStopFeedback(task)),
         detail: currentTaskName,
       })
     } catch (err) {
@@ -1961,16 +1962,16 @@ export default function MonitorPage() {
                   </ActionButton>
                 )}
 
-                {selectedTask.task_storage !== 'remote' && (selectedTask.status === 'running' || selectedTask.status === 'queued') && (
+                {canStopTask(selectedTask) && (
                   <ActionButton
                     icon={taskActionPending === 'cancel'
                       ? <LoaderCircle className="h-3.5 w-3.5 motion-safe:animate-spin" />
                       : <Square className="h-3.5 w-3.5" />}
                     variant="danger"
                     onClick={() => setStopConfirmTask(selectedTask.name)}
-                    disabled={stopping || taskActionPending !== null}
+                    disabled={taskActionPending !== null}
                   >
-                    {stopping ? t("Stopping") : t("Stop")}
+                    {t('Stop')}
                   </ActionButton>
                 )}
               </div>
@@ -2021,7 +2022,7 @@ export default function MonitorPage() {
           </div>
         )}
 
-        {selectedTask?.status === 'queued' && !stopping && selectedTask.gpu_wait && (
+        {selectedTask?.status === 'queued' && selectedTask.gpu_wait && (
           <GPUWaitPanel wait={selectedTask.gpu_wait} live={selectedTask.task_storage !== 'remote'} />
         )}
 
@@ -2180,7 +2181,7 @@ export default function MonitorPage() {
       <ConfirmDialog
         open={Boolean(stopConfirmTask)}
         title={t("Stop active task?")}
-        description={stopConfirmTask ? t("Request cancellation for '{{name}}'? Its process tree will be stopped.", { name: stopConfirmTask }) : ''}
+        description={selectedTask?.name === stopConfirmTask ? describeTaskStop(selectedTask) : ''}
         confirmLabel={t("Stop Task")}
         confirmVariant="danger"
         onConfirm={async () => {

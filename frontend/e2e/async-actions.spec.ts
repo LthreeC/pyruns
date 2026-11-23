@@ -93,7 +93,7 @@ test('launcher keeps a submitted workspace change pending until its response', a
   }
 })
 
-test('creation reports saved tasks before its template refresh finishes', async ({ page }) => {
+test('creation reports saved tasks before the next on-demand template refresh', async ({ page }) => {
   await stallRead(page, '/api/templates')
   const root = await mkdtemp(join(tmpdir(), 'pyruns-create-refresh-'))
   const script = join(root, 'train.py'), config = join(root, 'input.yaml')
@@ -107,6 +107,12 @@ test('creation reports saved tasks before its template refresh finishes', async 
     const workspace = await opened.json()
     await page.goto('/generator')
     await expect(page.getByRole('textbox', { name: 'value parameter value', exact: true })).toHaveValue('original')
+    const picker = page.getByRole('button', { name: workspace.default_template.label, exact: true })
+    const catalog = page.waitForResponse(response => new URL(response.url()).pathname === '/api/templates')
+    await picker.click()
+    expect((await catalog).ok()).toBe(true)
+    await expect(page.getByText('Loading templates...', { exact: true })).toBeHidden()
+    await page.getByPlaceholder('Search templates').press('Escape')
     await page.clock.install()
     await page.evaluate(() => (window as any).stalledRead.enabled = true)
     const createdResponse = page.waitForResponse(response => response.url().endsWith('/api/generator/create'))
@@ -115,9 +121,11 @@ test('creation reports saved tasks before its template refresh finishes', async 
     expect(response.ok()).toBe(true)
     const created = await response.json()
     expect(await readFile(join(workspace.run_root, 'tasks', created.items[0].name, 'config.yaml'), 'utf8')).toContain('value: original')
-    await expect.poll(() => readState(page)).toMatchObject({ reads: 1, aborts: 0 })
     await expect(page.getByText('Created 1 python task', { exact: true })).toBeVisible()
     await expect(page.getByRole('button', { name: 'Generate Tasks', exact: true })).toBeEnabled()
+    expect(await readState(page)).toMatchObject({ reads: 0, aborts: 0 })
+    await picker.click()
+    await expect.poll(() => readState(page)).toMatchObject({ reads: 1, aborts: 0 })
     await page.clock.runFor(10_001)
     await expect.poll(() => readState(page)).toMatchObject({ aborts: 1 })
     await expect(page.getByText('Created 1 python task', { exact: true })).toBeVisible()
