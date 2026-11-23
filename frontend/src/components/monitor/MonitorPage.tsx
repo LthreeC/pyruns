@@ -48,6 +48,7 @@ import TaskSourceFilter from '@/components/shared/TaskSourceFilter'
 import TaskSearchMatches, { SearchMatchContext } from '@/components/shared/TaskSearchMatches'
 import StatusBadge from '@/components/shared/StatusBadge'
 import TaskExecutionInfo from '@/components/shared/TaskExecutionInfo'
+import TaskStatusDot from '@/components/shared/TaskStatusDot'
 import SelectionIndicator from '@/components/shared/SelectionIndicator'
 import EmptyState from '@/components/shared/EmptyState'
 import ActionButton from '@/components/shared/ActionButton'
@@ -58,7 +59,7 @@ import Pagination from '@/components/shared/Pagination'
 import TaskDetailPanel from '@/components/manager/TaskDetailPanel'
 import TaskExportDialog from './TaskExportDialog'
 import type { GPUWaitStatus, LogStreamMessage, Task, TaskSearchMatch } from '@/types'
-import { isTaskStopping, STATUS_COLORS, taskStatusLabel } from '@/theme/tokens'
+import { isTaskStopping, taskStatusLabel } from '@/theme/tokens'
 import { errorMessage } from '@/utils/errors'
 import * as api from '@/api'
 import {
@@ -2357,7 +2358,7 @@ const SidebarItem = memo(function SidebarItem({
     >
       <span className="flex w-full min-w-0 items-center gap-1.5">
         {exportMode && <SelectionIndicator selected={exportSelected} />}
-        <StatusDot task={task} />
+        <TaskStatusDot task={task} />
         <span className={clsx(
           'min-w-0 flex-1 truncate whitespace-nowrap text-xs leading-4',
           active && !exportMode ? 'font-medium text-txt-primary' : 'text-txt-secondary'
@@ -2365,7 +2366,6 @@ const SidebarItem = memo(function SidebarItem({
           {displayName}
         </span>
         {task.task_source_host && <span className="max-w-[40%] shrink-0 truncate text-2xs text-txt-secondary">{task.task_source_host}</span>}
-        {status === 'Running' && <span className="h-1.5 w-1.5 flex-none rounded-full bg-amber-500 motion-safe:animate-pulse" aria-hidden="true" />}
       </span>
     </button>
   )
@@ -2407,7 +2407,7 @@ const SearchResultGroup = memo(function SearchResultGroup({
       >
         <ChevronDown className="h-3.5 w-3.5 flex-none -rotate-90 text-txt-tertiary transition-transform group-open:rotate-0" aria-hidden="true" />
         {exportMode && <SelectionIndicator selected={exportSelected} />}
-        <StatusDot task={task} />
+        <TaskStatusDot task={task} />
         <span className={clsx(
           'min-w-0 flex-1 truncate text-xs leading-4',
           active && !exportMode ? 'font-medium text-txt-primary' : 'text-txt-secondary',
@@ -2423,13 +2423,3 @@ const SearchResultGroup = memo(function SearchResultGroup({
     </details>
   )
 })
-
-
-function StatusDot({ task }: { task: Task }) {
-  const label = taskStatusLabel(task)
-  const recorded = label !== 'Running' && label !== 'Queued' && (task.status === 'running' || task.status === 'queued')
-  const color = isTaskStopping(task) ? 'border-2 border-accent'
-    : recorded ? 'border border-current text-txt-secondary' : STATUS_COLORS[task.status].dot
-  return <span className={clsx('size-2 flex-none rounded-full', color)}
-    role="img" title={t(label)} aria-label={t(label)} />
-}

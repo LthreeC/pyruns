@@ -98,7 +98,7 @@ test('task source and uncertainty remain distinct from running and log connectiv
     name: 'remote-task', status: 'running', task_kind: 'shell', task_identity: 'remote-original',
     dir: '/experiments/remote-task', config_file: 'config.sh', config_text: 'echo hello',
     created_at: '2026-11-15_12-00-00', run_index: 1, runner_host: 'gpu-worker-02',
-    runner_lease_expired: true, cancel_requested_at: null as number | null,
+    task_storage: 'shared', runner_location: 'remote', runner_lease_expired: true, cancel_requested_at: null as number | null,
     start_times: ['2026-11-15_12-00-00'], finish_times: [], pids: [123],
     run_statuses: ['running'], records: [], tracks: [], notes: '', env: {}, progress: 0,
   }
@@ -106,9 +106,18 @@ test('task source and uncertainty remain distinct from running and log connectiv
     ...task, name: 'local-task', dir: '/experiments/local-task', task_identity: 'local-original',
     runner_host: 'local-worker', runner_location: 'unknown', local_process_verified: true,
   }
+  const pending = {
+    ...local, name: 'local-pending', dir: '/experiments/local-pending', task_identity: 'pending-local',
+    task_storage: 'local', status: 'pending', runner_lease_expired: null, local_process_verified: false, run_index: 0,
+    runner_host: null, pids: [], start_times: [], run_statuses: [],
+  }
+  const remotePending = {
+    ...pending, name: 'remote-pending', dir: '/experiments/remote-pending', task_identity: 'pending-remote',
+    task_storage: 'remote', task_source_host: 'gpu-worker-03', runner_location: 'remote',
+  }
   await page.route('**/api/tasks?*', route => route.fulfill({ json: {
-    items: [local, task], total: 2, offset: 0, limit: 50, has_more: false,
-    status_counts: { pending: 0, queued: 0, running: 2, completed: 0, failed: 0, cancelled: 0 },
+    items: [local, task, pending, remotePending], total: 4, offset: 0, limit: 50, has_more: false,
+    status_counts: { pending: 2, queued: 0, running: 2, completed: 0, failed: 0, cancelled: 0 },
   } }))
   await page.route('**/api/tasks/remote-task?*', route => route.fulfill({ json: task }))
   await page.route('**/api/tasks/remote-task/cancel?*', route => {
@@ -132,12 +141,35 @@ test('task source and uncertainty remain distinct from running and log connectiv
   const localCard = page.locator('[data-task-card="local-task"]')
   await expect(localCard.getByText('Running', { exact: true })).toBeVisible()
   await expect(localCard.getByText('Runner status awaiting confirmation')).toHaveCount(0)
+  const runningColor = await localCard.locator('.task-status-dot').evaluate(dot => getComputedStyle(dot).backgroundColor)
+  await expect(card.locator('.task-status-dot')).toHaveCSS('background-color', runningColor)
+  await expect(card.locator('.task-status-dot')).toHaveCSS('border-top-style', 'solid')
+  const pendingCard = page.locator('[data-task-card="local-pending"]')
+  const pendingColor = await pendingCard.evaluate(element => getComputedStyle(element).borderTopColor)
+  const reportedPending = page.locator('[data-task-card="remote-pending"]')
+  await expect(reportedPending).toHaveCSS('border-top-color', pendingColor)
+  await expect(reportedPending.locator('.task-status-dot')).toHaveCSS('background-color', pendingColor)
+  await expect(reportedPending.locator('.task-status-dot')).toHaveCSS('border-top-style', 'dashed')
   await page.screenshot({ path: testInfo.outputPath('task-source.png') })
   await page.goto('/monitor')
   const localRow = page.getByRole('button', { name: 'View local-task, running', exact: true })
   const recordedRow = page.getByRole('button', { name: 'View remote-task, last reported running', exact: true })
-  await expect(localRow.getByRole('img', { name: 'Running', exact: true })).toHaveClass(/bg-amber-500/)
-  await expect(recordedRow.getByRole('img', { name: 'Last reported running', exact: true })).toHaveClass(/border-current/)
+  const localDot = localRow.getByRole('img', { name: 'Running', exact: true })
+  const remoteDot = recordedRow.getByRole('img', { name: 'Last reported running', exact: true })
+  await expect(localDot).toHaveCSS('border-top-style', 'solid')
+  await expect(remoteDot).toHaveCSS('border-top-style', 'solid')
+  await expect(localDot).toHaveCSS('background-color', runningColor)
+  await expect(remoteDot).toHaveCSS('background-color', runningColor)
+  const localPendingDot = page.getByRole('button', { name: 'View local-pending, pending', exact: true })
+    .getByRole('img', { name: 'Pending', exact: true })
+  const remotePendingDot = page.getByRole('button', { name: 'View remote-pending · gpu-worker-03, pending', exact: true })
+    .getByRole('img', { name: 'Pending', exact: true })
+  await expect(localPendingDot).toHaveCSS('border-top-style', 'solid')
+  await expect(remotePendingDot).toHaveCSS('border-top-style', 'dashed')
+  await expect(remotePendingDot).toHaveCSS('border-top-width', '2px')
+  await expect(localPendingDot).toHaveCSS('background-color', pendingColor)
+  await expect(remotePendingDot).toHaveCSS('background-color', pendingColor)
+  await page.screenshot({ path: testInfo.outputPath('monitor-status-origins.png') })
   const header = page.locator('.monitor-header')
   const title = page.locator('.monitor-task-title')
   await expect(header.getByText('Running', { exact: true })).toBeVisible()
@@ -145,7 +177,9 @@ test('task source and uncertainty remain distinct from running and log connectiv
   await header.getByRole('button', { name: 'Stop', exact: true }).click()
   await page.getByRole('button', { name: 'Stop Task', exact: true }).click()
   const stoppingRow = page.getByRole('button', { name: 'View remote-task, stopping', exact: true })
-  await expect(stoppingRow.getByRole('img', { name: 'Stopping', exact: true })).toHaveClass(/border-accent/)
+  const stoppingDot = stoppingRow.getByRole('img', { name: 'Stopping', exact: true })
+  await expect(stoppingDot).toHaveCSS('border-top-style', 'solid')
+  await expect(stoppingDot).toHaveAttribute('data-task-tone', 'stopping')
   await expect(stoppingRow.locator('.animate-pulse')).toHaveCount(0)
   await expect(header.getByText('Stopping', { exact: true }).first()).toBeVisible()
   await expect(header.getByRole('button', { name: 'Stopping', exact: true })).toBeDisabled()
@@ -169,7 +203,9 @@ test('task source and uncertainty remain distinct from running and log connectiv
   task.status = 'cancelled'
   await page.getByRole('button', { name: 'Refresh tasks', exact: true }).click()
   const cancelledRow = page.getByRole('button', { name: 'View remote-task, cancelled', exact: true })
-  await expect(cancelledRow.getByRole('img', { name: 'Cancelled', exact: true })).toHaveClass(/bg-slate-500/)
+  const cancelledDot = cancelledRow.getByRole('img', { name: 'Cancelled', exact: true })
+  await expect(cancelledDot).toHaveCSS('border-top-style', 'solid')
+  await expect(cancelledDot).toHaveAttribute('data-task-tone', 'cancelled')
   await expect(header.getByText('Cancelled', { exact: true })).toBeVisible()
 })
 

@@ -13,7 +13,7 @@ import {
 } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import {
-  Activity, AlertTriangle, ArrowDownWideNarrow, Ban, Check, ChevronDown, Circle, CircleDashed, Clock3,
+  AlertTriangle, ArrowDownWideNarrow, ChevronDown,
   Cpu, GripVertical, ListChecks, Loader2, Pin, Play,
   RefreshCw, RotateCcw, Rows3, Search, Square, Terminal, Trash2, X,
 } from 'lucide-react'
@@ -24,6 +24,7 @@ import { useTaskRefresh } from '@/hooks/useTaskRefresh'
 import TaskSearchInput from '@/components/shared/TaskSearchInput'
 import TaskSourceFilter from '@/components/shared/TaskSourceFilter'
 import TaskExecutionInfo from '@/components/shared/TaskExecutionInfo'
+import TaskStatusDot from '@/components/shared/TaskStatusDot'
 import TaskSearchMatches from '@/components/shared/TaskSearchMatches'
 import SelectionIndicator from '@/components/shared/SelectionIndicator'
 import Pagination from '@/components/shared/Pagination'
@@ -32,22 +33,12 @@ import ActionButton from '@/components/shared/ActionButton'
 import CompactSection from '@/components/shared/CompactSection'
 import TaskDetailPanel from './TaskDetailPanel'
 import type { Task, TaskSortMode } from '@/types'
-import { ALL_STATUSES, isTaskStopping, STATUS_LABELS, taskStatusLabel } from '@/theme/tokens'
+import { ALL_STATUSES, isTaskStopping, STATUS_LABELS, taskStatusLabel, taskStatusTone } from '@/theme/tokens'
 import { errorMessage } from '@/utils/errors'
 import { taskDetailRefreshKey } from '@/utils/taskSnapshots'
 import * as api from '@/api'
 
 const STATUS_OPTIONS = ['All', 'active', ...ALL_STATUSES] as const
-const TASK_STATUS_ICONS = {
-  pending: Circle,
-  queued: Clock3,
-  running: Activity,
-  stopping: Square,
-  completed: Check,
-  failed: X,
-  cancelled: Ban,
-  reported: CircleDashed,
-}
 const TASK_SORT_OPTIONS: { value: TaskSortMode; label: string }[] = [
   { value: 'priority', label: 'Active first' },
   { value: 'manual', label: 'Manual order' },
@@ -1344,8 +1335,6 @@ const TaskCard = memo(function TaskCard({
   const statusId = useId()
   const statusLabel = taskStatusLabel(task)
   const stopping = isTaskStopping(task)
-  const statusTone = stopping ? 'stopping' : statusLabel === STATUS_LABELS[task.status] ? task.status : 'reported'
-  const StatusIcon = TASK_STATUS_ICONS[statusTone]
   const displayName = task.display_name ?? task.name
   const accessibleName = task.task_source_host ? `${displayName} · ${task.task_source_host}` : displayName
   const folderName = task.dir.split(/[\\/]/).pop() || task.dir
@@ -1364,7 +1353,7 @@ const TaskCard = memo(function TaskCard({
     <article
       data-task-card={task.name}
       data-task-status={task.status}
-      data-task-tone={statusTone}
+      data-task-tone={taskStatusTone(task)}
       data-task-card-pinned={task.pinned ? 'true' : 'false'}
       data-selection-mode={selectMode}
       aria-busy={taskPending || undefined}
@@ -1401,7 +1390,7 @@ const TaskCard = memo(function TaskCard({
       >
         <div className="task-card-state flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
           <span id={statusId} className="task-card-status-label inline-flex min-w-0 max-w-full items-center gap-1.5 text-xs font-semibold leading-4 [overflow-wrap:anywhere]">
-            <StatusIcon aria-hidden="true" className="task-card-status-icon size-[1.125rem] shrink-0" />
+            <TaskStatusDot task={task} decorative />
             <span>{t(statusLabel)}</span>
           </span>
           {taskPending && (

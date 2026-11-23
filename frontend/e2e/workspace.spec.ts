@@ -553,7 +553,6 @@ test('launcher, navigation, and theme work without browser errors', async ({ pag
 })
 
 test('GPU card opens detailed device and process information', async ({ page, isMobile }, testInfo) => {
-  await page.clock.install()
   if (isMobile) await page.setViewportSize({ width: 375, height: 667 })
   await page.addInitScript(() => {
     Object.defineProperty(navigator, 'clipboard', {
@@ -686,6 +685,7 @@ test('GPU card opens detailed device and process information', async ({ page, is
   await expect(dialog.getByText('python train.py --epochs 10')).toBeVisible()
   const runtime = dialog.locator('dl > div').filter({ has: page.getByText('Time since process start', { exact: true }) }).locator('dd')
   await expect(runtime).toBeVisible()
+  await page.clock.install()
   const previousRuntime = await runtime.textContent()
   await page.clock.fastForward(2000)
   await expect(runtime).not.toHaveText(previousRuntime!)

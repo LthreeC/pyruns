@@ -2897,8 +2897,6 @@ class TaskManager:
             status = str(info.get("status", "") or "").lower()
             if status not in {"queued", "running"}:
                 raise TaskStateConflict(f"task is not active: {status}")
-            if self._is_git_snapshot(info, task_dir):
-                raise TaskStateConflict("cancel this recorded task on its execution host")
             current_run_index = active_task_run_index(info)
             if expected_run_index is not None:
                 if current_run_index != expected_run_index:
@@ -2913,7 +2911,13 @@ class TaskManager:
             if self._is_current_runner(info):
                 request_context["action"] = "cancel_local"
                 return
-            if self._is_foreign_live_runner(info) or (status == "queued" and self._queue_owned_elsewhere(info, task_dir)):
+            # Common task metadata may be shared even when Git tracks it.
+            # Only the execution host can confirm the end of a recorded run.
+            if (
+                self._is_git_snapshot(info, task_dir)
+                or self._is_foreign_live_runner(info)
+                or (status == "queued" and self._queue_owned_elsewhere(info, task_dir))
+            ):
                 request_context["action"] = "request_foreign"
                 return
             if status == "running" and self._running_info_has_live_owner(info):

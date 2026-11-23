@@ -93,7 +93,6 @@ def test_git_pull_never_claims_another_devices_tasks(tmp_path, monkeypatch, old_
         manager._refresh_queued_runner_leases()
         assert manager._pick_queued_task()[0] is None
         assert manager._claim_task_for_run(manager.get_task("queue"), 1, counts_for_batch=True) is None
-        assert not manager.request_task_cancel("snapshot")
         assert not manager.is_processing
         assert manager.local_activity_counts() == {"running": 0, "queued": 0}
         manager._cleanup_on_shutdown()
@@ -174,6 +173,34 @@ def test_storage_switch_preserves_history_and_trash_scope(tmp_path, monkeypatch)
         assert manager.local_activity_counts() == {"running": 0, "queued": 1}
     finally:
         runtime.shutdown()
+
+
+@pytest.mark.parametrize('known_runner', [True, False])
+def test_git_tracked_common_task_accepts_explicit_stop_from_another_host(tmp_path, monkeypatch, known_runner):
+    monkeypatch.setattr(TaskManager, "_scheduler_loop", lambda self: None)
+    monkeypatch.setattr("pyruns.core.task_manager.kill_process", lambda *_args, **_kwargs: pytest.fail("foreign PID"))
+    git(tmp_path, "init")
+    root = tmp_path / "tasks"
+    task_dir = TaskGenerator(str(root)).create_task("shared-job", {})["dir"]
+    runner_host = f"peer-{local_runner_host()}"
+    runner_id = f"{runner_host}:123:token" if known_runner else None
+    update_task_metadata(task_dir, lambda info: info.update(
+        status="running", run_index=1, runner_host=runner_host if known_runner else None, runner_id=runner_id,
+        lease_until=time.time() - 30, pids=[os.getpid()], pid_create_times=[1.0],
+    ))
+    git(tmp_path, "add", "tasks/shared-job/task_info.json")
+    manager = TaskManager(str(root), lazy_scan=False)
+    try:
+        task = manager.get_task("shared-job")
+        assert task["task_storage"] == "shared"
+        assert task["runner_location"] == ("remote" if known_runner else "unknown")
+        assert manager.request_task_cancel("shared-job", expected_runner_id=runner_id, expected_run_index=1)
+        info = load_task_metadata(task_dir)
+        assert info["cancel_requested_at"]
+        assert info["status"] == "running"
+        assert info["runner_id"] == runner_id
+    finally:
+        manager.shutdown()
 
 
 def test_git_tracking_between_queue_selection_and_claim_is_rechecked(tmp_path, monkeypatch):

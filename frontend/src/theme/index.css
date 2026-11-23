@@ -789,8 +789,6 @@ dialog::backdrop {
   grid-template-columns: repeat(auto-fill, minmax(min(100%, 16rem), 1fr));
 }
 .task-card {
-  --task-status-color: var(--text-secondary);
-  --task-status-stripe: #848c98;
   --task-card-shadow-color: rgb(32 41 56 / 10%);
   --task-card-control-size: 2.75rem;
   border: 1px solid var(--border-default);
@@ -800,43 +798,67 @@ dialog::backdrop {
 }
 .manager-page .task-card {
   @apply shadow-[0_1px_1px_var(--task-card-shadow-color)];
-  border-block-start: 2px solid var(--task-status-stripe);
+  border-block-start: 3px solid var(--task-status-stripe);
   border-radius: 0.5rem;
+  background-image: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--task-status-stripe) var(--task-status-wash, 9%), transparent),
+    transparent 3rem
+  );
 }
-.task-card[data-task-tone="queued"] {
-  --task-status-color: #345978;
-  --task-status-stripe: #52799e;
+[data-task-tone="pending"] {
+  --task-status-color: #6515a6;
+  --task-status-stripe: #9027dc;
+  --task-status-wash: 18%;
 }
-.task-card[data-task-tone="running"] {
-  --task-status-color: #794b1c;
-  --task-status-stripe: #b17b35;
+[data-task-tone="queued"] {
+  --task-status-color: #1e40af;
+  --task-status-stripe: #2563eb;
 }
-.task-card[data-task-tone="stopping"] {
-  --task-status-color: var(--accent-ink);
-  --task-status-stripe: var(--accent-ink);
+[data-task-tone="running"] {
+  --task-status-color: #8a4708;
+  --task-status-stripe: #bf670b;
 }
-.task-card[data-task-tone="completed"] {
-  --task-status-color: #2a5d50;
-  --task-status-stripe: #477e6e;
+[data-task-tone="stopping"] {
+  --task-status-color: #86198f;
+  --task-status-stripe: #c026d3;
 }
-.task-card[data-task-tone="failed"] {
-  --task-status-color: #843f49;
-  --task-status-stripe: #a75a65;
+[data-task-tone="completed"] {
+  --task-status-color: #05603a;
+  --task-status-stripe: #078454;
 }
-.task-card[data-task-tone="cancelled"] {
-  --task-status-color: #655765;
-  --task-status-stripe: #8a7889;
+[data-task-tone="failed"] {
+  --task-status-color: #a61b1b;
+  --task-status-stripe: #dc2626;
 }
-.task-card[data-task-tone="reported"] {
-  --task-status-color: #4a586d;
-  --task-status-stripe: #64718a;
+[data-task-tone="cancelled"] {
+  --task-status-color: #475569;
+  --task-status-stripe: #64748b;
 }
-.dark .task-card[data-task-tone="queued"] { --task-status-color: #abcbe8; }
-.dark .task-card[data-task-tone="running"] { --task-status-color: #e9bf82; }
-.dark .task-card[data-task-tone="completed"] { --task-status-color: #a3cdbd; }
-.dark .task-card[data-task-tone="failed"] { --task-status-color: #e5acb4; }
-.dark .task-card[data-task-tone="cancelled"] { --task-status-color: #cdbbce; }
-.dark .task-card[data-task-tone="reported"] { --task-status-color: #b3c0d5; }
+.dark [data-task-tone="pending"] { --task-status-color: #ebd2ff; --task-status-stripe: #c187fa; }
+.dark [data-task-tone="queued"] { --task-status-color: #bfdbfe; --task-status-stripe: #60a5fa; }
+.dark [data-task-tone="running"] { --task-status-color: #fde68a; --task-status-stripe: #fbbf24; }
+.dark [data-task-tone="stopping"] { --task-status-color: #f5d0fe; --task-status-stripe: #e879f9; }
+.dark [data-task-tone="completed"] { --task-status-color: #a7f3d0; --task-status-stripe: #34d399; }
+.dark [data-task-tone="failed"] { --task-status-color: #fecaca; --task-status-stripe: #f87171; }
+.dark [data-task-tone="cancelled"] { --task-status-color: #cbd5e1; --task-status-stripe: #94a3b8; }
+.task-status-dot {
+  display: inline-block;
+  flex: none;
+  width: 1rem;
+  height: 1rem;
+  padding: 2px;
+  border: 1px solid var(--task-status-stripe);
+  border-radius: 50%;
+  background: var(--task-status-stripe) content-box;
+}
+.task-status-dot[data-dashed] {
+  padding: 1px;
+  border: 2px dashed var(--task-status-color);
+}
+.task-status-badge { background: color-mix(in srgb, var(--task-status-stripe) 11%, transparent); }
+.task-status-badge .task-status-dot { width: 0.75rem; height: 0.75rem; }
+.task-status-badge,
 .task-card-status-label,
 .task-card .task-card-context [data-runner-warning="expired"] { color: var(--task-status-color); }
 .task-card-state {

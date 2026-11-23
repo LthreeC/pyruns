@@ -1,22 +1,13 @@
-export const STATUS_COLORS = {
-  pending:   { bg: 'bg-gray-500/10',    text: 'text-gray-700 dark:text-gray-300',       dot: 'bg-gray-500',    border: 'border-gray-500/20' },
-  queued:    { bg: 'bg-blue-500/10',    text: 'text-blue-700 dark:text-blue-300',       dot: 'bg-blue-500',    border: 'border-blue-500/20' },
-  running:   { bg: 'bg-amber-500/10',   text: 'text-amber-800 dark:text-amber-300',     dot: 'bg-amber-500',   border: 'border-amber-500/20' },
-  completed: { bg: 'bg-emerald-500/10', text: 'text-emerald-700 dark:text-emerald-300', dot: 'bg-emerald-500', border: 'border-emerald-500/20' },
-  failed:    { bg: 'bg-rose-500/10',    text: 'text-rose-700 dark:text-rose-300',       dot: 'bg-rose-500',    border: 'border-rose-500/20' },
-  cancelled: { bg: 'bg-slate-500/10',   text: 'text-slate-700 dark:text-slate-300',     dot: 'bg-slate-500',   border: 'border-slate-500/20' },
-} as const
-
-export type TaskStatus = keyof typeof STATUS_COLORS
-
-export const STATUS_LABELS: Record<TaskStatus, string> = {
+export const STATUS_LABELS = {
   pending: 'Pending',
   queued: 'Queued',
   running: 'Running',
   completed: 'Completed',
   failed: 'Failed',
   cancelled: 'Cancelled',
-}
+} as const
+
+export type TaskStatus = keyof typeof STATUS_LABELS
 
 export const ALL_STATUSES: TaskStatus[] = ['pending', 'queued', 'running', 'completed', 'failed', 'cancelled']
 
@@ -24,23 +15,32 @@ export function isTaskStopping(task: { status: TaskStatus; cancel_requested_at?:
   return (task.status === 'running' || task.status === 'queued') && Boolean(task.cancel_requested_at)
 }
 
-export function taskStatusLabel(task: {
+type TaskStatusDetails = {
   status: TaskStatus
   cancel_requested_at?: number | string | null
   runner_location?: string
   runner_lease_expired?: boolean | null
   task_storage?: string
   local_process_verified?: boolean
-}) {
+}
+
+function taskActivityReport(task: TaskStatusDetails) {
+  if (task.status !== 'running' && task.status !== 'queued') return null
+  if (task.status === 'running' && task.local_process_verified) return null
+  if (task.task_storage === 'remote' || task.runner_lease_expired === true || task.runner_location === 'unknown' ||
+    (task.runner_location && task.runner_lease_expired == null)) return 'last'
+  return task.runner_location === 'remote' ? 'remote' : null
+}
+
+export function taskStatusTone(task: TaskStatusDetails) {
+  return isTaskStopping(task) ? 'stopping' : task.status
+}
+
+export function taskStatusLabel(task: TaskStatusDetails) {
   if (isTaskStopping(task)) return 'Stopping'
-  if (task.status === 'running' && task.local_process_verified) return 'Running'
-  if (task.status === 'running' || task.status === 'queued') {
-    if (task.task_storage === 'remote' || task.runner_lease_expired === true || task.runner_location === 'unknown' ||
-      (task.runner_location && task.runner_lease_expired == null)) {
-      return task.status === 'running' ? 'Last reported running' : 'Last reported queued'
-    }
-    if (task.runner_location === 'remote') return task.status === 'running' ? 'Remote reports running' : 'Remote reports queued'
-  }
+  const report = taskActivityReport(task)
+  if (report === 'last') return task.status === 'running' ? 'Last reported running' : 'Last reported queued'
+  if (report === 'remote') return task.status === 'running' ? 'Remote reports running' : 'Remote reports queued'
   return STATUS_LABELS[task.status]
 }
 

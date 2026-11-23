@@ -25,7 +25,7 @@ async function fixture(page: Page, taskCount = 50) {
       status: ['running', 'running', 'queued', 'pending', 'cancelled', 'running', 'queued'][index] ?? (index % 8 === 0 ? 'failed' : 'completed'),
       created_at: `2026-11-15_17-${String(index).padStart(2, '0')}-09`,
       run_index: 1, start_times: [], finish_times: [], pids: [], records: [], tracks: [],
-      config: {}, env: {}, notes: '', progress: 0, pinned: false, ...origins[index],
+      config: {}, env: {}, notes: '', progress: 0, pinned: false, task_storage: 'shared', ...origins[index],
     }
   })
   const requests: string[] = []
@@ -129,21 +129,18 @@ test('manager groups its toolbar and offers direct delete and keyboard drag', as
   const cardAppearance = () => cards.evaluateAll(elements => Object.fromEntries(elements.map(element => {
     const card = getComputedStyle(element)
     const label = getComputedStyle(element.querySelector('.task-card-status-label')!)
-    const icon = element.querySelector('.task-card-status-icon')!
+    const dot = getComputedStyle(element.querySelector('.task-status-dot')!)
     return [element.getAttribute('data-task-tone')!, {
       surface: card.backgroundColor,
       stripe: card.borderBlockStartColor,
       label: label.color,
-      glyph: [...icon.classList].find(name => name.startsWith('lucide-')),
+      fill: dot.backgroundColor,
     }] as const
   })))
   const lightColors = await cardAppearance()
   expect(new Set(Object.values(lightColors).map(({ surface }) => surface))).toEqual(new Set(['rgb(255, 255, 255)']))
-  expect(new Set(Object.values(lightColors).map(({ stripe }) => stripe)).size).toBe(7)
-  expect(Object.fromEntries(Object.entries(lightColors).map(([tone, { glyph }]) => [tone, glyph]))).toEqual({
-    running: 'lucide-activity', reported: 'lucide-circle-dashed', queued: 'lucide-clock3',
-    completed: 'lucide-check', failed: 'lucide-x', pending: 'lucide-circle', cancelled: 'lucide-ban',
-  })
+  expect(new Set(Object.values(lightColors).map(({ stripe }) => stripe)).size).toBe(6)
+  for (const { fill, stripe } of Object.values(lightColors)) expect(fill).toBe(stripe)
   const runningCard = page.locator(`[data-task-card="${state.first}"]`)
   const reportedCard = page.locator(`[data-task-card="${state.reported}"]`)
   const remoteRunningCard = page.locator(`[data-task-card="${state.remoteRunning}"]`)
@@ -152,14 +149,29 @@ test('manager groups its toolbar and offers direct delete and keyboard drag', as
   await expect(reportedCard).toHaveAttribute('data-task-status', 'running')
   await expect(reportedCard.getByRole('button', { name: `Open details for ${state.reported}`, exact: true }))
     .toHaveAccessibleDescription('Last reported running')
-  await expect(reportedCard.getByText('Runner status awaiting confirmation')).toHaveCSS('color', lightColors.reported.label)
+  await expect(reportedCard.getByText('Runner status awaiting confirmation')).toHaveCSS('color', lightColors.running.label)
   await expect(remoteRunningCard.getByText('Remote reports running', { exact: true })).toBeVisible()
-  await expect(remoteRunningCard).toHaveAttribute('data-task-tone', 'reported')
   await expect(remoteQueuedCard.getByText('Last reported queued', { exact: true })).toBeVisible()
-  await expect(remoteQueuedCard).toHaveAttribute('data-task-tone', 'reported')
+  for (const common of [runningCard, reportedCard, remoteRunningCard]) {
+    await expect(common).toHaveAttribute('data-task-tone', 'running')
+    await expect(common).toHaveCSS('border-block-start-color', lightColors.running.stripe)
+    await expect(common.locator('.task-status-dot')).toHaveCSS('border-top-style', 'solid')
+    await expect(common.locator('.task-status-dot')).toHaveCSS('background-color', lightColors.running.fill)
+    await expect(common.getByRole('button', { name: /^Stop / })).toBeEnabled()
+    await expect(common.getByRole('button', { name: /^Pin / })).toBeEnabled()
+  }
+  const otherDeviceDot = remoteQueuedCard.locator('.task-status-dot')
+  await expect(remoteQueuedCard).toHaveCSS('border-block-start-color', lightColors.queued.stripe)
+  await expect(otherDeviceDot).toHaveCSS('border-top-style', 'dashed')
+  await expect(otherDeviceDot).toHaveCSS('border-top-width', '2px')
+  await expect(otherDeviceDot).toHaveCSS('border-top-color', lightColors.queued.label)
+  await expect(otherDeviceDot).toHaveCSS('background-color', lightColors.queued.fill)
+  await expect(otherDeviceDot).toHaveCSS('background-clip', 'content-box')
+  await expect(remoteQueuedCard.getByRole('button', { name: /^Stop / })).toHaveCount(0)
+  await expect(remoteQueuedCard.getByRole('button', { name: /^Pin / })).toBeEnabled()
   await expect(runningCard).toHaveCSS('box-shadow', /0px 1px 1px/)
   await expect(runningCard).toHaveCSS('border-inline-start-width', '1px')
-  await expect(runningCard).toHaveCSS('border-block-start-width', '2px')
+  await expect(runningCard).toHaveCSS('border-block-start-width', '3px')
   await expect(runningCard).toHaveCSS('border-radius', '8px')
   const preview = runningCard.locator('.task-card-preview')
   await expect(preview).toHaveAttribute('title', 'export CUDA_VISIBLE_DEVICES=0\npython train.py --seed 0 --dataset LaMP-5')
@@ -168,7 +180,7 @@ test('manager groups its toolbar and offers direct delete and keyboard drag', as
   for (const card of [runningCard, reportedCard]) {
     const label = (await card.locator('.task-card-status-label').boundingBox())!
     const name = (await card.locator('.task-card-name').boundingBox())!
-    expect(label.height).toBe(18)
+    expect(label.height).toBe(16)
     expect(label.y + label.height).toBeLessThanOrEqual(name.y)
     expect(label.x).toBe(name.x)
   }
@@ -265,7 +277,7 @@ test('manager groups its toolbar and offers direct delete and keyboard drag', as
   await expect(page.getByRole('button', { name: `Deselect ${state.first}`, exact: true })).toHaveAttribute('aria-pressed', 'true')
   await page.mouse.move(0, 0)
   await expect(runningCard).toHaveCSS('background-color', lightColors.running.surface)
-  await expect(runningCard.locator('.task-card-status-icon')).toHaveCSS('color', lightColors.running.label)
+  await expect(runningCard.locator('.task-status-dot')).toHaveCSS('background-color', lightColors.running.fill)
   await expect(runningCard).toHaveClass(/\bring-accent\b/)
   await expect(runningCard).toHaveCSS('box-shadow', /0px 0px 0px 1px.*0px 1px 1px/)
   await expect(runningCard).toHaveCSS('border-block-start-color', lightColors.running.stripe)
@@ -276,12 +288,12 @@ test('manager groups its toolbar and offers direct delete and keyboard drag', as
   await expect(runningCard).toHaveCSS('background-color', 'rgb(28, 31, 40)')
   const darkColors = await cardAppearance()
   expect(new Set(Object.values(darkColors).map(({ surface }) => surface))).toEqual(new Set(['rgb(28, 31, 40)']))
-  expect(new Set(Object.values(darkColors).map(({ stripe }) => stripe)).size).toBe(7)
+  expect(new Set(Object.values(darkColors).map(({ stripe }) => stripe)).size).toBe(6)
   for (const [tone, colors] of Object.entries(lightColors)) {
     expect(darkColors[tone].label).not.toBe(colors.label)
-    expect(darkColors[tone].glyph).toBe(colors.glyph)
+    expect(darkColors[tone].fill).toBe(darkColors[tone].stripe)
   }
-  await expect(reportedCard.getByText('Runner status awaiting confirmation')).toHaveCSS('color', darkColors.reported.label)
+  await expect(reportedCard.getByText('Runner status awaiting confirmation')).toHaveCSS('color', darkColors.running.label)
   await page.screenshot({ path: testInfo.outputPath('manager-dark.png') })
   await page.screenshot({ path: testInfo.outputPath('manager-cards-dark.png') })
   await page.getByRole('button', { name: 'Switch to Chinese', exact: true }).click()
