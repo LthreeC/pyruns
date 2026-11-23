@@ -9,11 +9,11 @@ from types import SimpleNamespace
 
 import pytest
 
-from pyruns.cli.commands import cmd_restore
+from pyruns.cli.commands import _trash_records, cmd_restore
 from pyruns.core.task_generator import TaskGenerator
 from pyruns.core.task_manager import TaskManager
 from pyruns.utils import runner_device, task_storage
-from pyruns.utils.info_io import update_task_metadata
+from pyruns.utils.info_io import load_task_metadata, update_task_metadata
 from pyruns.utils.runner_device import local_runner_host
 from pyruns.utils.run_result import write_run_result
 from pyruns.web.runtime import PyrunsRuntime
@@ -235,8 +235,10 @@ def test_web_observes_other_stores_without_claiming_them(tmp_path, monkeypatch):
         assert manager.get_task(task["name"], summary=True, compact=True)["task_source_host"] == task["task_source_host"]
         assert manager._pick_queued_task()[0] is None
         assert manager.active_task_count() == 0
+        assert not manager.start_task_now(task["name"])
         assert not manager.request_task_cancel(task["name"])
         assert not manager.delete_tasks([task["name"]])
+        assert not (replica.parent / ".trash").exists()
         assert manager.local_activity_counts() == {"running": 0, "queued": 0}
         with monkeypatch.context() as checks:
             checks.setattr("pyruns.core.task_manager.discover_device_roots", lambda *_: pytest.fail("GPU scan read remote roots"))
@@ -256,5 +258,50 @@ def test_web_observes_other_stores_without_claiming_them(tmp_path, monkeypatch):
         (tmp_path / second).mkdir()
         assert manager.sync_task_dirs_from_disk()
         assert manager.task_sources()[-1] == {"id": second, "host": "render-farm-node"}
+    finally:
+        runtime.shutdown()
+
+
+def test_web_manages_synced_tasks_in_their_source_folders(tmp_path, monkeypatch):
+    monkeypatch.setattr(TaskManager, "_scheduler_loop", lambda self: None)
+    runtime = PyrunsRuntime(str(tmp_path))
+    first_source = "tasks-render-node-aaaaaaaaaaaa"
+    second_source = "tasks-render-node-bbbbbbbbbbbb"
+    try:
+        shared = runtime.task_generator.create_task("renamed", {"source": "shared"})
+        first = TaskGenerator(str(tmp_path / first_source)).create_task("trial", {"source": "first"})
+        second = TaskGenerator(str(tmp_path / second_source)).create_task("renamed", {"source": "second"})
+        original = runtime.list_tasks(sources={first_source}).items[0]
+        original_id = original["name"]
+
+        assert runtime.set_task_pin(original_id, True)["pinned"] is True
+        reordered = runtime.reorder_tasks([{"name": original_id}, {"name": "renamed"}])
+        assert [task["name"] for task in reordered["items"]] == [original_id, "renamed"]
+        runtime.update_task_notes(original_id, "synced notes", "", expected_task_identity=original["task_identity"])
+        runtime.update_task_env(original_id, {"MODE": "review"}, {}, expected_task_identity=original["task_identity"])
+        edited = load_task_metadata(first["dir"])
+        assert (edited["pinned"], edited["task_order"], edited["notes"], edited["env"]) == (
+            True, 0, "synced notes", {"MODE": "review"},
+        )
+        assert load_task_metadata(shared["dir"]).get("notes", "") == ""
+
+        renamed = runtime.rename_task(original_id, "renamed")
+        assert renamed["display_name"] == "renamed" and renamed["name"] != "renamed"
+        assert renamed["task_source"] == first_source and renamed["task_identity"] == original["task_identity"]
+        assert not Path(first["dir"]).exists()
+        assert runtime.list_tasks(sources={first_source}, force_refresh=True).items[0]["name"] == renamed["name"]
+        assert runtime.get_task(original_id) is None
+        peer = runtime.list_tasks(sources={second_source}).items[0]
+        assert runtime.delete_tasks_batch([renamed["name"], peer["name"]])["count"] == 2
+        assert not Path(renamed["dir"]).exists() and not Path(second["dir"]).exists()
+        assert Path(shared["dir"]).exists()
+
+        manager = runtime.task_manager
+        trash_names = [record["trash_name"] for record in _trash_records(manager)]
+        assert trash_names == [f"renamed@{first_source}", f"renamed@{second_source}"]
+        cmd_restore(SimpleNamespace(json_output=True), SimpleNamespace(tasks=trash_names), manager)
+        assert load_task_metadata(renamed["dir"])["notes"] == "synced notes"
+        assert Path(second["dir"]).exists()
+        assert Path(shared["dir"]).exists()
     finally:
         runtime.shutdown()

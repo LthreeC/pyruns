@@ -36,6 +36,7 @@ from pyruns._config import (
     MAX_MONITOR_SCROLLBACK,
     QUEUE_LOG_FILENAME,
 )
+from pyruns.core.task_manager import TaskStateConflict
 from pyruns.utils.events import log_emitter
 from pyruns.utils.info_io import MAX_RUN_HISTORY_SLOTS, validate_task_log_path
 from pyruns.utils.log_io import log_file_identity
@@ -1126,6 +1127,8 @@ def create_app(
             return get_runtime().reorder_tasks(items, include_tracks=include_tracks, include_items=include_items)
         except KeyError as exc:
             raise HTTPException(status_code=404, detail=f"Task '{exc.args[0]}' not found") from exc
+        except TaskStateConflict as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -1256,6 +1259,8 @@ def create_app(
             task = get_runtime().set_task_pin(task_name, payload.pinned, include_tracks=include_tracks)
         except KeyError as exc:
             raise HTTPException(status_code=404, detail=f"Task '{task_name}' not found") from exc
+        except TaskStateConflict as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         return {"ok": True, "task": task}

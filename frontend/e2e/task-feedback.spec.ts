@@ -177,26 +177,41 @@ test('source checkboxes filter both task views and allow an empty selection', as
   const remote = 'tasks-gpu-production-aaaaaaaaaaaa'
   const remoteName = 'trial (gpu-production-aaaaaaaaaaaa)'
   const sources = [{ id: 'shared', host: '' }, { id: 'local', host: 'laptop' }, { id: remote, host: 'gpu-production' }]
+  const taskForSource = (source: (typeof sources)[number]) => ({
+    name: source.id === remote ? remoteName : source.host || 'common-trial',
+    ...(source.id === remote ? { display_name: 'trial', task_source_host: source.host } : {}),
+    task_source: source.id, dir: '/runs/' + source.id + '/trial',
+    task_storage: source.id === remote ? 'remote' : source.id, status: 'completed', run_index: 1,
+    config_file: 'config.sh', env: {}, notes: '', records: [], start_times: [], finish_times: [],
+  })
+  await page.route(`**/api/tasks/${encodeURIComponent(remoteName)}?*`, route => route.fulfill({ json: taskForSource(sources[2]) }))
   await page.route(`**/api/tasks/${encodeURIComponent(remoteName)}/logs?*`, route => route.fulfill({ json: {
     task_name: remoteName, selected_log: 'run1.log', available_logs: ['run1.log'], content: 'remote output\n', offset: 14,
   } }))
   await page.route('**/api/tasks?*', route => {
     const selected = new URL(route.request().url()).searchParams.get('sources')?.split(',')
-    const items = sources.filter(source => !selected || selected.includes(source.id)).map(source => ({
-      name: source.id === remote ? remoteName : source.host || 'common-trial',
-      ...(source.id === remote ? { display_name: 'trial', task_source_host: source.host } : {}),
-      task_source: source.id, dir: '/runs/' + source.id + '/trial',
-      task_storage: source.id === remote ? 'remote' : source.id, status: 'completed', run_index: 1,
-      config_file: 'config.sh', env: {}, notes: '', records: [], start_times: [], finish_times: [],
-    }))
+    const items = sources.filter(source => !selected || selected.includes(source.id)).map(taskForSource)
     return route.fulfill({ json: { items, total: items.length, offset: 0, limit: 50, has_more: false, task_sources: sources } })
   })
   await page.goto('/manager?token=pyruns-e2e-access-token')
   const trigger = page.getByRole('button', { name: 'Task sources' })
   const all = page.getByRole('checkbox', { name: 'Select all sources' })
   const remoteCard = page.getByRole('button', { name: 'Open details for trial · gpu-production' })
-  await expect(remoteCard).toContainText('gpu-production · read only')
+  await expect(remoteCard).toContainText('Other device · gpu-production')
   await expect(remoteCard).not.toContainText('aaaaaaaaaaaa')
+  await expect(page.getByRole('button', { name: 'Pin trial · gpu-production' })).toBeEnabled()
+  await expect(page.getByRole('button', { name: 'Reorder trial · gpu-production' })).toBeEnabled()
+  await expect(page.getByRole('button', { name: 'Delete trial · gpu-production' })).toBeEnabled()
+  await remoteCard.click()
+  const details = page.getByRole('dialog', { name: 'Task details for trial' })
+  await details.getByRole('button', { name: 'Rename task' }).click()
+  await expect(details.getByTitle('New task name')).toHaveValue('trial')
+  await details.getByRole('button', { name: 'Cancel task rename' }).click()
+  await details.getByRole('tab', { name: 'Notes', exact: true }).click()
+  await expect(details.getByRole('textbox', { name: 'Task notes' })).toBeEditable()
+  await details.getByRole('tab', { name: 'Env', exact: true }).click()
+  await expect(details.getByRole('button', { name: 'Add environment variable' })).toBeEnabled()
+  await details.getByRole('button', { name: 'Close task details' }).click()
   await trigger.click()
   const width = (await all.boundingBox())!.width
   await all.click({ position: { x: width - 3, y: 14 } })
@@ -209,6 +224,11 @@ test('source checkboxes filter both task views and allow an empty selection', as
   await page.reload()
   await expect(page.locator('[data-task-card]')).toHaveCount(1)
   await expect(remoteCard).toBeVisible()
+  await page.getByRole('button', { name: 'Select tasks', exact: true }).click()
+  await page.getByRole('button', { name: 'Select trial · gpu-production', exact: true }).click()
+  await expect(page.getByRole('button', { name: 'Run (0)', exact: true })).toBeDisabled()
+  await expect(page.getByRole('button', { name: 'Delete', exact: true })).toBeEnabled()
+  await page.getByRole('button', { name: 'Cancel', exact: true }).click()
   await page.getByRole('link', { name: 'Monitor', exact: true }).first().click()
   const terminal = page.getByRole('region', { name: 'Read-only logs for trial' })
   await expect(terminal).toContainText('remote output')

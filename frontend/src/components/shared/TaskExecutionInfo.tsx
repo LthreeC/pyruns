@@ -24,8 +24,8 @@ export default function TaskExecutionInfo({ task, className, showRecordedHost = 
   )} aria-label={t('Execution source')}>
     {deviceFolder && <span className="inline-flex min-w-0 items-center gap-1" title={task.task_source}>
       <Folder aria-hidden="true" className="h-3 w-3 shrink-0" />
-      <span className="truncate">{sourceHost ? t('{{host}} · read only', { host: sourceHost })
-        : t(task.task_storage === 'remote' ? 'Other device · read only' : 'Device folder')}</span>
+      <span className="truncate">{sourceHost ? t('Other device · {{host}}', { host: sourceHost })
+        : t(task.task_storage === 'remote' ? 'Other device' : 'Device folder')}</span>
     </span>}
     {showHost && <span className="inline-flex min-w-0 items-center gap-1" title={t('Execution host: {{host}}', { host })}>
       <Server aria-hidden="true" className="h-3 w-3 shrink-0" /><span className="truncate font-mono">{host}</span>

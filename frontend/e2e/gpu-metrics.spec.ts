@@ -279,7 +279,7 @@ test('Monitor shows readable GPU wait details and refreshes them from task event
   await expect(logs).toHaveCSS('background-color', 'rgb(16, 18, 24)')
   await expect(panel).toContainText('1/2 eligible')
   await expect(panel).toContainText('CUDA_VISIBLE_DEVICES=2,3')
-  await expect(panel).toContainText('14m 30s')
+  await expect(panel).toContainText(/00:14:[23]\d/)
   await expect(panel.locator('dl > div').filter({ hasText: 'Visible GPUs' })).toContainText('2')
   const devices = panel.getByRole('list', { name: 'GPU eligibility details' })
   await expect(devices).toBeHidden()
@@ -313,4 +313,121 @@ test('Monitor shows readable GPU wait details and refreshes them from task event
   gpuWait = null
   events!.send(JSON.stringify({ type: 'changed' }))
   await expect(heading).toHaveCount(0)
+})
+
+test('GPU wait ticks without new log or task events and catches up when visible', async ({ page }) => {
+  const now = new Date('2026-11-23T10:00:00Z')
+  await page.clock.install({ time: now })
+  await page.clock.pauseAt(new Date(now.getTime() + 100))
+  let reads = 0
+  const deadline = 1_793_000_000
+  const task = {
+    name: 'quiet-queue', dir: '/work/quiet-queue', task_kind: 'shell', status: 'queued', run_index: 0,
+    config_file: 'config.sh', cancel_requested_at: null as number | null,
+    gpu_wait: { state: 'waiting', run_index: 1, started_at: deadline - 3632, deadline_at: deadline,
+      waited_seconds: 32, remaining_seconds: 3600, max_wait_seconds: 3632, reason: 'No GPU metrics available' },
+  }
+  await page.route('**/api/tasks?*', route => {
+    reads++
+    return route.fulfill({ json: { items: [task], total: 1, offset: 0, limit: 200, has_more: false } })
+  })
+  await page.route('**/api/tasks/quiet-queue?*', route => route.fulfill({ json: task }))
+  await page.route('**/api/tasks/quiet-queue/logs?*', route => route.fulfill({ json: {
+    content: '', offset: 0, selected_log: 'queue.log', available_logs: ['queue.log'], log_identity: 'queue',
+  } }))
+  await page.routeWebSocket('**/api/tasks/quiet-queue/logs/stream?*', () => {})
+  let events: WebSocketRoute | undefined
+  await page.routeWebSocket('**/api/tasks/events?*', socket => {
+    events = socket
+    socket.send(JSON.stringify({ type: 'ready' }))
+  })
+  await page.goto('/monitor?token=pyruns-e2e-access-token')
+  const panel = page.getByRole('region', { name: 'Waiting for GPU capacity', exact: true })
+  await expect(panel).toContainText('00:00:32')
+  await expect(panel).toContainText('01:00:00')
+  await expect.poll(() => Boolean(events)).toBe(true)
+  await expect.poll(async () => {
+    await page.clock.runFor(250)
+    return reads
+  }).toBeGreaterThanOrEqual(2)
+  const originalReads = reads
+  await page.clock.runFor(2000)
+  await expect(panel).toContainText('00:00:34')
+  await expect(panel).toContainText('00:59:58')
+  expect(reads).toBe(originalReads)
+
+  const visibility = (state: string) => page.evaluate(value => {
+    Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => value })
+    document.dispatchEvent(new Event('visibilitychange'))
+  }, state)
+  await visibility('hidden')
+  await page.clock.runFor(65_000)
+  await expect(panel).toContainText('00:00:34')
+  expect(reads).toBe(originalReads)
+  await visibility('visible')
+  await expect(panel).toContainText(/00:01:3[789]/)
+  await expect(panel).toContainText(/00:58:5[345]/)
+  expect(reads).toBe(originalReads)
+
+  task.cancel_requested_at = deadline - 3500
+  await expect.poll(async () => {
+    await page.clock.runFor(250)
+    return page.getByRole('button', { name: 'View quiet-queue, stopping' }).count()
+  }).toBe(1)
+  await expect(panel).toHaveCount(0)
+  task.status = 'cancelled'
+  events!.send(JSON.stringify({ type: 'changed' }))
+  await expect.poll(async () => {
+    await page.clock.runFor(250)
+    return page.getByRole('button', { name: 'View quiet-queue, cancelled' }).count()
+  }).toBe(1)
+  await expect(panel).toHaveCount(0)
+})
+
+test('Manager updates open details when a task leaves the queued filter', async ({ page }) => {
+  const now = new Date('2026-11-23T10:00:00Z')
+  await page.clock.install({ time: now })
+  await page.clock.pauseAt(new Date(now.getTime() + 100))
+  const task = {
+    name: 'filtered-queue', dir: '/work/filtered-queue', task_kind: 'shell', status: 'queued', run_index: 0,
+    config_file: 'config.sh', queued_at: now.getTime() / 1000 - 32,
+    gpu_wait: { state: 'waiting', run_index: 1, waited_seconds: 32, max_wait_seconds: 0 } as object | null,
+    launch_command: '', start_times: [] as string[],
+  }
+  await page.route('**/api/tasks?*', route => {
+    const filter = new URL(route.request().url()).searchParams.get('status')
+    const items = !filter || filter === task.status ? [task] : []
+    return route.fulfill({ json: { items, total: items.length, offset: 0, limit: 50, has_more: false } })
+  })
+  await page.route('**/api/tasks/filtered-queue?*', route => route.fulfill({ json: task }))
+  let events: WebSocketRoute | undefined
+  await page.routeWebSocket('**/api/tasks/events?*', socket => {
+    events = socket
+    socket.send(JSON.stringify({ type: 'ready' }))
+  })
+  await page.goto('/manager?token=pyruns-e2e-access-token')
+  await page.getByRole('combobox', { name: 'Filter tasks by status' }).selectOption('queued')
+  await page.getByRole('button', { name: 'Open details for filtered-queue' }).click()
+  const detail = page.getByRole('dialog', { name: 'Task details for filtered-queue' })
+  await expect(detail.getByText('Waited', { exact: true })).toHaveCount(1)
+  await expect(detail.getByText('No limit', { exact: true })).toBeVisible()
+  await page.clock.runFor(2000)
+  await expect(detail.getByText('00:00:34', { exact: true })).toBeVisible()
+
+  task.status = 'running'
+  task.gpu_wait = null
+  task.run_index = 1
+  task.launch_command = 'bash config.sh'
+  task.start_times = ['2026-11-23T10:00:00Z']
+  events!.send(JSON.stringify({ type: 'changed' }))
+  await expect.poll(async () => {
+    await page.clock.runFor(250)
+    return detail.getByRole('heading', { name: 'Current Run' }).count()
+  }).toBe(1)
+  await expect(detail.getByRole('region', { name: 'Waiting for GPU capacity' })).toHaveCount(0)
+  const elapsed = detail.locator('dl > div').filter({ has: page.getByText('Elapsed', { exact: true }) }).locator('dd')
+  await expect(elapsed).toHaveText(/00:00:0[2-9]/)
+  const before = await elapsed.textContent()
+  await page.clock.runFor(2000)
+  await expect(elapsed).not.toHaveText(before!)
 })

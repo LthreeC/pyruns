@@ -22,6 +22,7 @@ import {
 import clsx from 'clsx'
 import { useDashboardStore, useMonitorStore, useToastStore, useWorkspaceStore } from '@/store'
 import { usePolling } from '@/hooks/usePolling'
+import { useLiveTime } from '@/hooks/useLiveTime'
 import StatusBadge from '@/components/shared/StatusBadge'
 import CopyButton from '@/components/shared/CopyButton'
 import { formatElapsedDuration } from '@/utils/taskRuntime'
@@ -839,7 +840,7 @@ function GpuProcessDialog({
           <section aria-labelledby="gpu-live-metrics-title">
             <h3 id="gpu-live-metrics-title" className="mb-3 flex items-center gap-2 text-xs font-semibold text-txt-primary">
               <Gauge className="h-3.5 w-3.5 text-txt-tertiary" />
-              {t('Live metrics')}
+              {t('GPU metrics')}
             </h3>
             <div className="grid grid-cols-2 gap-x-5 gap-y-4 lg:grid-cols-4">
               <DetailMetric label={t('Compute')} value={formatPercent(gpu.util)} tone="emerald" />
@@ -1009,6 +1010,7 @@ function GpuProcessMetadata({
   state?: ProcessDetailLoadState
   onRetry: () => void
 }) {
+  const now = useLiveTime(Boolean(state?.data?.available && state.data.created_at))
   if (!state || state.loading) {
     return (
       <div className="flex items-center justify-center gap-2 border-t border-border-subtle/80 bg-surface-overlay/30 px-4 py-6 text-xs text-txt-tertiary" aria-live="polite">
@@ -1029,7 +1031,7 @@ function GpuProcessMetadata({
 
   const details = state.data
   const startedAt = formatProcessStartedAt(details.created_at)
-  const runtime = formatProcessRuntime(details.created_at)
+  const runtime = formatProcessRuntime(details.created_at, now)
   const hostMemory = details.host_memory_mb == null
     ? t('Not available')
     : `${formatMemory(details.host_memory_mb)}${
@@ -1044,7 +1046,7 @@ function GpuProcessMetadata({
         <ProcessDetail label={t('Status')} value={formatProcessStatus(details.status)} />
         <ProcessDetail label={t('Host RAM')} value={hostMemory} mono />
         <ProcessDetail label={t('Started')} value={startedAt} />
-        <ProcessDetail label={t('Process runtime')} value={runtime} mono />
+        <ProcessDetail label={t('Time since process start')} value={runtime} mono />
         <ProcessDetail label={t('Parent PID')} value={details.parent_pid != null && details.parent_pid >= 0 ? String(details.parent_pid) : t('Not available')} mono />
         <ProcessDetail label={t('Threads')} value={formatOptionalInteger(details.thread_count)} mono />
       </dl>
@@ -1140,11 +1142,11 @@ function formatProcessStartedAt(value: number | null | undefined): string {
   return Number.isNaN(date.getTime()) ? t('Not available') : date.toLocaleString()
 }
 
-function formatProcessRuntime(value: number | null | undefined): string {
+function formatProcessRuntime(value: number | null | undefined, now: number): string {
   if (value == null || !Number.isFinite(value) || value <= 0) {
     return t('Not available')
   }
-  return formatElapsedDuration(Math.max(0, Date.now() / 1000 - value))
+  return formatElapsedDuration(now / 1000 - value)
 }
 
 function formatOptionalInteger(value: number | null | undefined): string {

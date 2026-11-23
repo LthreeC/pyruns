@@ -18,7 +18,7 @@ from concurrent.futures import CancelledError, Future, ThreadPoolExecutor
 from functools import lru_cache
 from pathlib import Path
 from types import MappingProxyType
-from typing import Any, Callable, Dict, List, Literal, Mapping, Optional, overload
+from typing import Any, Callable, Collection, Dict, List, Literal, Mapping, Optional, overload
 
 from omegaconf import OmegaConf
 
@@ -318,12 +318,15 @@ class TaskManager:
         if not isinstance(raw, dict):
             return None
         wait = copy.deepcopy(raw)
+        if task_storage_scope(task.get("dir", "")) == "remote":
+            return wait
         try:
             started_at = float(wait.get("started_at", 0.0) or 0.0)
         except (TypeError, ValueError):
             started_at = 0.0
-        if started_at > 0:
-            waited = max(0.0, time.time() - started_at)
+        if started_at > 0 and math.isfinite(started_at):
+            now = time.time()
+            waited = max(0.0, now - started_at)
             wait["waited_seconds"] = waited
             if wait.get("max_wait_seconds") == 0:
                 wait["deadline_at"] = None
@@ -340,7 +343,7 @@ class TaskManager:
                     max_wait = 0.0
                 deadline = started_at + max(0.0, max_wait)
                 wait["deadline_at"] = deadline
-            wait["remaining_seconds"] = max(0.0, deadline - time.time())
+            wait["remaining_seconds"] = max(0.0, deadline - now)
         return wait
 
     _SUMMARY_API_FIELDS = (
@@ -1116,12 +1119,7 @@ class TaskManager:
                 if label in paths or root in remote_roots:
                     folder = os.path.basename(root)
                     origin = folder[6:] if root in remote_roots else "shared"
-                    stem = name[:min(180, 190 - len(origin))]
-                    suffix = 1
-                    label = f"{stem} ({origin})"
-                    while label in physical_names or label in paths:
-                        suffix += 1
-                        label = f"{stem} ({origin} {suffix})"
+                    label = self._qualify_task_name(name, origin, paths, physical_names)
                 paths[label] = os.path.join(root, name)
                 ordered.append((label, mtime))
             if local_paths is None:
@@ -1136,6 +1134,18 @@ class TaskManager:
                 raise
             logger.debug("Could not list task directories under %s: %s", self.tasks_dir, exc)
             return False, []
+
+    @staticmethod
+    def _qualify_task_name(
+        name: str, origin: str, used: Collection[str], reserved: Collection[str] = (),
+    ) -> str:
+        stem = name[:min(180, 190 - len(origin))]
+        suffix = 1
+        label = f"{stem} ({origin})"
+        while label in used or label in reserved:
+            suffix += 1
+            label = f"{stem} ({origin} {suffix})"
+        return label
 
     def sync_task_dirs_from_disk(self, *, raise_on_error: bool = False) -> bool:
         """Discover task folders created or removed by another Pyruns process."""
@@ -2529,14 +2539,17 @@ class TaskManager:
     def set_task_pinned(self, task_name: str, pinned: Optional[bool] = None) -> tuple[bool, bool | str]:
         """Toggle or set a task's pinned state and sync in-memory caches."""
         with self._lock:
-            target = self._resolve_identifier_locked(task_name)
+            target = self._tasks_by_name.get(task_name)
             if not target:
                 return False, "Task not found"
             new_value = (not bool(target.get("pinned", False))) if pinned is None else bool(pinned)
             task_dir = target["dir"]
             revision = target.get("_registry_revision", 0)
+            expected_identity = target.get("task_identity")
 
         def _apply(task_info: Dict[str, Any]) -> None:
+            self._guard_namespace_operation(task_info)
+            self._require_task_identity(task_dir, expected_identity)
             task_info["pinned"] = new_value
 
         updated = update_task_metadata(task_dir, _apply)
@@ -2573,25 +2586,29 @@ class TaskManager:
         # UI processes that share this tasks directory.
         with task_info_lock(self.tasks_dir):
             with self._lock:
-                updates: list[tuple[str, str, Optional[bool], int]] = []
+                updates: list[tuple[str, str, Optional[bool], int, str | None]] = []
                 observed_tasks = {}
                 for task_name, pinned_value, order in normalized:
-                    target = self._resolve_identifier_locked(task_name)
+                    target = self._tasks_by_name.get(task_name)
                     if not target:
                         return False, f"Task not found: {task_name}"
-                    updates.append((task_name, target["dir"], pinned_value, order))
+                    updates.append((task_name, target["dir"], pinned_value, order, target.get("task_identity")))
                     observed_tasks[task_name] = (target, target.get("_registry_revision", 0))
 
             updated_info: dict[str, Dict[str, Any]] = {}
             original_fields: dict[str, dict[str, tuple[bool, Any]]] = {}
             try:
-                for task_name, task_dir, pinned_value, order in updates:
+                for task_name, task_dir, pinned_value, order, expected_identity in updates:
                     def _apply(
                         task_info: Dict[str, Any],
                         task_name: str = task_name,
                         pinned_value: Optional[bool] = pinned_value,
                         order: int = order,
+                        task_dir: str = task_dir,
+                        expected_identity: str | None = expected_identity,
                     ) -> None:
+                        self._guard_namespace_operation(task_info)
+                        self._require_task_identity(task_dir, expected_identity)
                         changed_fields = ["task_order"]
                         if pinned_value is not None:
                             changed_fields.append("pinned")
@@ -2605,7 +2622,7 @@ class TaskManager:
 
                     updated_info[task_name] = update_task_metadata(task_dir, _apply)
             except Exception:
-                for task_name, task_dir, _, _ in reversed(updates):
+                for task_name, task_dir, _, _, expected_identity in reversed(updates):
                     if task_name not in updated_info:
                         continue
                     expected_info = updated_info[task_name]
@@ -2616,7 +2633,11 @@ class TaskManager:
                         task_name: str = task_name,
                         expected_info: Dict[str, Any] = expected_info,
                         previous_fields: dict[str, tuple[bool, Any]] = previous_fields,
+                        task_dir: str = task_dir,
+                        expected_identity: str | None = expected_identity,
                     ) -> None:
+                        self._guard_namespace_operation(task_info)
+                        self._require_task_identity(task_dir, expected_identity)
                         for field in previous_fields:
                             if task_info.get(field) != expected_info.get(field):
                                 raise TaskStateConflict(
@@ -2646,7 +2667,7 @@ class TaskManager:
                                 refresh_exc,
                             )
 
-                for task_name, task_dir, _, _ in updates:
+                for task_name, task_dir, _, _, _ in updates:
                     if task_name in updated_info:
                         target, revision = observed_tasks[task_name]
                         self._apply_task_metadata_update(
@@ -2655,7 +2676,7 @@ class TaskManager:
                 self.trigger_update()
                 raise
 
-            for task_name, task_dir, _, _ in updates:
+            for task_name, task_dir, _, _, _ in updates:
                 target, revision = observed_tasks[task_name]
                 self._apply_task_metadata_update(
                     task_name, task_dir, target, revision, updated_info[task_name],
@@ -2664,7 +2685,7 @@ class TaskManager:
                 with self._lock:
                     reordered = [
                         self._snapshot_task_for_api(
-                            self._resolve_identifier_locked(task_name), summary=False, include_tracks=include_tracks,
+                            self._tasks_by_name.get(task_name), summary=False, include_tracks=include_tracks,
                         )
                         for task_name, _, _ in normalized
                     ]
@@ -2687,7 +2708,7 @@ class TaskManager:
     ) -> tuple[bool, str]:
         """Persist task notes and refresh derived search/preview fields."""
         with self._lock:
-            target = self._resolve_identifier_locked(task_name)
+            target = self._tasks_by_name.get(task_name)
             if not target:
                 return False, "Task not found"
             task_dir = target["dir"]
@@ -2717,7 +2738,7 @@ class TaskManager:
     ) -> tuple[bool, Dict[str, Any] | str]:
         """Persist task env vars and sync in-memory task state."""
         with self._lock:
-            target = self._resolve_identifier_locked(task_name)
+            target = self._tasks_by_name.get(task_name)
             if not target:
                 return False, "Task not found"
             task_dir = target["dir"]
@@ -2751,22 +2772,30 @@ class TaskManager:
             return False, "Task name cannot be empty"
 
         with self._lock:
-            target = self._resolve_identifier_locked(old_name)
+            target = self._tasks_by_name.get(old_name)
             if not target:
                 return False, "Task not found"
             if target["status"] in ("running", "queued"):
                 return False, "Running or queued tasks cannot be renamed"
-            if new_name == target["name"]:
-                return True, target["name"]
+            old_dir = target["dir"]
+            origin = task_source(old_dir)
+            other_device = origin not in {"local", "shared"}
+            old_folder = os.path.basename(old_dir)
+            if new_name == (old_folder if other_device else old_name):
+                return True, old_name
 
             err = validate_task_name(new_name)
             if err:
                 return False, err
 
-            old_dir = target["dir"]
-            new_dir = os.path.join(os.path.dirname(old_dir), new_name)
-            if any(os.path.lexists(os.path.join(root, new_name)) for root in self._task_roots):
+            parent = os.path.dirname(old_dir)
+            new_dir = os.path.join(parent, new_name)
+            roots = (parent,) if other_device else self._task_roots
+            if any(os.path.lexists(os.path.join(root, new_name)) for root in roots):
                 return False, f"Task name '{new_name}' already exists in the current workspace"
+            new_identifier = self._qualify_task_name(
+                new_name, origin[6:], self._tasks_by_name.keys() - {old_name}, self._scanned_paths.keys() - {old_name},
+            ) if other_device else new_name
 
             try:
                 source_identity = self._require_task_identity(old_dir, target.get("task_identity"))
@@ -2775,7 +2804,7 @@ class TaskManager:
                 disk_info = load_task_metadata(old_dir, raise_error=True)
                 move_token = self._begin_namespace_operation(
                     old_dir,
-                    os.path.basename(old_dir),
+                    old_folder,
                     kind="rename",
                     expected_run_index=active_task_run_index(disk_info),
                     expected_identity=source_identity,
@@ -2820,14 +2849,16 @@ class TaskManager:
                 return False, str(exc)
 
             target["dir"] = new_dir.replace("\\", "/")
-            target["name"] = new_name
+            target["name"] = new_identifier
+            self._scanned_paths.pop(old_name, None)
+            self._scanned_paths[new_identifier] = new_dir
             self._apply_info_to_task(target, updated)
             self._refresh_derived_fields(target)
             self._rebuild_indexes_locked()
 
         self.trigger_update()
-        event_sys.emit("on_task_rename", old_name, new_name)
-        return True, new_name
+        event_sys.emit("on_task_rename", old_name, new_identifier)
+        return True, new_identifier
 
     def request_task_cancel(
         self,
@@ -3240,8 +3271,10 @@ class TaskManager:
         seen: set[str] = set()
         with self._lock:
             for identifier in task_ids:
-                target = self._resolve_identifier_locked(identifier)
+                target = self._tasks_by_name.get(identifier)
                 if not target:
+                    continue
+                if target.get("status") in {"queued", "running"} and task_storage_scope(target["dir"]) == "remote":
                     continue
                 target_name = str(target.get("name", "") or "")
                 if not target_name or target_name in seen:
@@ -3279,6 +3312,8 @@ class TaskManager:
                 logger.info("Delete skipped for %s: %s", candidate["name"], exc)
                 continue
             disk_status = str((disk_info or {}).get("status", candidate.get("status", "")) or "").lower()
+            if disk_status in {"queued", "running"} and task_storage_scope(candidate["dir"]) == "remote":
+                continue
             if (
                 (disk_status == "running" and not self._is_current_runner(disk_info or {}))
                 or (disk_status == "queued" and self._queue_owned_elsewhere(disk_info or {}, candidate["dir"]))
@@ -3865,17 +3900,19 @@ class TaskManager:
             logger.debug("GPU scheduler lock busy: %s", exc)
             return None, 1
 
+        gpu_wait_changed = False
         for task_name, task_dir, wait_snapshot, wait_signature in gpu_wait_persists:
-            self._persist_gpu_wait_semantics(
+            if self._persist_gpu_wait_semantics(
                 task_name,
                 task_dir,
                 wait_snapshot,
                 wait_signature,
-            )
+            ):
+                gpu_wait_changed = True
 
         for wait_task, lines in wait_logs:
             self._append_gpu_wait_refresh(wait_task, lines)
-        if wait_logs:
+        if gpu_wait_changed or wait_logs:
             self.trigger_update()
         if timeout_log:
             timeout_task, timeout_run_index, waited, max_wait = timeout_log
@@ -4392,7 +4429,7 @@ class TaskManager:
                 logger.debug("Executor shutdown failed: %s", exc)
 
     def _resolve_identifier_locked(self, identifier: str | None) -> Dict[str, Any] | None:
-        """Resolve a mutable task. Other devices' stores are observational."""
+        """Resolve a task in this device's execution scope."""
         if not identifier:
             return None
         task = self._tasks_by_name.get(identifier)

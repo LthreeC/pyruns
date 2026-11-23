@@ -2007,6 +2007,49 @@ def test_task_manager_gpu_auto_times_out_waiting_tasks_and_writes_logs(tmp_path)
     assert "reason=gpu_wait_timeout" in error_text
 
 
+def test_gpu_wait_change_notifies_observers_between_queue_logs(tmp_path, monkeypatch):
+    tasks_dir = tmp_path / "tasks"
+    task = TaskGenerator(str(tasks_dir)).create_task("waiting", {})
+    manager = _make_task_manager(tasks_dir)
+    config = GpuSchedulerConfig(enabled=True, stable_seconds=15)
+    now = [100.0]
+    manager.gpu_scheduler = GpuResourceScheduler(provider=_StaticGpuProvider([]), clock=lambda: now[0])
+    monkeypatch.setattr(manager, "_gpu_scheduler_config", lambda: config)
+    decision = [GpuDecision(None, "no NVIDIA GPU metrics available", [])]
+    monkeypatch.setattr(manager.gpu_scheduler, "try_reserve", lambda *args, **kwargs: decision[0])
+    try:
+        manager.start_batch_tasks([task["name"]])
+        assert manager._pick_queued_task()[0] is None
+        queue_log = Path(task["dir"]) / RUN_LOGS_DIR / "queue.log"
+        before = queue_log.read_bytes()
+        reasons = []
+        manager.on_change(lambda: reasons.append(manager.get_task(task["name"], summary=True)["gpu_wait"]["reason"]))
+
+        decision[0] = GpuDecision(None, "waiting for a stable GPU", [], eligible_gpu_count=1, total_gpu_count=1)
+        now[0] += 1
+        assert manager._pick_queued_task()[0] is None
+        assert reasons == ["waiting for a stable GPU"]
+        assert queue_log.read_bytes() == before
+
+        now[0] += 1
+        assert manager._pick_queued_task()[0] is None
+        assert reasons == ["waiting for a stable GPU"]
+        assert queue_log.read_bytes() == before
+    finally:
+        manager.shutdown()
+
+
+@pytest.mark.parametrize("summary", [False, True])
+def test_gpu_wait_replica_keeps_the_reported_time(monkeypatch, summary):
+    monkeypatch.setattr(task_manager_module.time, "time", lambda: 200.0)
+    wait = {"started_at": 100.0, "deadline_at": 250.0, "waited_seconds": 32.0, "remaining_seconds": 118.0}
+    task = {"dir": "workspace/tasks-other-device-aaaaaaaaaaaa/waiting", "status": "queued", "gpu_wait": wait}
+    assert TaskManager.serialize_task(task, summary=summary)["gpu_wait"] == wait
+    task["dir"] = "workspace/tasks/waiting"
+    live = TaskManager.serialize_task(task, summary=summary)["gpu_wait"]
+    assert (live["waited_seconds"], live["remaining_seconds"]) == (100.0, 50.0)
+
+
 def test_task_manager_gpu_wait_timeout_preserves_task_when_foreign_runner_renews(tmp_path, monkeypatch):
     workspace = tmp_path / DEFAULT_ROOT_NAME / "train"
     tasks_dir = workspace / TASKS_DIR

@@ -42,6 +42,7 @@ import {
 import { usePolling } from '@/hooks/usePolling'
 import { useTaskRefresh } from '@/hooks/useTaskRefresh'
 import { usePageVisible } from '@/hooks/usePageVisible'
+import { useLiveTime } from '@/hooks/useLiveTime'
 import TaskSearchInput from '@/components/shared/TaskSearchInput'
 import TaskSourceFilter from '@/components/shared/TaskSourceFilter'
 import TaskSearchMatches, { SearchMatchContext } from '@/components/shared/TaskSearchMatches'
@@ -79,6 +80,7 @@ import {
 import { pickInitialMonitorTask } from '@/utils/monitorSelection'
 import { taskDetailRefreshKey } from '@/utils/taskSnapshots'
 import { summarizeGpuWait } from '@/utils/gpuWait'
+import { formatElapsedDuration } from '@/utils/taskRuntime'
 
 const MONITOR_SIDEBAR_WIDTH_STORAGE_KEY = 'pyruns.monitorSidebarWidthPct'
 const DEFAULT_MONITOR_SIDEBAR_WIDTH = 14
@@ -369,8 +371,8 @@ export default function MonitorPage() {
     }),
     [fetchMonitorTasks, sidebarQuery, monitorSearchField, monitorSearchOptions, workspaceKey],
   )
-  const refreshDetachedSelectedTask = useCallback(async (duringSearch = false) => {
-    if (!selectedTaskName || (selectedTaskFromList && !duringSearch)) {
+  const refreshDetachedSelectedTask = useCallback(async (refresh: boolean, duringSearch = false) => {
+    if (!selectedTaskName || (!duringSearch && useTaskStore.getState().monitorTasks.some(task => task.name === selectedTaskName))) {
       return
     }
     const requestedWorkspaceKey = workspaceKey
@@ -379,7 +381,7 @@ export default function MonitorPage() {
     selectedTaskControllerRef.current = controller
     const timeout = window.setTimeout(() => controller.abort(), 10_000)
     try {
-      const task = await api.getTask(selectedTaskName, false, true, controller.signal)
+      const task = await api.getTask(selectedTaskName, refresh, true, controller.signal)
       if (
         !controller.signal.aborted
         && task.name === selectedTaskNameRef.current
@@ -404,11 +406,11 @@ export default function MonitorPage() {
       window.clearTimeout(timeout)
       if (selectedTaskControllerRef.current === controller) selectedTaskControllerRef.current = null
     }
-  }, [selectedTaskFromList, selectedTaskName, workspaceKey])
+  }, [selectedTaskName, workspaceKey])
   useEffect(() => () => selectedTaskControllerRef.current?.abort(), [workspaceKey, selectedTaskName, pageVisible])
   const refreshMonitorSnapshot = useCallback(async (refresh: boolean) => {
     if (sidebarQuery) {
-      await refreshDetachedSelectedTask(true)
+      await refreshDetachedSelectedTask(refresh, true)
       return
     }
     await Promise.all([
@@ -418,9 +420,11 @@ export default function MonitorPage() {
         background: true,
         workspaceKey,
       }),
-      refreshDetachedSelectedTask(),
+      refreshDetachedSelectedTask(refresh),
     ])
-  }, [fetchMonitorTasks, refreshDetachedSelectedTask, sidebarQuery, workspaceKey])
+    // A task can leave the current page as a result of the refresh itself.
+    if (selectedTaskFromList) await refreshDetachedSelectedTask(refresh)
+  }, [fetchMonitorTasks, refreshDetachedSelectedTask, selectedTaskFromList, sidebarQuery, workspaceKey])
   const taskEventStatus = useTaskRefresh(refreshMonitorSnapshot, workspaceKey, Boolean(sidebarQuery), monitorLoading)
   useEffect(() => {
     setStopConfirmTask('')
@@ -1009,7 +1013,8 @@ export default function MonitorPage() {
   useEffect(() => {
     const current = detailTaskRef.current
     if (!current) return
-    const refreshed = monitorTasks.find(task => task.name === current.name)
+    const refreshed = selectedTask?.name === current.name
+      ? selectedTask : monitorTasks.find(task => task.name === current.name)
     // Filtering and pagination can hide the summary without deleting the task.
     if (!refreshed || refreshed === current) return
     const replaced = current.task_identity !== refreshed.task_identity
@@ -1018,7 +1023,7 @@ export default function MonitorPage() {
     if (taskDetailRefreshKey(current) !== taskDetailRefreshKey(refreshed)) {
       loadDetailTask(next)
     }
-  }, [monitorTasks, detailTask?.name, loadDetailTask])
+  }, [monitorTasks, selectedTask, detailTask?.name, loadDetailTask])
 
   selectedTaskNameRef.current = selectedTaskName
   selectedLogRef.current = selectedLog
@@ -2015,8 +2020,8 @@ export default function MonitorPage() {
           </div>
         )}
 
-        {selectedTask?.status === 'queued' && selectedTask.gpu_wait && (
-          <GPUWaitPanel wait={selectedTask.gpu_wait ?? null} />
+        {selectedTask?.status === 'queued' && !stopping && selectedTask.gpu_wait && (
+          <GPUWaitPanel wait={selectedTask.gpu_wait} live={selectedTask.task_storage !== 'remote'} />
         )}
 
         {logTailTruncated && (
@@ -2194,14 +2199,15 @@ export default function MonitorPage() {
   )
 }
 
-function GPUWaitPanel({ wait }: { wait: GPUWaitStatus | null }) {
+function GPUWaitPanel({ wait, live }: { wait: GPUWaitStatus; live: boolean }) {
   useTranslation()
+  const now = useLiveTime(live)
   const {
     requestedGpuCount: requested,
     eligibleGpuCount: eligible,
     waitedSeconds,
     remainingSeconds,
-  } = summarizeGpuWait(wait)
+  } = summarizeGpuWait(wait, live ? now : undefined)
   const devices = Array.isArray(wait?.devices) ? wait.devices : []
 
   return (
@@ -2217,7 +2223,9 @@ function GPUWaitPanel({ wait }: { wait: GPUWaitStatus | null }) {
           </span>
           <div className="min-w-0">
             <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
-              <h2 id="gpu-wait-heading" className="text-sm font-semibold text-txt-primary">{t("Waiting for GPU capacity")}</h2>
+              <h2 id="gpu-wait-heading" className="text-sm font-semibold text-txt-primary">
+                {t(live ? 'Waiting for GPU capacity' : 'Last reported GPU wait')}
+              </h2>
               <span className="gpu-wait-accent px-1.5 py-0.5 text-xs font-medium tabular-nums">
                 {eligible === null ? t("Checking eligibility") : t('{{eligible}}/{{requested}} eligible', { eligible, requested })}
               </span>
@@ -2231,12 +2239,12 @@ function GPUWaitPanel({ wait }: { wait: GPUWaitStatus | null }) {
         <dl className="flex flex-wrap gap-x-5 gap-y-2 text-xs sm:gap-x-6">
           <div>
             <dt className="text-txt-secondary">{t("Waited")}</dt>
-            <dd className="mt-0.5 font-medium tabular-nums text-txt-primary">{formatDuration(waitedSeconds)}</dd>
+            <dd className="mt-0.5 font-medium tabular-nums text-txt-primary">{formatElapsedDuration(waitedSeconds)}</dd>
           </div>
           <div>
             <dt className="text-txt-secondary">{t("Time left")}</dt>
             <dd className="mt-0.5 font-medium tabular-nums text-txt-primary">
-              {remainingSeconds === null ? t("No limit") : formatDuration(remainingSeconds)}
+              {remainingSeconds === null ? t("No limit") : formatElapsedDuration(Math.ceil(remainingSeconds))}
             </dd>
           </div>
           <div>
@@ -2294,20 +2302,6 @@ function formatGPUDeviceMetrics(device: NonNullable<GPUWaitStatus['devices']>[nu
     parts.push(t('{{value}}% compute', { value: Math.round(Number(device.compute_util_pct)) }))
   }
   return parts.join(' · ') || t("Metrics unavailable")
-}
-
-function formatDuration(totalSeconds: number) {
-  const seconds = Math.max(0, Math.floor(totalSeconds))
-  const hours = Math.floor(seconds / 3600)
-  const minutes = Math.floor((seconds % 3600) / 60)
-  const remainder = seconds % 60
-  if (hours > 0) {
-    return `${hours}h ${minutes}m`
-  }
-  if (minutes > 0) {
-    return `${minutes}m ${remainder}s`
-  }
-  return `${remainder}s`
 }
 
 function formatBytes(bytes: number) {

@@ -62,6 +62,11 @@ type KeyboardDragAction = 'toggle' | 'cancel' | 'previous' | 'next'
 type PendingTaskAction = 'run' | 'rerun' | 'cancel' | 'pin' | 'move' | 'delete'
 const DRAG_START_DISTANCE = 8
 const REORDER_TASK_LIMIT = 10_000
+const TASK_DETAIL_TIMEOUT_MS = 10_000
+
+function isActiveTask(task: Task) {
+  return task.status === 'running' || task.status === 'queued'
+}
 
 function isOrderMutation(action: PendingTaskAction) {
   return action === 'pin' || action === 'move'
@@ -292,7 +297,7 @@ export default function ManagerPage() {
       })
     }
   }, [orderView, tasks])
-  const loadDetailTask = useCallback((task: Task) => {
+  const loadDetailTask = useCallback((task: Task, refresh = true) => {
     const requestId = ++detailRequestSeqRef.current
     const requestedKey = taskDetailRefreshKey(task)
     const requestIsCurrent = () => requestId === detailRequestSeqRef.current
@@ -300,15 +305,21 @@ export default function ManagerPage() {
     detailRequestControllerRef.current?.abort()
     const controller = new AbortController()
     detailRequestControllerRef.current = controller
-    void api.getTask(task.name, true, false, controller.signal).then(fullTask => {
-      if (!requestIsCurrent()) return
+    let timedOut = false
+    const timeout = window.setTimeout(() => {
+      timedOut = true
+      controller.abort(new Error(t('Task detail loading timed out. Please retry.')))
+    }, TASK_DETAIL_TIMEOUT_MS)
+    return api.getTask(task.name, refresh, false, controller.signal).then(fullTask => {
+      if (!requestIsCurrent() || controller.signal.aborted) return
       setDetailTask(current => current?.name === task.name && taskDetailRefreshKey(current) === requestedKey
         ? fullTask : current)
     }).catch(err => {
-      if (requestIsCurrent() && !controller.signal.aborted) {
+      if (requestIsCurrent() && (!controller.signal.aborted || timedOut)) {
         notify({ tone: 'error', title: t('Could not load task details'), detail: errorMessage(err) })
       }
     }).finally(() => {
+      window.clearTimeout(timeout)
       if (detailRequestControllerRef.current === controller) detailRequestControllerRef.current = null
     })
   }, [notify, workspaceEpoch])
@@ -326,7 +337,15 @@ export default function ManagerPage() {
 
   const workspaceKey = useWorkspaceStore(state => String(state.workspace?.run_root || ''))
   useTaskRefresh(
-    fromDisk => fetchTasks({ background: true, refresh: fromDisk }),
+    async fromDisk => {
+      await fetchTasks({ background: true, refresh: fromDisk })
+      const current = detailTaskRef.current
+      // A status update can remove an open task from the current filter or page.
+      if (current && !detailRequestControllerRef.current
+        && (query || !useTaskStore.getState().tasks.some(task => task.name === current.name))) {
+        await loadDetailTask(current, fromDisk)
+      }
+    },
     workspaceKey,
     Boolean(query),
     loading,
@@ -388,20 +407,14 @@ export default function ManagerPage() {
     }
   }, [focusTaskName, searchParams, setSearchParams, workspaceEpoch])
 
-  const visibleSelectedCount = tasks.reduce(
-    (count, task) => count + (selectedIds.has(task.name) ? 1 : 0),
-    0,
-  )
+  const selectedTasks = useMemo(() => tasks.filter(task => selectedIds.has(task.name)), [tasks, selectedIds])
+  const runSelection = useMemo(() => selectedTasks.filter(task => task.task_storage !== 'remote'), [selectedTasks])
+  const deleteSelection = useMemo(() => selectedTasks.filter(task => task.task_storage !== 'remote' || !isActiveTask(task)), [selectedTasks])
+  const visibleSelectedCount = selectedTasks.length
   const anyTaskActionPending = pendingTaskActions.size > 0
   const orderMutationPending = hasPendingOrderMutation(pendingTaskActions)
-  const activeSelectedCount = tasks.reduce(
-    (count, task) => count + (
-      selectedIds.has(task.name) && (task.status === 'running' || task.status === 'queued') ? 1 : 0
-    ),
-    0,
-  )
-  const mutableCount = tasks.filter(task => task.task_storage !== 'remote').length
-  const allPageSelected = mutableCount > 0 && visibleSelectedCount === mutableCount
+  const activeSelectedCount = deleteSelection.filter(isActiveTask).length
+  const allPageSelected = tasks.length > 0 && visibleSelectedCount === tasks.length
   const pinnedTasks = useMemo(() => tasks.filter(task => task.pinned), [tasks])
   const otherTasks = useMemo(() => tasks.filter(task => !task.pinned), [tasks])
   const showPinnedSection = pinnedTasks.length > 0
@@ -419,10 +432,10 @@ export default function ManagerPage() {
   }, [taskActionMessage])
 
   useEffect(() => {
-    if (deleteConfirm && visibleSelectedCount === 0 && !bulkAction) {
+    if (deleteConfirm && deleteSelection.length === 0 && !bulkAction) {
       setDeleteConfirm(false)
     }
-  }, [bulkAction, deleteConfirm, visibleSelectedCount])
+  }, [bulkAction, deleteConfirm, deleteSelection.length])
 
   useEffect(() => {
     const current = detailTaskRef.current
@@ -497,7 +510,7 @@ export default function ManagerPage() {
   }, [])
 
   const handleRunSelected = useCallback(async () => {
-    const names = tasks.filter(task => selectedIds.has(task.name)).map(task => task.name)
+    const names = runSelection.map(task => task.name)
     if (!names.length || !beginBulkAction('run')) return
     const maxWorkers = normalizeWorkerInput(maxWorkersInput)
     setMaxWorkersInput(String(maxWorkers))
@@ -519,10 +532,10 @@ export default function ManagerPage() {
     } finally {
       finishBulkAction()
     }
-  }, [tasks, selectedIds, beginBulkAction, normalizeWorkerInput, maxWorkersInput, clearSelection, fetchTasks, notify, finishBulkAction])
+  }, [runSelection, beginBulkAction, normalizeWorkerInput, maxWorkersInput, clearSelection, fetchTasks, notify, finishBulkAction])
 
   const handleDeleteSelected = useCallback(async () => {
-    const names = tasks.filter(task => selectedIds.has(task.name)).map(task => task.name)
+    const names = deleteSelection.map(task => task.name)
     if (!names.length || !beginBulkAction('delete')) return
     try {
       const result = await api.batchDeleteTasks(names)
@@ -544,7 +557,7 @@ export default function ManagerPage() {
     } finally {
       finishBulkAction()
     }
-  }, [tasks, selectedIds, beginBulkAction, clearSelection, fetchTasks, notify, finishBulkAction])
+  }, [deleteSelection, beginBulkAction, clearSelection, fetchTasks, notify, finishBulkAction])
 
   const handleDeleteTask = useCallback(async () => {
     if (!deleteTask) return
@@ -557,7 +570,7 @@ export default function ManagerPage() {
       }
       setDeleteTask(null)
       await fetchTasks()
-      notify({ tone: 'success', title: t("Task moved to trash"), detail: target.name })
+      notify({ tone: 'success', title: t("Task moved to trash"), detail: target.display_name ?? target.name })
     } catch (err) {
       notify({ tone: 'error', title: t("Could not delete task"), detail: errorMessage(err) })
     } finally {
@@ -676,7 +689,6 @@ export default function ManagerPage() {
 
     try {
       const allTasks = await api.getTasks({
-        sources: ['shared', 'local'],
         limit: REORDER_TASK_LIMIT,
         refresh: false,
         compact: true,
@@ -733,7 +745,7 @@ export default function ManagerPage() {
     }
     if (!pickedUp) return
 
-    const section = useTaskStore.getState().tasks.filter(item => item.task_storage !== 'remote' && Boolean(item.pinned) === Boolean(task.pinned))
+    const section = useTaskStore.getState().tasks.filter(item => Boolean(item.pinned) === Boolean(task.pinned))
     const source = section.findIndex(item => item.name === task.name)
     const anchor = section.findIndex(item => item.name === (dropIntentRef.current?.targetName || task.name))
     const next = anchor + (action === 'previous' ? -1 : 1)
@@ -840,7 +852,7 @@ export default function ManagerPage() {
   }
 
   const handleCardClick = useCallback((task: Task) => {
-    if (selectMode && task.task_storage !== 'remote') {
+    if (selectMode) {
       toggleSelect(task.name)
       return
     }
@@ -945,7 +957,7 @@ export default function ManagerPage() {
             aria-label={t(selectMode ? 'Cancel' : 'Select tasks')}
             aria-expanded={selectMode}
             aria-controls={selectMode ? 'manager-selection-actions' : undefined}
-            disabled={Boolean(bulkAction) || (!selectMode && (mutableCount === 0 || anyTaskActionPending))}
+            disabled={Boolean(bulkAction) || (!selectMode && (tasks.length === 0 || anyTaskActionPending))}
             title={anyTaskActionPending ? t('Wait for the current task action to finish') : t(selectMode ? 'Cancel' : 'Select tasks')}
             onClick={() => selectMode ? exitSelectMode() : setSelectMode(true)}
           >
@@ -966,7 +978,7 @@ export default function ManagerPage() {
           >
             <div className="text-xs font-medium tabular-nums text-txt-primary" aria-live="polite"
               title={t("Selection is page-scoped and resets when you change the page, search, or status filter.")}>
-                {t('{{selected}} of {{total}} selected on this page', { selected: visibleSelectedCount, total: mutableCount })}
+                {t('{{selected}} of {{total}} selected on this page', { selected: visibleSelectedCount, total: tasks.length })}
             </div>
 
             <div className="flex flex-wrap items-center gap-2">
@@ -1000,18 +1012,18 @@ export default function ManagerPage() {
                 variant="primary"
                 className="min-h-11 sm:min-h-9"
                 onClick={handleRunSelected}
-                disabled={visibleSelectedCount === 0 || Boolean(bulkAction)}
+                disabled={runSelection.length === 0 || Boolean(bulkAction)}
                 aria-busy={bulkAction === 'run' || undefined}
               >
-                {t('Run ({{count}})', { count: visibleSelectedCount })}
+                {t('Run ({{count}})', { count: runSelection.length })}
               </ActionButton>
 
               <ActionButton
                 icon={<Trash2 className="h-3.5 w-3.5" />}
                 variant="ghost"
                 className="min-h-11 text-rose-700 dark:text-rose-300 sm:min-h-9"
-                onClick={() => visibleSelectedCount > 0 && setDeleteConfirm(true)}
-                disabled={visibleSelectedCount === 0 || Boolean(bulkAction)}
+                onClick={() => setDeleteConfirm(true)}
+                disabled={deleteSelection.length === 0 || Boolean(bulkAction)}
               >
                 {t("Delete")}
               </ActionButton>
@@ -1165,8 +1177,8 @@ export default function ManagerPage() {
         open={deleteConfirm}
         title={t("Delete Tasks")}
         description={activeSelectedCount > 0
-          ? t('Stop {{active}} active task(s) and move all {{selected}} selected tasks from this page to trash?', { active: activeSelectedCount, selected: visibleSelectedCount })
-          : t('Move {{count}} selected task(s) from this page to trash?', { count: visibleSelectedCount })}
+          ? t('Stop {{active}} active task(s) and move {{selected}} task(s) from this page to trash?', { active: activeSelectedCount, selected: deleteSelection.length })
+          : t('Move {{count}} selected task(s) from this page to trash?', { count: deleteSelection.length })}
         confirmLabel={t("Delete")}
         confirmVariant="danger"
         onConfirm={handleDeleteSelected}
@@ -1178,8 +1190,8 @@ export default function ManagerPage() {
         title={deleteTask && (deleteTask.status === 'running' || deleteTask.status === 'queued') ? t("Stop and Delete Task") : t("Delete Task")}
         description={deleteTask
           ? deleteTask.status === 'running' || deleteTask.status === 'queued'
-            ? t("Stop '{{name}}' and move it to trash?", { name: deleteTask.name })
-            : t("Move '{{name}}' to trash?", { name: deleteTask.name })
+            ? t("Stop '{{name}}' and move it to trash?", { name: deleteTask.display_name ?? deleteTask.name })
+            : t("Move '{{name}}' to trash?", { name: deleteTask.display_name ?? deleteTask.name })
           : ''}
         confirmLabel={t("Delete")}
         confirmVariant="danger"
@@ -1328,7 +1340,7 @@ const TaskCard = memo(function TaskCard({
 }) {
   useTranslation()
   const actionBtn = getActionButton(task)
-  const readOnly = task.task_storage === 'remote'
+  const canDelete = task.task_storage !== 'remote' || !isActiveTask(task)
   const statusId = useId()
   const statusLabel = taskStatusLabel(task)
   const stopping = isTaskStopping(task)
@@ -1342,7 +1354,7 @@ const TaskCard = memo(function TaskCard({
   const cardDescription = task._load_error || task.preview_text
   const dropIndicator = dropPlacement ? <DropIndicator placement={dropPlacement} axis={dropAxis || 'horizontal'} /> : null
   const taskPending = Boolean(pendingAction)
-  const gpuWait = task.status === 'queued' ? task.gpu_wait : null
+  const gpuWait = task.status === 'queued' && !stopping ? task.gpu_wait : null
   const gpuCapacity = gpuWait
     && typeof gpuWait.eligible_gpu_count === 'number'
     && typeof gpuWait.requested_gpu_count === 'number'
@@ -1435,50 +1447,46 @@ const TaskCard = memo(function TaskCard({
 
       {!selectMode && (
         <div className="task-card-footer flex min-w-0 items-center justify-end">
-          {!readOnly && (
-            <button
-              type="button"
-              data-task-drag-handle="true"
-              aria-label={t('Reorder {{name}}', { name: accessibleName })}
-              aria-describedby="manager-reorder-help"
-              aria-pressed={dragging}
-              disabled={taskPending || reorderDisabled}
-              onPointerDown={event => onPointerDown(task, event)}
-              onClick={event => {
-                if (event.detail === 0) onKeyboardDrag(task, 'toggle', event.currentTarget)
-              }}
-              onKeyDown={event => {
-                if (event.repeat && (event.key === 'Enter' || event.key === ' ')) event.preventDefault()
-                if (!dragging) return
-                const action = event.key === 'Escape' ? 'cancel'
-                  : event.key === 'ArrowLeft' || event.key === 'ArrowUp' ? 'previous'
-                  : event.key === 'ArrowRight' || event.key === 'ArrowDown' ? 'next' : null
-                if (!action) return
-                event.preventDefault()
-                onKeyboardDrag(task, action, event.currentTarget)
-              }}
-              onBlur={event => onKeyboardDrag(task, 'cancel', event.currentTarget)}
-              className="task-card-grip task-card-control touch-target me-auto flex shrink-0 cursor-grab touch-none items-center justify-center text-txt-secondary transition-[opacity,color,background-color] hover:bg-surface-overlay hover:text-txt-primary active:cursor-grabbing disabled:cursor-not-allowed disabled:opacity-40"
-              title={t('Drag to reorder')}
-            >
-              <GripVertical aria-hidden="true" className="size-4" />
-            </button>
-          )}
+          <button
+            type="button"
+            data-task-drag-handle="true"
+            aria-label={t('Reorder {{name}}', { name: accessibleName })}
+            aria-describedby="manager-reorder-help"
+            aria-pressed={dragging}
+            disabled={taskPending || reorderDisabled}
+            onPointerDown={event => onPointerDown(task, event)}
+            onClick={event => {
+              if (event.detail === 0) onKeyboardDrag(task, 'toggle', event.currentTarget)
+            }}
+            onKeyDown={event => {
+              if (event.repeat && (event.key === 'Enter' || event.key === ' ')) event.preventDefault()
+              if (!dragging) return
+              const action = event.key === 'Escape' ? 'cancel'
+                : event.key === 'ArrowLeft' || event.key === 'ArrowUp' ? 'previous'
+                : event.key === 'ArrowRight' || event.key === 'ArrowDown' ? 'next' : null
+              if (!action) return
+              event.preventDefault()
+              onKeyboardDrag(task, action, event.currentTarget)
+            }}
+            onBlur={event => onKeyboardDrag(task, 'cancel', event.currentTarget)}
+            className="task-card-grip task-card-control touch-target me-auto flex shrink-0 cursor-grab touch-none items-center justify-center text-txt-secondary transition-[opacity,color,background-color] hover:bg-surface-overlay hover:text-txt-primary active:cursor-grabbing disabled:cursor-not-allowed disabled:opacity-40"
+            title={t('Drag to reorder')}
+          >
+            <GripVertical aria-hidden="true" className="size-4" />
+          </button>
           <div className="task-card-actions flex flex-none items-center">
-            {!readOnly && (
-              <TaskIconButton
-                label={t(task.pinned ? 'Unpin {{name}}' : 'Pin {{name}}', { name: accessibleName })}
-                title={t(task.pinned ? 'Unpin' : 'Pin')}
-                className="task-card-pin"
-                disabled={taskPending || reorderDisabled}
-                busy={pendingAction === 'pin'}
-                onClick={() => void onPin(task)}
-              >
-                {pendingAction === 'pin'
-                  ? <Loader2 aria-hidden="true" className="size-3.5 animate-spin" />
-                  : <Pin aria-hidden="true" className={clsx('size-3.5', task.pinned && 'fill-current text-accent-ink')} />}
-              </TaskIconButton>
-            )}
+            <TaskIconButton
+              label={t(task.pinned ? 'Unpin {{name}}' : 'Pin {{name}}', { name: accessibleName })}
+              title={t(task.pinned ? 'Unpin' : 'Pin')}
+              className="task-card-pin"
+              disabled={taskPending || reorderDisabled}
+              busy={pendingAction === 'pin'}
+              onClick={() => void onPin(task)}
+            >
+              {pendingAction === 'pin'
+                ? <Loader2 aria-hidden="true" className="size-3.5 animate-spin" />
+                : <Pin aria-hidden="true" className={clsx('size-3.5', task.pinned && 'fill-current text-accent-ink')} />}
+            </TaskIconButton>
             {actionBtn && (
               <TaskIconButton
                 label={t('{{action}} {{name}}', { action: t(actionBtn.label), name: task.name })}
@@ -1500,7 +1508,7 @@ const TaskCard = memo(function TaskCard({
             >
               <Terminal className="h-3.5 w-3.5" />
             </TaskIconButton>
-            {!readOnly && (
+            {canDelete && (
               <TaskIconButton
                 label={t('Delete {{name}}', { name: accessibleName })}
                 title={t('Delete task')}

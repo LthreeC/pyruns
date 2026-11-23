@@ -27,6 +27,7 @@ import type {
   RunInputDiff,
   RunComparison,
 } from './types'
+import { recordGpuWaitReceipt } from './utils/gpuWait'
 
 const BASE = ''
 
@@ -157,6 +158,17 @@ async function responseError(res: Response, requestAuthorizationEpoch: number, c
   return error
 }
 
+function recordTaskWaits<T>(data: T): T {
+  const tasks = data as (Partial<Task> & { items?: Task[]; task?: Task }) | null
+  const now = Date.now()
+  recordGpuWaitReceipt(tasks?.gpu_wait, now)
+  recordGpuWaitReceipt(tasks?.task?.gpu_wait, now)
+  if (Array.isArray(tasks?.items)) {
+    for (const task of tasks.items) recordGpuWaitReceipt(task?.gpu_wait, now)
+  }
+  return data
+}
+
 async function request<T>(url: string, init?: RequestInit): Promise<T> {
   const requestAuthorizationEpoch = authorizationEpoch
   const context = url === '/api/workspace' ? null : workspaceContext
@@ -167,7 +179,8 @@ async function request<T>(url: string, init?: RequestInit): Promise<T> {
   if (!res.ok) {
     throw await responseError(res, requestAuthorizationEpoch, context)
   }
-  return res.json()
+  const data: T = await res.json()
+  return url.startsWith('/api/tasks') ? recordTaskWaits(data) : data
 }
 
 export const getWorkspace = () => withConnectionTimeout(signal => request<WorkspaceInfo>('/api/workspace', {
@@ -262,7 +275,9 @@ async function streamTaskSearch(url: string, onProgress: (page: TaskPage) => voi
   const context = workspaceContext
   const response = await fetch(`${BASE}${url}`, { signal, headers: workspaceHeaders(context) })
   if (!response.ok) throw await responseError(response, requestAuthorizationEpoch, context)
-  if (!response.headers.get('content-type')?.includes('application/x-ndjson')) return response.json()
+  if (!response.headers.get('content-type')?.includes('application/x-ndjson')) {
+    return recordTaskWaits<TaskPage>(await response.json())
+  }
   const reader = response.body?.getReader()
   if (!reader) throw new Error('Search response is empty. Refresh to search again.')
   const decoder = new TextDecoder()
@@ -274,8 +289,8 @@ async function streamTaskSearch(url: string, onProgress: (page: TaskPage) => voi
       if (isWorkspaceChanged(event.status, event)) notifyWorkspaceChanged(context)
       throw new ApiError(event.status, event.detail, event)
     }
-    if (event.type === 'complete') return event.page as TaskPage
-    if (event.type === 'progress') onProgress(event.page as TaskPage)
+    if (event.type === 'complete') return recordTaskWaits(event.page as TaskPage)
+    if (event.type === 'progress') onProgress(recordTaskWaits(event.page as TaskPage))
     return null
   }
   try {

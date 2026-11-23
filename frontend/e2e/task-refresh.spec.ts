@@ -109,6 +109,16 @@ test('Monitor recovers event updates after a selected task read stalls and cance
   await expect.poll(() => reads).toBe(afterFirst + 1)
   await expect(sidebar.getByText('2 / 3', { exact: true })).toBeVisible()
   await expect(page.getByRole('region', { name: 'Read-only logs for audit-0' })).toContainText('retained')
+  await page.getByRole('button', { name: 'View Details', exact: true }).click()
+  const details = page.getByRole('dialog', { name: 'Task details for audit-0' })
+  await expect(details.getByText('Completed', { exact: true })).toBeVisible()
+  tasks[0].status = 'cancelled'
+  send(JSON.stringify({ type: 'changed' }))
+  await expect.poll(async () => {
+    await page.clock.runFor(250)
+    return details.getByText('Cancelled', { exact: true }).count()
+  }).toBe(1)
+  await details.getByRole('button', { name: 'Close task details' }).click()
   await page.evaluate(() => (window as any).auditDetached.hold = true)
   send(JSON.stringify({ type: 'changed' }))
   await page.clock.runFor(500)

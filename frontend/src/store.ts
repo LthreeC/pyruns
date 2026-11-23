@@ -1093,7 +1093,7 @@ export const useTaskStore = create<TaskState>((set, get) => ({
     set({ selectedIds: ids })
   },
   selectAll() {
-    set({ selectedIds: new Set(get().tasks.filter(task => task.task_storage !== 'remote').map(task => task.name)) })
+    set({ selectedIds: new Set(get().tasks.map(task => task.name)) })
   },
   clearSelection() { set({ selectedIds: new Set() }) },
   setSelectedIds(ids) { set({ selectedIds: ids }) },

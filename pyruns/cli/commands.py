@@ -88,7 +88,7 @@ from pyruns.utils.process_utils import (
 )
 from pyruns.utils.runner_device import runner_location
 from pyruns.utils.run_result import recover_run_result
-from pyruns.utils.task_storage import new_task_root, task_storage_scope, visible_task_roots
+from pyruns.utils.task_storage import discover_device_roots, new_task_root, task_source, task_storage_scope, visible_task_roots
 from pyruns.utils.settings import (
     SETTINGS_DEFAULTS,
     _settings_path,
@@ -1887,7 +1887,8 @@ def cmd_run_dry_run(context: Any, args: Any, workspace: str) -> int:
 
 
 def _trash_records(manager: TaskManager) -> list[dict[str, Any]]:
-    records = [record for root in visible_task_roots(manager.tasks_dir) for record in _trash_records_in(root)]
+    roots = (*visible_task_roots(manager.tasks_dir), *discover_device_roots(manager.tasks_dir))
+    records = [record for root in roots for record in _trash_records_in(root)]
     names = set()
     duplicates = set()
     for record in records:
@@ -1898,7 +1899,7 @@ def _trash_records(manager: TaskManager) -> list[dict[str, Any]]:
     for record in records:
         if record["trash_name"] in duplicates:
             # '@' is reserved in physical task names, so this cannot shadow a folder.
-            record["trash_name"] += "@" + record["task_storage"]
+            record["trash_name"] += "@" + record["task_source"]
     return records
 
 
@@ -1922,11 +1923,13 @@ def _trash_records_in(root: str) -> list[dict[str, Any]]:
         if not path.is_dir() or path.is_symlink():
             continue
         info = load_task_metadata(str(path)) or {}
+        original_path = str(path.parent.parent / path.name)
         records.append(
             {
                 "name": str(info.get("name", "") or path.name),
                 "trash_name": path.name,
-                "task_storage": task_storage_scope(str(path.parent.parent / path.name)),
+                "task_storage": task_storage_scope(original_path),
+                "task_source": task_source(original_path),
                 "status": str(info.get("status", "unknown") or "unknown"),
                 "created_at": info.get("created_at", ""),
                 "directory": _normalized_path(str(path)),
@@ -2321,17 +2324,19 @@ def cmd_restore(context: Any, args: Any, manager: TaskManager) -> int:
             selected.append(record)
 
     restore_plan: list[dict[str, Any]] = []
-    target_names: set[str] = set()
+    target_names: set[tuple[str, str]] = set()
     for record in selected:
         target_name = str(record["name"])
         name_error = validate_task_name(target_name)
         if name_error:
             raise CliError(f"cannot restore '{target_name}': {name_error}")
-        if target_name in target_names:
-            raise CliError(f"cannot restore '{target_name}': multiple trash entries have that name")
-        target_names.add(target_name)
         source = str(record["directory"])
         tasks_root = os.path.dirname(os.path.dirname(os.path.abspath(source)))
+        reservation_root = tasks_root if record["task_storage"] == "remote" else manager.tasks_dir
+        target = (reservation_root, target_name)
+        if target in target_names:
+            raise CliError(f"cannot restore '{target_name}': multiple trash entries have that name")
+        target_names.add(target)
         destination = os.path.abspath(os.path.join(tasks_root, target_name))
         try:
             inside_tasks_root = os.path.commonpath([tasks_root, destination]) == tasks_root
@@ -2353,11 +2358,13 @@ def cmd_restore(context: Any, args: Any, manager: TaskManager) -> int:
             "name": target_name,
             "source": source,
             "destination": destination,
+            "reservation_root": reservation_root,
         })
 
-    # Both stores reserve exact names in the common namespace.
+    # The common and current-device stores share a namespace.
     generator = TaskGenerator(root_dir=manager.tasks_dir)
-    reservations: list[tuple[str, tuple[str, int, tuple[int, int]]]] = []
+    generators = {manager.tasks_dir: generator}
+    reservations: list[tuple[TaskGenerator, tuple[str, int, tuple[int, int]]]] = []
     moved: list[dict[str, Any]] = []
     rollback_errors: list[str] = []
     restored: list[str] = []
@@ -2393,7 +2400,11 @@ def cmd_restore(context: Any, args: Any, manager: TaskManager) -> int:
 
                 for item in restore_plan:
                     target_name = str(item["name"])
-                    reservation = generator.reserve_exact_task_name(target_name)
+                    root = item["reservation_root"]
+                    if root not in generators:
+                        generators[root] = TaskGenerator(root_dir=root)
+                    reservation_generator = generators[root]
+                    reservation = reservation_generator.reserve_exact_task_name(target_name)
                     if reservation is None:
                         if os.path.lexists(str(item["destination"])):
                             raise CliError(
@@ -2402,18 +2413,17 @@ def cmd_restore(context: Any, args: Any, manager: TaskManager) -> int:
                         raise CliError(
                             f"cannot restore '{target_name}': the task name is being created or restored"
                         )
-                    reservations.append((target_name, reservation))
+                    item["reservation"] = reservation
+                    reservations.append((reservation_generator, reservation))
 
-                reservation_by_name = dict(reservations)
                 for item in restore_plan:
                     target_name = str(item["name"])
                     source = str(item["source"])
                     destination = str(item["destination"])
-                    reservation = reservation_by_name[target_name]
                     validate_tasks_root(os.path.dirname(destination))
                     validate_tasks_root(os.path.dirname(source))
                     validate_task_directory(source)
-                    if not generator.owns_task_name_reservation(reservation):
+                    if not generators[item["reservation_root"]].owns_task_name_reservation(item["reservation"]):
                         raise CliError(
                             f"cannot restore '{target_name}': task-name reservation was replaced"
                         )
@@ -2453,8 +2463,8 @@ def cmd_restore(context: Any, args: Any, manager: TaskManager) -> int:
                         rollback_errors.append(f"{target_name}: {rollback_exc}")
                 raise
             finally:
-                for _target_name, reservation in reversed(reservations):
-                    generator.release_task_name_reservation(reservation)
+                for reservation_generator, reservation in reversed(reservations):
+                    reservation_generator.release_task_name_reservation(reservation)
     except BaseException as exc:
         manager.scan_disk()
         if rollback_errors:

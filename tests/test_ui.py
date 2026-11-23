@@ -362,7 +362,7 @@ def test_react_task_detail_displays_source_state_in_run_history():
     assert "task.exit_codes?.length ?? 0" in source
     assert "duration: task.durations?.[index]" in source
     assert "exitCode: task.exit_codes?.[index]" in source
-    assert "[durationLabel, durationValue]" in source
+    assert "formatRunDuration(run.duration, run.start, run.finish)" in source
     assert 'label={t("Exit Code")} value={formatScalarValue(run.exitCode)}' in source
     assert "task.source_states?.length ?? 0" in source
     assert "source: task.source_states?.[index] || ''" in source
@@ -590,7 +590,8 @@ def test_react_manager_uses_global_counts_page_scoped_selection_and_pending_lock
     assert "Waiting for GPU capacity" in manager
     assert "const deleted = new Set(result.deleted || [])" in manager
     assert "Some tasks could not be deleted" in manager
-    assert "t('Stop {{active}} active task(s) and move all {{selected}} selected tasks from this page to trash?', { active: activeSelectedCount, selected: visibleSelectedCount })" in manager
+    assert "const activeSelectedCount = deleteSelection.filter(isActiveTask).length" in manager
+    assert "active: activeSelectedCount, selected: deleteSelection.length" in manager
     assert "hasReorderChanges(allTasks.items, items)" in manager
     assert "is already in this position" in manager
     assert 'aria-describedby="manager-reorder-help"' in manager
@@ -725,8 +726,9 @@ def test_react_task_lists_use_summaries_and_fetch_full_details_on_open():
     assert "page.items.length === 0" in store
     assert "Math.floor((page.total - 1) / limit) * limit" in store
     assert "retryPage = await api.getTasks" in store
+    assert "const loadDetailTask = useCallback((task: Task, refresh = true) => {" in manager
     assert re.search(
-        r"api\.getTask\(\s*task\.name\s*,\s*true\s*,\s*false\s*,\s*controller\.signal\s*\)",
+        r"api\.getTask\(\s*task\.name\s*,\s*refresh\s*,\s*false\s*,\s*controller\.signal\s*\)",
         manager,
     )
     assert "detailRequestControllerRef.current?.abort()" in manager

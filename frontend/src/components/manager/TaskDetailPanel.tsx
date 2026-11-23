@@ -21,6 +21,7 @@ import TaskExecutionInfo from '@/components/shared/TaskExecutionInfo'
 import ConfirmDialog from '@/components/shared/ConfirmDialog'
 import CopyButton from '@/components/shared/CopyButton'
 import ActionButton from '@/components/shared/ActionButton'
+import { useLiveTime } from '@/hooks/useLiveTime'
 import RunInputView from './RunInputView'
 import { useTaskDetailDraftStore, useToastStore } from '@/store'
 import type { RunEnvironment, Task } from '@/types'
@@ -141,7 +142,7 @@ export default function TaskDetailPanel({ task, onClose, onTaskUpdated, onRefres
   const [envPairs, setEnvPairs] = useState(() => buildEnvPairs(task))
   const [saving, setSaving] = useState(false)
   const [renaming, setRenaming] = useState(false)
-  const [newName, setNewName] = useState(task.name)
+  const [newName, setNewName] = useState(displayName)
   const [notesDirty, setNotesDirty] = useState(false)
   const [notesSaved, setNotesSaved] = useState(false)
   const [notesConflict, setNotesConflict] = useState(false)
@@ -222,7 +223,7 @@ export default function TaskDetailPanel({ task, onClose, onTaskUpdated, onRefres
     setTab('info')
     setNotes(task.notes || '')
     setEnvPairs(buildEnvPairs(task))
-    setNewName(task.name)
+    setNewName(displayName)
     setSaving(false)
     setRenaming(false)
     setNotesDirty(false)
@@ -239,7 +240,7 @@ export default function TaskDetailPanel({ task, onClose, onTaskUpdated, onRefres
     envBaseRef.current = copyEnv(task.env || {})
     notesTaskIdentityRef.current = task.task_identity
     envTaskIdentityRef.current = task.task_identity
-  }, [task.name])
+  }, [task.name, displayName])
 
   useEffect(() => () => {
     taskRequestSeqRef.current += 1
@@ -287,8 +288,8 @@ export default function TaskDetailPanel({ task, onClose, onTaskUpdated, onRefres
     if (renaming) {
       return
     }
-    setNewName(task.name)
-  }, [task.name, renaming])
+    setNewName(displayName)
+  }, [displayName, renaming])
 
   useEffect(() => {
     if (!resizingPanel) {
@@ -514,7 +515,7 @@ export default function TaskDetailPanel({ task, onClose, onTaskUpdated, onRefres
   }, [markEnvDirty])
 
   const handleRename = useCallback(async () => {
-    if (!newName.trim() || newName === task.name) {
+    if (!newName.trim() || newName.trim() === displayName) {
       setRenaming(false)
       return
     }
@@ -539,7 +540,7 @@ export default function TaskDetailPanel({ task, onClose, onTaskUpdated, onRefres
       notify({ tone: 'success', title: t("Task renamed"), detail: newName.trim() })
     } catch (err) {
       if (requestId !== taskRequestSeqRef.current || currentTaskNameRef.current !== taskName) return
-      setNewName(task.name)
+      setNewName(displayName)
       notify({ tone: 'error', title: t("Could not rename task"), detail: errorMessage(err) })
     } finally {
       if (requestId === taskRequestSeqRef.current) {
@@ -547,7 +548,7 @@ export default function TaskDetailPanel({ task, onClose, onTaskUpdated, onRefres
         setRenaming(false)
       }
     }
-  }, [clearTaskDetailDraft, envDirty, task.name, newName, notesDirty, onRefresh, onClose, notify])
+  }, [clearTaskDetailDraft, displayName, envDirty, task.name, newName, notesDirty, onRefresh, onClose, notify])
 
   const tabs: { key: Tab; label: string; icon: ComponentType<{ className?: string }> }[] = [
     { key: 'info', label: 'Info', icon: FileText },
@@ -712,7 +713,7 @@ export default function TaskDetailPanel({ task, onClose, onTaskUpdated, onRefres
                     if (event.key === 'Enter') void handleRename()
                     if (event.key === 'Escape') {
                       setRenaming(false)
-                      setNewName(task.name)
+                      setNewName(displayName)
                     }
                   }}
                   title={t("New task name")}
@@ -731,7 +732,7 @@ export default function TaskDetailPanel({ task, onClose, onTaskUpdated, onRefres
                   type="button"
                   onClick={() => {
                     setRenaming(false)
-                    setNewName(task.name)
+                    setNewName(displayName)
                   }}
                   title={t("Cancel")}
                   aria-label={t("Cancel task rename")}
@@ -746,7 +747,7 @@ export default function TaskDetailPanel({ task, onClose, onTaskUpdated, onRefres
                 <button
                   type="button"
                   onClick={() => setRenaming(true)}
-                  disabled={task.task_storage === 'remote'}
+                  disabled={task.status === 'running' || task.status === 'queued'}
                   title={t("Rename task")}
                   aria-label={t("Rename task")}
                   className="touch-target inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-md text-txt-tertiary transition-colors hover:bg-surface-overlay hover:text-txt-primary sm:h-8 sm:w-8"
@@ -825,7 +826,6 @@ export default function TaskDetailPanel({ task, onClose, onTaskUpdated, onRefres
               <label htmlFor="task-notes" className="sr-only">{t("Notes")}</label>
               <textarea
                 id="task-notes"
-                readOnly={task.task_storage === 'remote'}
                 value={notes}
                 onChange={event => {
                   notesDraftRevisionRef.current += 1
@@ -897,7 +897,6 @@ export default function TaskDetailPanel({ task, onClose, onTaskUpdated, onRefres
                     <input
                       ref={node => { envKeyInputRefs.current[pair.id] = node }}
                       value={pair.key}
-                      readOnly={task.task_storage === 'remote'}
                       onChange={event => {
                         setEnvPairs(current => current.map(envPair => (
                           envPair.id === pair.id ? { ...envPair, key: event.target.value } : envPair
@@ -918,7 +917,6 @@ export default function TaskDetailPanel({ task, onClose, onTaskUpdated, onRefres
                     <span className="text-xs font-medium text-txt-secondary sm:hidden">{t("Value")}</span>
                     <input
                       value={pair.value}
-                      readOnly={task.task_storage === 'remote'}
                       onChange={event => {
                         setEnvPairs(current => current.map(envPair => (
                           envPair.id === pair.id ? { ...envPair, value: event.target.value } : envPair
@@ -938,7 +936,6 @@ export default function TaskDetailPanel({ task, onClose, onTaskUpdated, onRefres
                     }}
                     className="touch-target col-start-2 row-start-1 inline-flex h-11 w-11 items-center justify-center rounded-md text-txt-secondary transition-colors hover:bg-rose-500/10 hover:text-rose-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-400/50 dark:hover:text-rose-300 sm:col-auto sm:row-auto sm:h-9 sm:w-9"
                     title={t("Remove variable")}
-                    disabled={task.task_storage === 'remote'}
                     aria-label={t('Remove {{name}}', { name: pair.key.trim() || t("environment variable") })}
                   >
                     <X className="h-3.5 w-3.5" />
@@ -950,7 +947,6 @@ export default function TaskDetailPanel({ task, onClose, onTaskUpdated, onRefres
               <div className="sticky bottom-0 flex flex-wrap items-center justify-between gap-2 border-t border-border-subtle bg-surface-raised py-3">
                 <ActionButton
                   onClick={addEnvPair}
-                  disabled={task.task_storage === 'remote'}
                   variant="secondary"
                   icon={<Plus className="h-3.5 w-3.5" />}
                   aria-label={t("Add environment variable")}
@@ -1211,6 +1207,14 @@ function RunEnvironmentRows({ environment }: { environment?: RunEnvironment | nu
   ))}</dl>
 }
 
+function RunElapsedMetric({ label, start, active, reportedAt }: {
+  label: string; start: number | null; active: boolean; reportedAt?: number | null
+}) {
+  const now = useLiveTime(active && start !== null && reportedAt === undefined)
+  const end = reportedAt === undefined ? now : reportedAt
+  return <RunMetric label={label} value={start === null || end === null ? '(none)' : formatElapsedDuration((end - start) / 1000)} />
+}
+
 function InfoTab({ task, active }: { task: Task; active: boolean }) {
   useTranslation()
   const runs = useMemo(() => buildRunEntries(task), [task])
@@ -1227,36 +1231,8 @@ function InfoTab({ task, active }: { task: Task; active: boolean }) {
   }, [task.name])
 
   const live = task.status === 'running' || task.status === 'queued'
-  const [nowMillis, setNowMillis] = useState(Date.now)
-  useEffect(() => {
-    setNowMillis(Date.now())
-    if (!live || !active) return
-    let interval: number | undefined
-    const stop = () => {
-      if (interval !== undefined) {
-        window.clearInterval(interval)
-        interval = undefined
-      }
-    }
-    const start = () => {
-      if (document.visibilityState === 'hidden' || interval !== undefined) return
-      interval = window.setInterval(() => setNowMillis(Date.now()), 1000)
-    }
-    const handleVisibility = () => {
-      if (document.visibilityState === 'hidden') {
-        stop()
-        return
-      }
-      setNowMillis(Date.now())
-      start()
-    }
-    start()
-    document.addEventListener('visibilitychange', handleVisibility)
-    return () => {
-      stop()
-      document.removeEventListener('visibilitychange', handleVisibility)
-    }
-  }, [live, active, task.name])
+  const fromOtherDevice = task.task_storage === 'remote'
+  const gpuWait = task.status === 'queued' ? task.gpu_wait : null
 
   const overview: [string, string][] = [
     ['Created', formatTimestampValue(task.created_at)],
@@ -1276,31 +1252,14 @@ function InfoTab({ task, active }: { task: Task; active: boolean }) {
     && (!task.launch_run_index || task.launch_run_index === displayedRunIndex),
   )
   const runStartMillis = task.status === 'queued'
-    ? parseTaskTimestampMillis(task.gpu_wait?.started_at ?? task.queued_at)
-    : launchMatchesRun
-      ? parseTaskTimestampMillis(task.launch_started_at)
-      : parseTaskTimestampMillis(displayedRun?.start)
-  const elapsedSeconds = runStartMillis === null ? null : Math.max(0, (nowMillis - runStartMillis) / 1000)
-  const durationLabel = task.status === 'queued' ? t("Waited") : task.status === 'running' ? t("Elapsed") : t("Duration")
-  const durationValue = live
-    ? elapsedSeconds === null ? '(none)' : formatElapsedDuration(elapsedSeconds)
-    : formatRunDuration(displayedRun?.duration, displayedRun?.start, displayedRun?.finish)
-  const displayedStatus = live ? taskStatusLabel(task) : displayedRun?.status || task.status
+    ? parseTaskTimestampMillis(task.queued_at)
+    : (launchMatchesRun ? parseTaskTimestampMillis(task.launch_started_at) : null)
+      ?? parseTaskTimestampMillis(displayedRun?.start)
   const displayedStart = task.status === 'queued'
     ? formatTimestampValue(task.queued_at ?? task.gpu_wait?.started_at)
     : formatTimestampValue(displayedRun?.start)
   const running = task.status === 'running'
   const gpuLabel = running ? gpuAssignmentLabel(task) : ''
-  const currentMetrics = live && displayedRunIndex > 0
-    ? [
-        ['Run', `#${displayedRunIndex}`],
-        ['Status', displayedStatus],
-        ['Started', displayedStart],
-        [durationLabel, durationValue],
-        ['PID', formatScalarValue(displayedRun?.pid)],
-        ...(gpuLabel ? [['GPU', gpuLabel]] : []),
-      ]
-    : []
   const configuredCommand = formatStoredCommand(task.cmd)
   const command = launchMatchesRun ? String(task.launch_command) : configuredCommand
   const commandLabel = launchMatchesRun
@@ -1327,19 +1286,29 @@ function InfoTab({ task, active }: { task: Task; active: boolean }) {
   return (
     <div className="task-detail-info space-y-3">
       <TaskExecutionInfo task={task} showRecordedHost={false} />
-      {currentMetrics.length > 0 && (
+      {live && displayedRunIndex > 0 && (
         <section className="space-y-2" aria-labelledby="task-current-run-heading">
           <h3 id="task-current-run-heading" className="text-sm font-semibold text-txt-primary">
             {task.status === 'running' ? t("Current Run") : t("Scheduled Run")}
           </h3>
           <dl className="grid grid-cols-[repeat(auto-fit,minmax(132px,1fr))] gap-x-6 gap-y-4 py-1">
-            {currentMetrics.map(([label, value]) => <RunMetric key={label} label={t(label)} value={value} />)}
+            <RunMetric label="Run" value={`#${displayedRunIndex}`} />
+            <RunMetric label="Status" value={t(taskStatusLabel(task))} />
+            <RunMetric label="Started" value={displayedStart} />
+            {!gpuWait && <RunElapsedMetric
+              label={running ? 'Elapsed' : 'Waited'}
+              start={runStartMillis}
+              active={active}
+              reportedAt={fromOtherDevice ? parseTaskTimestampMillis(task.lease_heartbeat) : undefined}
+            />}
+            <RunMetric label="PID" value={formatScalarValue(displayedRun?.pid)} />
+            {gpuLabel && <RunMetric label="GPU" value={gpuLabel} />}
           </dl>
         </section>
       )}
 
-      {task.status === 'queued' && task.gpu_wait && (
-        <GPUWaitSummary wait={task.gpu_wait} />
+      {gpuWait && !isTaskStopping(task) && (
+        <GPUWaitSummary wait={gpuWait} live={!fromOtherDevice} active={active} />
       )}
 
       <section className="space-y-2" aria-labelledby="task-overview-heading">
@@ -1454,9 +1423,10 @@ function InfoTab({ task, active }: { task: Task; active: boolean }) {
   )
 }
 
-function GPUWaitSummary({ wait }: { wait: NonNullable<Task['gpu_wait']> }) {
+function GPUWaitSummary({ wait, live, active }: { wait: NonNullable<Task['gpu_wait']>; live: boolean; active: boolean }) {
   const { t } = useTranslation()
-  const { requestedGpuCount, eligibleGpuCount, waitedSeconds, remainingSeconds } = summarizeGpuWait(wait)
+  const now = useLiveTime(live && active)
+  const { requestedGpuCount, eligibleGpuCount, waitedSeconds, remainingSeconds } = summarizeGpuWait(wait, live ? now : undefined)
   return (
     <section
       aria-labelledby="task-gpu-wait-heading"
@@ -1465,7 +1435,7 @@ function GPUWaitSummary({ wait }: { wait: NonNullable<Task['gpu_wait']> }) {
       <div className="flex flex-wrap items-start justify-between gap-2">
         <div className="min-w-0">
           <h3 id="task-gpu-wait-heading" className="text-xs font-semibold text-txt-primary">
-            {t("Waiting for GPU capacity")}
+            {t(live ? 'Waiting for GPU capacity' : 'Last reported GPU wait')}
           </h3>
           <p className="mt-1 text-2xs leading-5 text-txt-secondary">
             {wait.reason || t("The scheduler is checking memory, utilization, reservations, and the stability window.")}
@@ -1485,7 +1455,7 @@ function GPUWaitSummary({ wait }: { wait: NonNullable<Task['gpu_wait']> }) {
         <div className="rounded-md bg-surface-overlay/55 px-2 py-1.5">
           <dt className="text-txt-tertiary">{t("Time left")}</dt>
           <dd className="font-medium tabular-nums text-txt-primary">
-            {remainingSeconds === null ? t("No limit") : formatElapsedDuration(remainingSeconds)}
+            {remainingSeconds === null ? t("No limit") : formatElapsedDuration(Math.ceil(remainingSeconds))}
           </dd>
         </div>
       </dl>
