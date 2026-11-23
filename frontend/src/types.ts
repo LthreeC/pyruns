@@ -119,6 +119,7 @@ export interface Task {
   task_source?: string
   task_source_host?: string
   runner_lease_expired?: boolean | null
+  log_position?: { identity: string; size: number }
   lease_heartbeat?: number | null
   cancel_requested_at?: number | string | null
   lease_until?: number | string | null
@@ -326,6 +327,7 @@ export interface TaskLogs {
   available_logs: string[]
   content: string
   offset: number
+  file_size?: number
   reset?: boolean
   log_identity?: string
   tail_truncated?: boolean
@@ -336,6 +338,7 @@ export interface LogStreamMessage {
   type: 'chunk' | 'reset' | 'ready' | 'heartbeat' | 'error'
   task_name: string
   content?: string
+  activity?: boolean
   detail?: string
   offset?: number
   log_file_name?: string

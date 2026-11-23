@@ -5,7 +5,7 @@ const first = '中文😀\n'
 const second = '続き🚀\n'
 const byteLength = (value: string) => Buffer.byteLength(value, 'utf8')
 
-async function prepareMonitor(page: Page) {
+async function prepareMonitor(page: Page, extraTasks: Record<string, unknown>[] = []) {
   const now = new Date()
   await page.clock.install({ time: now })
   await page.clock.pauseAt(new Date(now.getTime() + 100))
@@ -39,9 +39,10 @@ async function prepareMonitor(page: Page) {
     Object.assign(window, { WebSocket: ControlledSocket, monitorTransportTest: state })
   })
   const task = { name: 'live-task', status: 'running', run_index: 1, task_kind: 'shell' }
+  const tasks = [task, ...extraTasks]
   await page.route('**/api/tasks?*', route => route.fulfill({ json: {
-    items: [task], total: 1, offset: 0, limit: 200, has_more: false,
-    status_counts: { pending: 0, queued: 0, running: 1, completed: 0, failed: 0, cancelled: 0 },
+    items: tasks, total: tasks.length, offset: 0, limit: 200, has_more: false,
+    status_counts: { pending: 0, queued: 0, running: tasks.length, completed: 0, failed: 0, cancelled: 0 },
   } }))
   await page.route('**/api/tasks/live-task?*', route => route.fulfill({ json: task }))
   await page.route('**/api/tasks/live-task/logs?*', route => route.fulfill({ json: {
@@ -65,23 +66,109 @@ function snapshot(page: Page) {
   })
 }
 
-function completeRead(page: Page, content: string, offset: number, identity = 'original', reset = false) {
+function completeRead(page: Page, content: string, offset: number, identity = 'original', reset = false,
+  { index = 0, fileSize = offset }: { index?: number; fileSize?: number | null } = {},
+) {
   return page.evaluate(payload => {
-    (window as any).monitorTransportTest.reads[0].resolve(new Response(JSON.stringify({
+    (window as any).monitorTransportTest.reads[payload.index].resolve(new Response(JSON.stringify({
       selected_log: 'run1.log', available_logs: ['run1.log'], log_identity: payload.identity,
       content: payload.content, offset: payload.offset, reset: payload.reset,
+      ...(payload.fileSize === null ? {} : { file_size: payload.fileSize }),
     }), { headers: { 'Content-Type': 'application/json' } }))
-  }, { content, offset, identity, reset })
+  }, { content, offset, identity, reset, index, fileSize })
 }
 
-function stream(page: Page, content: string, offset: number, identity = 'original', reset = false) {
+function stream(page: Page, content: string, offset: number, identity = 'original', reset = false, activity = false) {
   return page.evaluate(payload => {
     const socket = (window as any).monitorTransportTest.sockets.at(-1)
     socket.onopen?.()
     socket.onmessage?.({ data: JSON.stringify({ type: payload.reset ? 'reset' : 'chunk', task_name: 'live-task',
-      log_file_name: 'run1.log', log_identity: payload.identity, content: payload.content, offset: payload.offset }) })
-  }, { content, offset, identity, reset })
+      log_file_name: 'run1.log', log_identity: payload.identity, content: payload.content, offset: payload.offset,
+      activity: payload.activity }) })
+  }, { content, offset, identity, reset, activity })
 }
+
+test('Monitor animates a task row while new output keeps arriving', async ({ page }) => {
+  await page.emulateMedia({ reducedMotion: 'no-preference' })
+  const shared = { name: 'shared-writer', status: 'running', run_index: 1, task_kind: 'shell',
+    log_position: { identity: 'shared-file', size: 10 } }
+  const copied = { name: 'git-snapshot', status: 'running', run_index: 1, task_kind: 'shell',
+    runner_location: 'remote', runner_lease_expired: true }
+  const rows = await prepareMonitor(page, [shared, copied])
+  const header = page.locator('.task-status-badge .task-status-dot')
+  const row = (name: string) => page.locator(`[data-monitor-page-task="${name}"]`)
+  const active = 'data-log-activity'
+  await expect(header).not.toHaveAttribute(active)
+
+  await stream(page, first, byteLength(initial + first))
+  await page.clock.runFor(150)
+  await expect(rows).toContainText(first.trim())
+  await expect(header).not.toHaveAttribute(active)
+
+  shared.log_position.size = 20
+  await page.getByRole('button', { name: 'Refresh tasks', exact: true }).click()
+  await expect(row('shared-writer')).toHaveAttribute(active, 'true')
+  await expect(row('git-snapshot')).not.toHaveAttribute(active)
+  await page.clock.runFor(2700)
+  await expect(row('shared-writer')).not.toHaveAttribute(active)
+  shared.log_position = { identity: 'replacement', size: 40 }
+  const refreshed = page.waitForResponse(response => new URL(response.url()).pathname === '/api/tasks')
+  await page.getByRole('button', { name: 'Refresh tasks', exact: true }).click()
+  await refreshed
+  await expect(row('shared-writer')).not.toHaveAttribute(active)
+
+  const end = byteLength(initial + first + second)
+  await stream(page, second, end, 'original', false, true)
+  await page.clock.runFor(150)
+  await expect(header).toHaveAttribute(active, 'true')
+  const strip = row('live-task').locator('.monitor-log-activity')
+  await expect(strip).toBeVisible()
+  expect(await strip.evaluate(el => getComputedStyle(el, '::after').animationName)).toBe('monitor-log-sweep')
+  const initialStrip = await strip.elementHandle()
+  const reads = (await snapshot(page)).reads.length
+  for (let index = 1; index <= 3; index++) {
+    await page.clock.runFor(1000)
+    await stream(page, second, end + index * byteLength(second), 'original', false, true)
+    await page.clock.runFor(100)
+  }
+  expect(await strip.evaluate((el, initial) => el === initial, initialStrip)).toBe(true)
+  expect((await snapshot(page)).reads.length).toBe(reads)
+  await page.emulateMedia({ reducedMotion: 'reduce' })
+  expect(await strip.evaluate(el => getComputedStyle(el, '::after').animationName)).toBe('none')
+  await page.clock.runFor(2700)
+  await expect(header).not.toHaveAttribute(active)
+  await expect(strip).toHaveCount(0)
+  await stream(page, second, end, 'original', false, true)
+  await page.clock.runFor(150)
+  await expect(header).not.toHaveAttribute(active)
+})
+
+for (const reportsSize of [true, false]) test(
+  reportsSize ? 'HTTP fallback animates after catching up to the initial log size' : 'HTTP fallback from older servers keeps the activity strip quiet',
+  async ({ page }) => {
+  const rows = await prepareMonitor(page)
+  const header = page.locator('.task-status-badge .task-status-dot')
+  const baseline = byteLength(initial + first + second)
+  await completeRead(page, first, byteLength(initial + first), 'original', false, { fileSize: reportsSize ? baseline : null })
+  await page.clock.runFor(150)
+  await expect(rows).toContainText(first.trim())
+  await page.clock.runFor(1600)
+  await expect.poll(async () => (await snapshot(page)).reads.length).toBe(2)
+  await completeRead(page, second, baseline, 'original', false, { index: 1, fileSize: reportsSize ? baseline : null })
+  await page.clock.runFor(150)
+  await expect(rows).toContainText(second.trim())
+  await expect(header).not.toHaveAttribute('data-log-activity')
+  await page.clock.runFor(1600)
+  await expect.poll(async () => (await snapshot(page)).reads.length).toBe(3)
+  const appended = 'new by polling\n'
+  const end = baseline + byteLength(appended)
+  await completeRead(page, appended, end, 'original', false, { index: 2, fileSize: reportsSize ? end : null })
+  await page.clock.runFor(150)
+  await expect(rows).toContainText(appended.trim())
+  const strip = page.locator('[data-monitor-page-task="live-task"] .monitor-log-activity')
+  if (reportsSize) await expect(strip).toBeVisible()
+  else await expect(strip).toHaveCount(0)
+})
 
 test('an open socket waits for successful read health and exposes a read failure', async ({ page }) => {
   await prepareMonitor(page)

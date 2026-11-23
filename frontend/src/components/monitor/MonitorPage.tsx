@@ -58,6 +58,7 @@ import CompactSection from '@/components/shared/CompactSection'
 import Pagination from '@/components/shared/Pagination'
 import TaskDetailPanel from '@/components/manager/TaskDetailPanel'
 import TaskExportDialog from './TaskExportDialog'
+import { useMonitorLogActivity } from './useMonitorLogActivity'
 import type { GPUWaitStatus, LogStreamMessage, Task, TaskSearchMatch } from '@/types'
 import { taskStatusLabel } from '@/theme/tokens'
 import { errorMessage } from '@/utils/errors'
@@ -150,6 +151,7 @@ type PendingLiveLogChunk = {
   content: string
   offset?: number
   logIdentity?: string
+  activity?: boolean
 }
 
 type TerminalSearchDirection = 'next' | 'previous'
@@ -277,6 +279,7 @@ export default function MonitorPage() {
   const livePollingKeyRef = useRef('')
   const livePollInFlightRef = useRef(false)
   const livePollControllerRef = useRef<AbortController | null>(null)
+  const pollHistoryEndRef = useRef<number | null>(null)
   const selectedTaskControllerRef = useRef<AbortController | null>(null)
   const liveStreamVersionRef = useRef(0)
   const wsStreamActiveRef = useRef(false)
@@ -296,6 +299,8 @@ export default function MonitorPage() {
         ? selectedTaskSnapshot
         : undefined
     )
+  const selectedTaskRef = useRef(selectedTask)
+  selectedTaskRef.current = selectedTask
   const runLogName = selectedTask ? `run${Math.max(selectedTask.run_index || 1, 1)}.log` : ''
   const liveLogName = selectedTask?.status === 'queued' ? QUEUE_LOG_NAME : runLogName
   const isFollowingQueuedTask = queuedLiveLogTaskRef.current.taskName === selectedTask?.name
@@ -310,6 +315,12 @@ export default function MonitorPage() {
       )
     )
   ))
+  const { markLogActivity, hasLogActivity } = useMonitorLogActivity(
+    monitorTasks, workspaceKey, pageVisible, isLive ? selectedTaskName : null,
+  )
+  const activeLogRows = useMemo(
+    () => new Set(monitorTasks.filter(hasLogActivity).map(task => task.name)), [hasLogActivity, monitorTasks],
+  )
   const canUseLogStream = isLive
   const monitorChunkSize = resolveMonitorChunkSize(workspace?.settings)
   const monitorScrollback = resolveMonitorScrollback(workspace?.settings)
@@ -1123,6 +1134,7 @@ export default function MonitorPage() {
       ? `${workspaceKeyRef.current}::${activeTaskName}::${activeLog}::${useMonitorStore.getState().logGeneration}`
       : ''
     if (buffer.key === activeKey) {
+      let logAppended = false
       useMonitorStore.setState(state => {
         if (state.loading || state.logMatch) return state
         const chunks: string[] = []
@@ -1138,6 +1150,7 @@ export default function MonitorPage() {
             continue
           }
           chunks.push(chunk.content)
+          logAppended ||= chunk.activity === true
           if (chunk.logIdentity) {
             nextIdentity = chunk.logIdentity
           }
@@ -1148,8 +1161,9 @@ export default function MonitorPage() {
 
         return { ...appendMonitorLogContent(state, chunks), logOffset: nextOffset, logIdentity: nextIdentity }
       })
+      if (logAppended) markLogActivity(selectedTaskRef.current)
     }
-  }, [])
+  }, [markLogActivity])
 
   useEffect(() => {
     return () => {
@@ -1267,9 +1281,9 @@ export default function MonitorPage() {
     if (!message.content) return
     const key = `${activeWorkspaceKey}::${activeTaskName}::${activeLog || messageLog || liveLog}::${state.logGeneration}`
     const buffer = pendingLiveLogChunkRef.current
-    const chunk: PendingLiveLogChunk = typeof message.offset === 'number' && Number.isFinite(message.offset)
-      ? { content: message.content, offset: message.offset, logIdentity: message.log_identity }
-      : { content: message.content, logIdentity: message.log_identity }
+    const chunk: PendingLiveLogChunk = {
+      content: message.content, offset: message.offset, logIdentity: message.log_identity, activity: message.activity,
+    }
     if (buffer.key === key) {
       buffer.chunks.push(chunk)
     } else {
@@ -1291,6 +1305,7 @@ export default function MonitorPage() {
       // append the same bytes or restore the identity of a replaced log.
       liveStreamVersionRef.current += 1
       livePollControllerRef.current?.abort()
+      pollHistoryEndRef.current = null
     }
     wsStreamActiveRef.current = status === 'live'
     setStreamStatus(status)
@@ -1315,6 +1330,7 @@ export default function MonitorPage() {
     livePollControllerRef.current?.abort()
     livePollControllerRef.current = null
     livePollInFlightRef.current = false
+    pollHistoryEndRef.current = null
   }, [workspaceKey, selectedTaskName, selectedLog, logGeneration, isLive, pageVisible])
 
   useEffect(() => {
@@ -1385,6 +1401,13 @@ export default function MonitorPage() {
       const shouldReplaceContent = Boolean(logs.reset)
         || logs.offset < currentOffset
         || Boolean(currentIdentity && nextIdentity && currentIdentity !== nextIdentity)
+      const sameFile = Boolean(currentIdentity && currentIdentity === nextIdentity)
+      if (logs.file_size === undefined || pollHistoryEndRef.current === null || shouldReplaceContent || !sameFile) {
+        // The first incremental read can contain backlog accumulated while disconnected.
+        pollHistoryEndRef.current = logs.file_size ?? null
+      } else if (logs.content && logs.offset > Math.max(currentOffset, pollHistoryEndRef.current)) {
+        markLogActivity(selectedTaskRef.current)
+      }
       const cursorChanged = shouldReplaceContent
         || logs.offset !== currentOffset || nextIdentity !== currentIdentity
       if (cursorChanged) {
@@ -1419,7 +1442,7 @@ export default function MonitorPage() {
         livePollInFlightRef.current = false
       }
     }
-  }, [canUseLogStream, disconnectLogStream, monitorChunkSize])
+  }, [canUseLogStream, disconnectLogStream, markLogActivity, monitorChunkSize])
 
   // The WebSocket resumes immediately on return; keep HTTP on its fallback cadence.
   usePolling(pollLiveLog, 1500, !loading && isLive, false, false)
@@ -1696,6 +1719,7 @@ export default function MonitorPage() {
                 <SearchResultGroup
                   key={task.name}
                   task={task}
+                  logActivity={activeLogRows.has(task.name)}
                   active={!exportMode && task.name === selectedTaskName}
                   exportMode={exportMode}
                   exportSelected={exportIds.has(task.name)}
@@ -1714,6 +1738,7 @@ export default function MonitorPage() {
                 >
                   <SidebarItem
                     task={selectedTask}
+                    logActivity={hasLogActivity(selectedTask)}
                     active={!exportMode}
                     exportMode={exportMode}
                     exportSelected={exportIds.has(selectedTask.name)}
@@ -1734,6 +1759,7 @@ export default function MonitorPage() {
                       key={task.name}
                       pageItem
                       task={task}
+                      logActivity={activeLogRows.has(task.name)}
                       active={!exportMode && task.name === selectedTaskName}
                       exportMode={exportMode}
                       exportSelected={exportIds.has(task.name)}
@@ -1758,6 +1784,7 @@ export default function MonitorPage() {
                     key={task.name}
                     pageItem
                     task={task}
+                    logActivity={activeLogRows.has(task.name)}
                     active={!exportMode && task.name === selectedTaskName}
                     exportMode={exportMode}
                     exportSelected={exportIds.has(task.name)}
@@ -1867,7 +1894,7 @@ export default function MonitorPage() {
                     {t("Search results")}
                   </ActionButton>
                 )}
-                <StatusBadge task={selectedTask} />
+                <StatusBadge task={selectedTask} logActivity={isLive && hasLogActivity(selectedTask)} />
                 <div className="monitor-task-title min-w-0 flex-1">
                   <div className="truncate text-xs font-semibold text-txt-primary" title={selectedTask.display_name ?? selectedTask.name}>
                     {selectedTask.display_name ?? selectedTask.name}
@@ -2319,6 +2346,7 @@ function formatBytes(bytes: number) {
 
 const SidebarItem = memo(function SidebarItem({
   task,
+  logActivity,
   pageItem = false,
   active,
   exportMode,
@@ -2326,6 +2354,7 @@ const SidebarItem = memo(function SidebarItem({
   onSelect,
 }: {
   task: Task
+  logActivity: boolean
   pageItem?: boolean
   active: boolean
   exportMode: boolean
@@ -2340,6 +2369,7 @@ const SidebarItem = memo(function SidebarItem({
     <button
       type="button"
       data-monitor-page-task={pageItem ? task.name : undefined}
+      data-log-activity={logActivity || undefined}
       onClick={() => onSelect(task)}
       aria-current={!exportMode && active ? 'true' : undefined}
       aria-pressed={exportMode ? exportSelected : undefined}
@@ -2347,8 +2377,9 @@ const SidebarItem = memo(function SidebarItem({
         action: exportMode ? (exportSelected ? t("Deselect") : t("Select")) : t("View"),
         name: title, status: t(status).toLocaleLowerCase(),
       })}
+      aria-description={logActivity ? t('New log output') : undefined}
       className={clsx(
-        'flex min-h-8 w-full items-center rounded-md border px-2 py-1 text-left transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/35',
+        'relative flex min-h-8 w-full items-center rounded-md border px-2 py-1 text-left transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/35',
         exportMode && exportSelected && 'border-accent/25 bg-accent/10',
         !exportMode && active
           ? 'border-accent/25 bg-accent/10'
@@ -2368,18 +2399,21 @@ const SidebarItem = memo(function SidebarItem({
         </span>
         {task.task_source_host && <span className="max-w-[40%] shrink-0 truncate text-2xs text-txt-secondary">{task.task_source_host}</span>}
       </span>
+      {logActivity && <span className="monitor-log-activity" aria-hidden="true" />}
     </button>
   )
 })
 
 const SearchResultGroup = memo(function SearchResultGroup({
   task,
+  logActivity,
   active,
   exportMode,
   exportSelected,
   onSelect,
 }: {
   task: Task
+  logActivity: boolean
   active: boolean
   exportMode: boolean
   exportSelected: boolean
@@ -2401,9 +2435,11 @@ const SearchResultGroup = memo(function SearchResultGroup({
     >
       <summary
         className={clsx(
-          'flex min-h-9 cursor-pointer list-none items-center gap-1.5 px-1.5 py-1.5 text-left transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent/35',
+          'relative flex min-h-9 cursor-pointer list-none items-center gap-1.5 px-1.5 py-1.5 text-left transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent/35',
           active ? 'bg-accent/10' : 'hover:bg-surface-overlay',
         )}
+        data-log-activity={logActivity || undefined}
+        aria-description={logActivity ? t('New log output') : undefined}
         title={task.task_source_host ? `${displayName} · ${task.task_source_host}` : displayName}
       >
         <ChevronDown className="h-3.5 w-3.5 flex-none -rotate-90 text-txt-tertiary transition-transform group-open:rotate-0" aria-hidden="true" />
@@ -2419,6 +2455,7 @@ const SearchResultGroup = memo(function SearchResultGroup({
         <span className="flex-none rounded bg-surface-overlay px-1.5 py-0.5 text-2xs tabular-nums text-txt-tertiary">
           {matchCount.toLocaleString()}
         </span>
+        {logActivity && <span className="monitor-log-activity" aria-hidden="true" />}
       </summary>
       <TaskSearchMatches task={task} onSelect={() => onSelect(task)} onSelectMatch={match => onSelect(task, match)} action={action} exportMode={exportMode} />
     </details>

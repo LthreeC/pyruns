@@ -861,6 +861,71 @@ class _RouteRuntime:
         return call
 
 
+def test_monitor_list_observes_only_current_logs_of_live_running_tasks(tmp_path, monkeypatch):
+    from pyruns.web import app as web_app
+    from pyruns.web.runtime import TaskPage
+
+    tasks = []
+    paths = {}
+    for name, status, expired in [("shared", "running", False), ("copied", "running", True),
+                                  ("local", "running", None), ("finished", "completed", False)]:
+        task_dir = tmp_path / TASKS_DIR / name
+        log_dir = task_dir / "run_logs"
+        log_dir.mkdir(parents=True)
+        log = log_dir / "run2.log"
+        log.write_bytes(b"saved output")
+        paths[name] = log
+        tasks.append({"name": name, "dir": str(task_dir), "status": status, "run_index": 2,
+                      "runner_lease_expired": expired, "local_process_verified": name == "local"})
+
+    inspected = []
+    entered = threading.Event()
+    release = threading.Event()
+    validate = web_app.validate_task_log_path
+
+    def tracked(task_dir, filename):
+        inspected.append((Path(task_dir).name, filename))
+        entered.set()
+        assert release.wait(4), "the list response waited on the log sampler"
+        return validate(task_dir, filename)
+
+    monkeypatch.setattr(web_app, "validate_task_log_path", tracked)
+    client = TestClient(create_app(_RouteRuntime({"list_tasks": TaskPage(tasks, 4, 0, 50, False, {})})))
+
+    def positions():
+        items = client.get("/api/tasks?compact=true&include_logs=true").json()["items"]
+        return {item["name"]: item["log_position"] for item in items if "log_position" in item}
+
+    def wait_for_positions(predicate):
+        deadline = time.monotonic() + 3
+        while time.monotonic() < deadline:
+            samples = positions()
+            if predicate(samples):
+                return samples
+            time.sleep(0.02)
+        pytest.fail("Monitor did not publish the expected log positions")
+
+    with client:
+        ordinary = client.get("/api/tasks?summary=true").json()
+        assert not inspected
+        assert all("log_position" not in item for item in ordinary["items"])
+
+        try:
+            assert positions() == {}
+            assert entered.wait(2)
+            assert positions() == {}
+            assert inspected == [("shared", "run2.log")]
+        finally:
+            release.set()
+
+        first = wait_for_positions(lambda samples: set(samples) == {"shared", "local"})
+        assert inspected == [("shared", "run2.log"), ("local", "run2.log")]
+        with paths["shared"].open("ab") as handle:
+            handle.write(b" appended")
+        expected = {**first["shared"], "size": len(b"saved output appended")}
+        wait_for_positions(lambda samples: samples.get("shared") == expected)
+
+
 def test_local_server_rejects_cross_origin_and_dns_rebinding_requests():
     client = TestClient(create_app(_RouteRuntime()))
 
@@ -7240,6 +7305,7 @@ def test_logs_websocket_streams_live_chunks(tmp_path):
     assert payload["task_name"] == "alpha"
     assert payload["content"] == "hello from stream"
     assert payload["offset"] == log_file.stat().st_size
+    assert payload["activity"] is True
 
 
 def test_logs_websocket_closes_when_active_workspace_changes(tmp_path):
@@ -7280,6 +7346,7 @@ def test_logs_websocket_stream_catches_up_from_client_offset(tmp_path):
     assert "gap-before-ws" in payload["content"]
     assert payload["offset"] == log_file.stat().st_size
     assert payload["log_file_name"] == "run1.log"
+    assert not payload.get("activity")
 
 
 def test_logs_websocket_replays_backlog_without_poll_delay(tmp_path):
@@ -7318,6 +7385,7 @@ def test_logs_websocket_replays_backlog_without_poll_delay(tmp_path):
 
     assert "".join(chunk["content"] for chunk in chunks) == "A" * (5 * 1024)
     assert all(chunk["type"] == "chunk" for chunk in chunks)
+    assert not any(chunk.get("activity") for chunk in chunks)
     assert chunks[-1]["offset"] == log_file.stat().st_size
     assert get_options.call_count == 1
 
@@ -8097,6 +8165,7 @@ def test_logs_websocket_stream_tails_run_log_file_without_emitter(tmp_path):
     assert payload["task_name"] == "alpha"
     assert payload["content"].replace("\r\n", "\n") == "file fallback chunk\n"
     assert payload["offset"] == log_file.stat().st_size
+    assert payload["activity"] is True
 
 
 def test_logs_websocket_idle_tail_skips_log_listing_but_catches_up(tmp_path):

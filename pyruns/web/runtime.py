@@ -2115,6 +2115,7 @@ class PyrunsRuntime:
         tail_limit_bytes = MAX_MONITOR_LOG_TAIL_BYTES
         selected_identity = log_file_identity(selected_path, **({"strict": True} if strict else {}))
         reset = False
+        file_size = None
         if offset is None:
             if tail_lines is not None:
                 requested_tail_bytes = (
@@ -2176,6 +2177,7 @@ class PyrunsRuntime:
                 selected_path, read_offset, max_bytes=max(1, byte_limit),
                 **({"strict": True} if strict else {}),
             )
+            file_size = max(selected_size, new_offset)
 
         return {
             "task_name": task_name,
@@ -2187,6 +2189,7 @@ class PyrunsRuntime:
             "log_identity": selected_identity,
             "tail_truncated": tail_truncated,
             "tail_limit_bytes": tail_limit_bytes,
+            **({"file_size": file_size} if file_size is not None else {}),
         }
 
     @_with_stable_workspace

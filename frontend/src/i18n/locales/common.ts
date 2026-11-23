@@ -202,6 +202,7 @@ export default {
   'The recorded runner lease has expired. This does not confirm that the process stopped; waiting for a verified result.': '记录的执行器租约已过期，这不代表进程已停止；正在等待可确认的执行结果。',
   'Runner status awaiting confirmation': '执行器状态待确认',
   'Log connection status; task execution is reported separately.': '此处显示日志连接状态；任务执行状态单独显示。',
+  'New log output': '有新增日志',
   'The source template is read-only. Your task draft remains editable.': '来源模板为只读，当前任务草稿仍可编辑。',
   'Read-only source template': '来源模板只读',
   'This device only': '仅限本机执行',

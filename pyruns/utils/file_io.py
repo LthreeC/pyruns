@@ -18,7 +18,9 @@ def _parallel_loading_worthwhile(elapsed: float, cpu_time: float) -> bool:
     return elapsed >= 0.008 and elapsed - cpu_time >= elapsed * 0.5
 
 
-def map_disk_reads(items: list[_Item], load: Callable[[_Item], _Result]) -> list[_Result]:
+def map_disk_reads(
+    items: list[_Item], load: Callable[[_Item], _Result], *, max_workers: int = 16,
+) -> list[_Result]:
     """Preserve order and use bounded concurrency on consistently slow storage."""
     if len(items) <= 8:
         return [load(item) for item in items]
@@ -34,7 +36,7 @@ def map_disk_reads(items: list[_Item], load: Callable[[_Item], _Result]) -> list
         # One slow read may be an outlier, especially on an otherwise local disk.
         if waiting_samples >= 2:
             remaining = items[index + 1:]
-            with ThreadPoolExecutor(max_workers=min(16, len(remaining))) as pool:
+            with ThreadPoolExecutor(max_workers=min(max_workers, len(remaining))) as pool:
                 results.extend(pool.map(load, remaining))
             return results
 

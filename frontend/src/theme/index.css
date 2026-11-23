@@ -851,6 +851,34 @@ dialog::backdrop {
   padding: 1px;
   border: 2px dashed var(--task-status-color);
 }
+.task-status-badge .task-status-dot[data-log-activity] {
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--task-status-stripe) 35%, transparent);
+}
+.monitor-log-activity {
+  --monitor-log-color: #b45309;
+  position: absolute;
+  inset-inline: 6px;
+  inset-block-end: 2px;
+  block-size: 2px;
+  overflow: hidden;
+  background: color-mix(in srgb, var(--monitor-log-color) 70%, transparent);
+  pointer-events: none;
+}
+.dark .monitor-log-activity { --monitor-log-color: #fbbf24; }
+@media (prefers-reduced-motion: no-preference) {
+  .monitor-log-activity { background: color-mix(in srgb, var(--monitor-log-color) 24%, transparent); }
+  .monitor-log-activity::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(90deg, transparent 17%, var(--monitor-log-color) 45% 55%, transparent 83%);
+    animation: monitor-log-sweep 1.65s linear infinite;
+  }
+}
+@keyframes monitor-log-sweep {
+  from { transform: translate3d(-82%, 0, 0); }
+  to { transform: translate3d(82%, 0, 0); }
+}
 .task-status-badge { background: color-mix(in srgb, var(--task-status-stripe) 11%, transparent); }
 .task-status-badge .task-status-dot { width: 0.75rem; height: 0.75rem; }
 .task-status-badge,

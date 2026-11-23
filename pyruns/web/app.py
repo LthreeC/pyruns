@@ -10,6 +10,7 @@ import queue
 import secrets
 import signal
 import socket
+import stat
 import sys
 import threading
 import time
@@ -39,6 +40,7 @@ from pyruns._config import (
 )
 from pyruns.core.task_manager import TaskStateConflict
 from pyruns.utils.events import log_emitter
+from pyruns.utils.file_io import map_disk_reads
 from pyruns.utils.info_io import MAX_RUN_HISTORY_SLOTS, validate_task_log_path
 from pyruns.utils.log_io import log_file_identity
 from pyruns.utils.shell_runtime import get_follow_shell_runtime
@@ -92,6 +94,10 @@ TASK_EVENT_HEARTBEAT_SEC = 15.0
 MAX_API_REQUEST_BYTES = 8 * 1024 * 1024
 MAX_TASK_BATCH_ITEMS = 10_000
 MAX_TASK_PAGE_SIZE = 10_000
+MAX_MONITOR_LOG_POSITIONS = 200
+MONITOR_LOG_SAMPLE_SIZE = 32
+MONITOR_LOG_SAMPLE_INTERVAL_SEC = 2.0
+MONITOR_LOG_CACHE_SIZE = 800
 MAX_TASK_NOTES_CHARS = 1_000_000
 MAX_ENVIRONMENT_ITEMS = 1_024
 MAX_UI_WORKERS = 32
@@ -221,6 +227,65 @@ def _compact_monitor_task(task: dict[str, Any]) -> dict[str, Any]:
         }
     )
     return item
+
+
+def _monitor_log_position(key: tuple[str, int]) -> dict[str, Any] | None:
+    task_dir, run_index = key
+    try:
+        path = validate_task_log_path(task_dir, f"run{run_index}.log")
+        info = os.stat(path, follow_symlinks=False)
+    except (OSError, ValueError):
+        return None
+    if not stat.S_ISREG(info.st_mode) or not info.st_ino:
+        return None
+    return {"identity": f"{info.st_dev:x}:{info.st_ino:x}", "size": info.st_size}
+
+
+class _MonitorLogPositions:
+    """Sample current log metadata without making task list requests wait on disk."""
+
+    def __init__(self) -> None:
+        self._cache: dict[tuple[str, int], tuple[float, dict[str, Any] | None]] = {}
+        self._pending: asyncio.Task[None] | None = None
+        self._next_sample_at = 0.0
+
+    def attach(self, items: list[dict[str, Any]]) -> None:
+        # Only the server event loop reads or publishes samples. The worker
+        # receives plain path and run keys and holds no workspace lock.
+        candidates: dict[tuple[str, int], float] = {}
+        for item in items[:MAX_MONITOR_LOG_POSITIONS]:
+            if item.get("status") != "running" or not (
+                item.get("runner_lease_expired") is False or item.get("local_process_verified")
+            ):
+                continue
+            task_dir, run_index = item.get("dir"), item.get("run_index")
+            if not isinstance(task_dir, str) or not os.path.isabs(task_dir) or not isinstance(run_index, int) or run_index < 1:
+                continue
+            key = (task_dir, run_index)
+            sampled_at, position = self._cache.get(key, (0.0, None))
+            if position is not None:
+                item["log_position"] = position
+            candidates[key] = sampled_at
+        now = time.monotonic()
+        if candidates and self._pending is None and now >= self._next_sample_at:
+            # Rotate through the least recently sampled rows on large pages.
+            keys = sorted(candidates, key=candidates.__getitem__)[:MONITOR_LOG_SAMPLE_SIZE]
+            self._next_sample_at = now + MONITOR_LOG_SAMPLE_INTERVAL_SEC
+            self._pending = asyncio.create_task(self._sample(keys))
+
+    async def _sample(self, keys: list[tuple[str, int]]) -> None:
+        try:
+            positions = await run_in_threadpool(lambda: map_disk_reads(keys, _monitor_log_position, max_workers=4))
+            sampled_at = time.monotonic()
+            for key, position in zip(keys, positions, strict=True):
+                self._cache.pop(key, None)
+                self._cache[key] = (sampled_at, position)
+            while len(self._cache) > MONITOR_LOG_CACHE_SIZE:
+                self._cache.pop(next(iter(self._cache)))
+        except Exception:
+            logger.debug("Could not sample Monitor log positions", exc_info=True)
+        finally:
+            self._pending = None
 
 
 def _authority_parts(
@@ -633,6 +698,7 @@ def create_app(
     """Create the Pyruns FastAPI app."""
     get_follow_shell_runtime()
     app = FastAPI(title="Pyruns API", version=__version__)
+    monitor_log_positions = _MonitorLogPositions()
     app.state.runtime = runtime or PyrunsRuntime()
     reload_token = os.getenv(_UI_TOKEN_ENV) if access_token is None else None
     app.state.access_token = str(access_token or reload_token or secrets.token_urlsafe(32))
@@ -1124,12 +1190,14 @@ def create_app(
                     pending.cancel()
         else:
             page = await run_in_threadpool(
-                runtime.list_tasks, query=query, status=status, offset=offset,
-                sources=selected_sources,
+                runtime.list_tasks, query=query, status=status, offset=offset, sources=selected_sources,
                 limit=limit, refresh=refresh, force_refresh=force_refresh,
                 summary=summary, compact=compact, sort_mode=sort, search_field=search_field,
             )
-        return serialize_page(page)
+        result = serialize_page(page)
+        if not query and compact and include_logs:
+            monitor_log_positions.attach(result["items"])
+        return result
 
     @app.post("/api/tasks/reorder")
     def reorder_tasks(
@@ -1540,6 +1608,7 @@ def create_app(
         stream_offsets: dict[str, int] = {}
         stream_initialized = False
         replaying_backlog = requested_offset is not None
+        history_end = 0
         pending_initial_chunks: list[tuple[str, dict[str, Any] | None]] = []
         pending_initial_overflow = False
         pending_run_log = ""
@@ -1629,6 +1698,7 @@ def create_app(
                 "type": "chunk",
                 "task_name": task_name,
                 "content": chunk_text,
+                "activity": True,
             }
             if chunk_log_name:
                 message["log_file_name"] = chunk_log_name
@@ -1691,7 +1761,7 @@ def create_app(
         async def tail_log_file() -> None:
             nonlocal stream_initialized, stream_log_name, stream_offset, stream_identity, replaying_backlog
             nonlocal pending_run_log, pending_run_chars, pending_run_overflow
-            nonlocal close_code, read_failures
+            nonlocal close_code, read_failures, history_end
             while not disconnected.is_set():
                 tail_wakeup.clear()
                 try:
@@ -1718,6 +1788,7 @@ def create_app(
                         stream_log_name = str(payload.get("selected_log") or "")
                         stream_offset = max(0, int(payload.get("offset") or 0))
                         stream_identity = str(payload.get("log_identity") or "")
+                        history_end = max(stream_offset, int(payload.get("file_size") or 0))
                         if stream_log_name:
                             stream_offset = max(stream_offset, stream_offsets.get(stream_log_name, 0))
                             stream_offsets[stream_log_name] = stream_offset
@@ -1761,6 +1832,7 @@ def create_app(
                             stream_log_name = selected_log
                             stream_offset = stream_offsets.get(selected_log, 0)
                             stream_identity = ""
+                            history_end = 0
                             replaying_backlog = True
                             continue
                     elif stream_log_name:
@@ -1793,6 +1865,7 @@ def create_app(
                             )
                             stream_offset = max(0, int(payload.get("offset") or 0))
                             stream_identity = str(payload.get("log_identity") or current_identity or "")
+                            history_end = max(stream_offset, int(payload.get("file_size", current_size)))
                             stream_offsets[stream_log_name] = stream_offset
                             await queue.put({
                                 "type": "reset",
@@ -1805,12 +1878,14 @@ def create_app(
                             continue
                         if not stream_identity and current_identity:
                             stream_identity = current_identity
+                            history_end = max(history_end, current_size)
                         if current_size > stream_offset:
                             replaying_backlog = True
                         if pending_run_log and stream_log_name == QUEUE_LOG_FILENAME and current_size <= stream_offset:
                             stream_log_name = pending_run_log
                             stream_offset = stream_offsets.get(stream_log_name, 0)
                             stream_identity = ""
+                            history_end = 0
                             pending_run_log = ""
                             replaying_backlog = pending_run_overflow
                             for chunk_text, metadata in pending_run_chunks:
@@ -1851,6 +1926,7 @@ def create_app(
                                         stream_log_name = selected_log
                                         stream_offset = stream_offsets.get(selected_log, 0)
                                         stream_identity = ""
+                                        history_end = 0
                                         replaying_backlog = True
                                         switched_log = True
                             if switched_log:
@@ -1873,10 +1949,12 @@ def create_app(
                                     stream_log_name = selected_log
                                     stream_offset = new_offset
                                     stream_identity = new_identity
+                                    history_end = max(new_offset, int(payload.get("file_size") or 0))
                                     stream_offsets[selected_log] = new_offset
                                 elif payload.get("reset"):
                                     stream_offset = new_offset
                                     stream_identity = new_identity
+                                    history_end = max(new_offset, int(payload.get("file_size") or 0))
                                     stream_offsets[stream_log_name] = new_offset
                                     await queue.put({
                                         "type": "reset",
@@ -1899,6 +1977,7 @@ def create_app(
                                             "offset": new_offset,
                                             "log_file_name": stream_log_name,
                                             "log_identity": stream_identity,
+                                            "activity": new_offset > history_end,
                                         })
                                 if new_offset > read_offset and new_offset < current_size:
                                     continue
