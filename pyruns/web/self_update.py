@@ -21,7 +21,6 @@ from typing import Any, Callable, Iterator
 from packaging.version import InvalidVersion, Version
 
 from pyruns.update_coordination import (
-    ISOLATED_UPGRADE_STAGE,
     UPDATE_HEARTBEAT_SECONDS,
     CoordinationStore,
     UpdateCoordinationError,
@@ -263,7 +262,7 @@ class UiUpdateCoordinator:
             self._scheduled_operation = None
             self._request_id = str(request.get("request_id", "") or "")
             self._operation = str(request.get("operation", "upgrade") or "upgrade")
-            self._isolated = request.get("isolated") is True
+            self._isolated = CoordinationStore.request_is_isolated(request)
             self._target_version = str(request.get("target_version", "") or "")
             self._role = (
                 "owner"
@@ -282,7 +281,7 @@ class UiUpdateCoordinator:
             active_count, restart_active_count = self._serving_counts()
             with self._store.locked():
                 request = self._store.active_request_locked(recover=True)
-                if request is not None and request.get("stage") == ISOLATED_UPGRADE_STAGE:
+                if self._store.request_is_isolated(request):
                     request = None
                 if request is not None:
                     self._join_request(request)
@@ -350,7 +349,7 @@ class UiUpdateCoordinator:
                 lock_context.__enter__()
                 lock_acquired = True
                 request = self._store.active_request_locked(recover=True)
-                if request is not None and request.get("stage") != ISOLATED_UPGRADE_STAGE:
+                if request is not None and not self._store.request_is_isolated(request):
                     raise UpdateInProgressError(
                         "Pyruns is updating; new tasks are disabled until every UI restarts."
                     )
@@ -405,7 +404,7 @@ class UiUpdateCoordinator:
         )
 
     def prepare_restart(self, runtime: Any, *, defer_if_busy: bool = False) -> bool:
-        """Publish a restart gate for an externally changed installation."""
+        """Restart this UI with the version now visible on disk."""
 
         installed = self.refresh_installed_version(force=True)
         if not self._current_version or installed == self._current_version:
@@ -474,6 +473,11 @@ class UiUpdateCoordinator:
         try:
             with self._store.locked():
                 existing = self._store.active_request_locked(recover=True)
+                if restart_only and self._isolated_upgrades and (
+                    existing is None or self._store.request_is_isolated(existing)
+                ):
+                    self._prepare_local_restart(target_version)
+                    return True
                 if existing is not None:
                     self._join_request(existing)
                     active_count = self._strict_active_count(
@@ -520,13 +524,15 @@ class UiUpdateCoordinator:
                         "request_id": request_id,
                         "owner_instance_id": self._instance_id,
                         "operation": operation,
-                        "stage": ISOLATED_UPGRADE_STAGE if isolated else "draining",
+                        "stage": "draining",
                         "previous_version": self._current_version,
                         "target_version": target_version,
                         "requested_at": time.time(),
                     }
                 )
                 if isolated:
+                    # Older hosts only recognize draining and updating. The
+                    # flag allows current hosts to keep detached work running.
                     request["isolated"] = True
                 self._store.write_request_locked(request)
                 self._join_request(request)
@@ -610,6 +616,7 @@ class UiUpdateCoordinator:
             if (
                 request is not None
                 and str(request.get("request_id", "") or "") == self._request_id
+                and request.get("owner_instance_id") == self._instance_id
                 and self._store.request_is_active(request)
             ):
                 self._store.update_request_locked(
@@ -691,7 +698,7 @@ class UiUpdateCoordinator:
                 request = self._store.active_request_locked(recover=True)
                 if (
                     request is not None
-                    and request.get("stage") == ISOLATED_UPGRADE_STAGE
+                    and self._store.request_is_isolated(request)
                     and request.get("owner_instance_id") != self._instance_id
                     and not self._requested
                 ):
@@ -788,6 +795,7 @@ class UiUpdateCoordinator:
                     if (
                         request is not None
                         and str(request.get("request_id", "") or "") == self._request_id
+                        and request.get("owner_instance_id") == self._instance_id
                         and self._store.request_is_active(request)
                     ):
                         self._store.recover_stale_request_locked(request)
@@ -957,6 +965,7 @@ def replace_process_with_waiter(
     request_id: str,
     instance_id: str,
     state_dir: str,
+    target_version: str = "",
 ) -> None:
     """Replace a stopped follower UI with a package-independent update waiter."""
 
@@ -975,6 +984,8 @@ def replace_process_with_waiter(
         str(state_dir),
         release=current_release_root(),
     )
+    if target_version:
+        command.extend(["--target-version", target_version])
     environment = os.environ.copy()
     environment[UI_TOKEN_ENV] = str(token)
     print("[pyruns] Waiting for the shared Pyruns installation to finish updating.", flush=True)
@@ -1143,6 +1154,38 @@ def _coordinated_instance_payload(
     return payload
 
 
+def _renew_update_owner_locked(
+    store: CoordinationStore,
+    request: dict[str, Any] | None,
+    *,
+    request_id: str,
+    instance_id: str,
+    stage: str,
+) -> dict[str, Any] | None:
+    if (
+        request is None
+        or request.get("request_id") != request_id
+        or request.get("owner_instance_id") != instance_id
+    ):
+        return None
+    owner = process_record(record_id=instance_id, kind="ui-update")
+    changes = {
+        "stage": stage,
+        "heartbeat_at": owner["heartbeat_at"],
+        "host": owner["host"],
+        "runner_device": owner.get("runner_device"),
+        "pid": owner["pid"],
+        "process_create_time": owner["process_create_time"],
+    }
+    if store.request_is_isolated(request):
+        changes["isolated"] = True
+    if store.request_is_active(request):
+        renewed = {**request, **changes}
+        store.write_request_locked(renewed)
+        return renewed
+    return store.resume_recovered_request_locked(request_id, instance_id, **changes)
+
+
 def _heartbeat_coordinated_process(
     store: CoordinationStore,
     *,
@@ -1156,17 +1199,10 @@ def _heartbeat_coordinated_process(
         request = store.read_request_locked()
         if request is None or str(request.get("request_id", "") or "") != request_id:
             return False
-        if stage is not None and store.request_is_active(request):
-            owner = process_record(record_id=instance_id, kind="ui-update")
-            store.update_request_locked(
-                request_id,
-                stage=stage,
-                heartbeat_at=time.time(),
-                host=owner["host"],
-                runner_device=owner.get("runner_device"),
-                pid=owner["pid"],
-                process_create_time=owner["process_create_time"],
-            )
+        if stage is not None and _renew_update_owner_locked(
+            store, request, request_id=request_id, instance_id=instance_id, stage=stage,
+        ) is None:
+            return False
         store.write_record(
             "instances",
             instance_id,
@@ -1198,22 +1234,9 @@ def _wait_for_update_participants(
             request = store.read_request_locked()
             if request is None or str(request.get("request_id", "") or "") != request_id:
                 raise UpdateCoordinationError("The shared Pyruns update request disappeared.")
-            isolated = not restart_only and request.get("isolated") is True
-            owner = process_record(record_id=instance_id, kind="ui-update")
-            ownership = {
-                "stage": ISOLATED_UPGRADE_STAGE if isolated else "draining",
-                "heartbeat_at": time.time(),
-                "host": owner["host"],
-                "runner_device": owner.get("runner_device"),
-                "pid": owner["pid"],
-                "process_create_time": owner["process_create_time"],
-            }
-            if store.request_is_active(request):
-                store.update_request_locked(request_id, **ownership)
-            elif store.resume_recovered_request_locked(
-                request_id,
-                instance_id,
-                **ownership,
+            isolated = not restart_only and store.request_is_isolated(request)
+            if _renew_update_owner_locked(
+                store, request, request_id=request_id, instance_id=instance_id, stage="draining",
             ) is None:
                 raise UpdateCoordinationError(
                     "The shared Pyruns update request is no longer active."
@@ -1323,6 +1346,27 @@ class _CoordinationHeartbeat:
         self.thread.join(timeout=2.0)
 
 
+def _published_upgrade_result(previous_version: str, target_version: str) -> dict[str, Any] | None:
+    """Accept a verified immutable release even if its request was replaced."""
+    if not target_version:
+        return None
+    try:
+        installed, release = selected_release("")
+        if release is None:
+            return None
+        version = Version(installed)
+        if version <= Version(previous_version) or version < Version(target_version):
+            return None
+    except (InvalidVersion, OSError):
+        return None
+    return {
+        "ok": True,
+        "previous_version": previous_version,
+        "installed_version": installed,
+        "exit_code": 0,
+    }
+
+
 def run_coordinated_update(
     *,
     state_dir: str,
@@ -1352,7 +1396,7 @@ def run_coordinated_update(
             request_id=request_id,
             instance_id=instance_id,
             previous_version=previous_version,
-            stage=ISOLATED_UPGRADE_STAGE if isolated else "updating",
+            stage="updating",
         ):
             if restart_only:
                 result = {
@@ -1370,25 +1414,37 @@ def run_coordinated_update(
                     **({"install_root": staging} if staging is not None else {}),
                 )
 
-        with store.locked():
-            if staging is not None and result["ok"]:
-                request = store.read_request_locked()
-                if (
-                    request is None or request.get("request_id") != request_id
-                    or request.get("stage") != ISOLATED_UPGRADE_STAGE
-                ):
+            release_deadline = time.monotonic() + LOCAL_RELEASE_WAIT_SECONDS
+            while True:
+                with store.locked():
+                    request = _renew_update_owner_locked(
+                        store, store.read_request_locked(),
+                        request_id=request_id, instance_id=instance_id, stage="updating",
+                    )
+                    visible = None
+                    if staging is not None and result["ok"]:
+                        visible = _published_upgrade_result(previous_version, result["installed_version"])
+                        if visible is not None:
+                            result = visible
+                        elif request is not None:
+                            publish_release(staging, result["installed_version"])
+                            published = True
+                    elif request is None:
+                        raise UpdateCoordinationError("Could not publish the Pyruns update result.")
+                    if request is not None:
+                        completed_at = time.time()
+                        store.write_request_locked({
+                            **request, "stage": "completed", "heartbeat_at": completed_at,
+                            "completed_at": completed_at, "result": result,
+                        })
+                if request is not None or visible is not None:
+                    break
+                # A single stale NFS read need not invalidate a staged release.
+                # Retry without the lock and publish only once ownership is verified.
+                remaining = release_deadline - time.monotonic()
+                if remaining <= 0:
                     raise UpdateCoordinationError("The staged upgrade no longer owns its request.")
-                publish_release(staging, result["installed_version"])
-                published = True
-            updated = store.update_request_locked(
-                request_id,
-                stage="completed",
-                heartbeat_at=time.time(),
-                completed_at=time.time(),
-                result=result,
-            )
-            if updated is None:
-                raise UpdateCoordinationError("Could not publish the Pyruns update result.")
+                time.sleep(min(UPDATE_HEARTBEAT_SECONDS, remaining))
     finally:
         if staging is not None and not published:
             discard_unpublished_release(staging)
@@ -1402,12 +1458,14 @@ def wait_for_coordinated_update(
     request_id: str,
     instance_id: str,
     previous_version: str,
+    target_version: str = "",
 ) -> dict[str, Any]:
     """Keep a follower lease alive until completion and local release visibility."""
 
     store = CoordinationStore(state_dir)
     deadline = time.monotonic() + COORDINATED_UPDATE_WAIT_SECONDS
     next_report = time.monotonic() + UPDATE_STATUS_REPORT_SECONDS
+    next_release_check = 0.0
     release_deadline: float | None = None
     while True:
         request = None
@@ -1422,13 +1480,18 @@ def wait_for_coordinated_update(
             request = store.read_request()
         except (OSError, UpdateCoordinationError, ValueError):
             pass
-        # A missing or older request can be a stale shared-filesystem read.
-        # Only completion for this handoff lets a follower relaunch early.
-        if (
-            request is not None
-            and str(request.get("request_id", "") or "") == request_id
-            and str(request.get("stage", "") or "") == "completed"
-        ):
+        if request is not None and request.get("request_id") != request_id:
+            request = None
+        if request is not None and not target_version:
+            target_version = str(request.get("target_version", "") or "")
+        now = time.monotonic()
+        if target_version and now >= next_release_check:
+            next_release_check = now + UPDATE_HEARTBEAT_SECONDS
+            visible = _published_upgrade_result(previous_version, target_version)
+            if visible is not None:
+                result = visible
+                break
+        if request is not None and request.get("stage") == "completed":
             raw_result = request.get("result")
             if isinstance(raw_result, dict) and isinstance(raw_result.get("ok"), bool):
                 try:
@@ -1460,7 +1523,7 @@ def wait_for_coordinated_update(
             # Seeing the completion marker on NFS does not prove this client
             # can see the updated package metadata yet.
             expected = result["installed_version"]
-            isolated = request.get("isolated") is True or current_release_root() is not None
+            isolated = store.request_is_isolated(request) or current_release_root() is not None
             installed = selected_release("")[0] if isolated else _query_installed_version("")
             if installed and installed == expected:
                 break
@@ -1542,14 +1605,17 @@ def _finish_failed_coordination(
     store = CoordinationStore(state_dir)
     try:
         with store.locked():
-            store.update_request_locked(
-                request_id,
-                stage="completed",
-                heartbeat_at=time.time(),
-                completed_at=time.time(),
-                result=result,
-                error=error,
-            )
+            request = store.read_request_locked()
+            if (
+                request is not None and request.get("request_id") == request_id
+                and request.get("owner_instance_id") == instance_id
+                and store.request_is_active(request)
+            ):
+                completed_at = time.time()
+                store.write_request_locked({
+                    **request, "stage": "completed", "heartbeat_at": completed_at,
+                    "completed_at": completed_at, "result": result, "error": error,
+                })
         store.remove_record("instances", instance_id)
     except (OSError, UpdateCoordinationError, ValueError):
         pass
@@ -1599,6 +1665,7 @@ def restart_ui_after_handoff(
                 request_id=request_id,
                 instance_id=instance_id,
                 previous_version=previous_version,
+                target_version=installed_version,
             )
     except Exception as exc:
         print(f"[pyruns] Restart coordination failed: {exc}", file=sys.stderr, flush=True)
@@ -1651,6 +1718,7 @@ def main(args: list[str] | None = None) -> int:
                     request_id=options.request_id,
                     instance_id=options.instance_id,
                     previous_version=options.previous_version,
+                    target_version=options.target_version,
                 )
             else:
                 result = run_coordinated_update(
@@ -1677,16 +1745,18 @@ def main(args: list[str] | None = None) -> int:
                 target_version=str(options.target_version or ""),
             )
     except Exception as exc:
-        print(f"[pyruns] Update coordination failed: {exc}", file=sys.stderr, flush=True)
-        result = _coordination_failure_result(options.previous_version, str(exc))
-        if options.request_id and options.instance_id and options.state_dir:
-            _finish_failed_coordination(
-                state_dir=options.state_dir,
-                request_id=options.request_id,
-                instance_id=options.instance_id,
-                result=result,
-                error=str(exc),
-            )
+        result = _published_upgrade_result(options.previous_version, options.target_version)
+        if result is None:
+            print(f"[pyruns] Update coordination failed: {exc}", file=sys.stderr, flush=True)
+            result = _coordination_failure_result(options.previous_version, str(exc))
+            if options.request_id and options.instance_id and options.state_dir:
+                _finish_failed_coordination(
+                    state_dir=options.state_dir,
+                    request_id=options.request_id,
+                    instance_id=options.instance_id,
+                    result=result,
+                    error=str(exc),
+                )
     relaunch_ui(port=options.port, token=token, result=result)
     return 1
 

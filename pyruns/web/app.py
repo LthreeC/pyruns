@@ -28,6 +28,7 @@ from fastapi.staticfiles import StaticFiles
 from omegaconf.errors import OmegaConfBaseException
 from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
+from starlette.websockets import WebSocketState
 
 from pyruns import __version__
 from pyruns._config import (
@@ -129,6 +130,20 @@ async def _finish_stream_work(work: Awaitable[_StreamWorkResult]) -> tuple[_Stre
             except asyncio.CancelledError:
                 cancelled = True
     return task.result(), cancelled
+
+
+async def _close_stream_socket(websocket: WebSocket, code: int = 1000, reason: str = "") -> None:
+    if WebSocketState.DISCONNECTED in (websocket.client_state, websocket.application_state):
+        return
+    try:
+        await websocket.close(code=code, reason=reason)
+    except (OSError, RuntimeError, WebSocketDisconnect):
+        pass
+    except AttributeError as exc:
+        # Legacy Uvicorn/websockets shutdown can reach close before the
+        # handshake created its transfer task.
+        if exc.name != "transfer_data_task":
+            raise
 
 
 async def _acquire_task_event_context(runtime: PyrunsRuntime, workspace_root: str | None = None) -> tuple[str, TaskManager]:
@@ -1367,7 +1382,7 @@ def create_app(
         """Push task-list invalidations and keep low-frequency polling as a fallback."""
         rejection = websocket_rejection(websocket)
         if rejection is not None:
-            await websocket.close(code=rejection[0], reason=rejection[1])
+            await _close_stream_socket(websocket, *rejection)
             return
 
         runtime = get_runtime()
@@ -1375,7 +1390,7 @@ def create_app(
         try:
             stream_root, stream_manager = await _acquire_task_event_context(runtime, expected_workspace)
         except WorkspaceChangedError:
-            await websocket.close(code=4409, reason="Workspace changed")
+            await _close_stream_socket(websocket, 4409, "Workspace changed")
             return
 
         loop = asyncio.get_running_loop()
@@ -1412,7 +1427,7 @@ def create_app(
             # The workspace may switch after context acquisition but before
             # on_change is registered. Validate after subscribing as well.
             if not await asyncio.to_thread(runtime.workspace_stream_is_current, stream_root, stream_manager):
-                await websocket.close(code=4409, reason="Workspace changed")
+                await _close_stream_socket(websocket, 4409, "Workspace changed")
                 disconnected.set()
                 return
             await websocket.send_json({"type": "ready", "revision": revision})
@@ -1425,7 +1440,7 @@ def create_app(
                     payload = {"type": "heartbeat", "revision": revision}
 
                 if not await asyncio.to_thread(runtime.workspace_stream_is_current, stream_root, stream_manager):
-                    await websocket.close(code=4409, reason="Workspace changed")
+                    await _close_stream_socket(websocket, 4409, "Workspace changed")
                     disconnected.set()
                     return
                 await websocket.send_json(payload)
@@ -1463,10 +1478,7 @@ def create_app(
             )
             if cancelled or release_cancelled:
                 raise asyncio.CancelledError
-            try:
-                await websocket.close(code=1000)
-            except (RuntimeError, WebSocketDisconnect):
-                pass
+            await _close_stream_socket(websocket)
 
     @app.websocket("/api/tasks/{task_name}/logs/stream")
     async def stream_task_logs(
@@ -1479,7 +1491,7 @@ def create_app(
     ) -> None:
         rejection = websocket_rejection(websocket)
         if rejection is not None:
-            await websocket.close(code=rejection[0], reason=rejection[1])
+            await _close_stream_socket(websocket, *rejection)
             return
 
         runtime = get_runtime()
@@ -1498,15 +1510,15 @@ def create_app(
             # A cold lookup can read task metadata from a remote filesystem.
             stream_root, stream_task_dir = await asyncio.to_thread(load_stream_context)
         except KeyError:
-            await websocket.close(code=4404, reason="Task not found")
+            await _close_stream_socket(websocket, 4404, "Task not found")
             return
         except WorkspaceChangedError:
             await websocket.accept()
-            await websocket.close(code=4409, reason="Workspace changed")
+            await _close_stream_socket(websocket, 4409, "Workspace changed")
             return
         except ValueError:
             await websocket.accept()
-            await websocket.close(code=4400, reason="Invalid log file")
+            await _close_stream_socket(websocket, 4400, "Invalid log file")
             return
 
         requested_log_name = str(log_file_name or "").strip()
@@ -1960,10 +1972,7 @@ def create_app(
                     await task
                 except asyncio.CancelledError:
                     pass
-            try:
-                await websocket.close(code=close_code, reason="Workspace changed" if close_code == 4409 else "")
-            except (RuntimeError, WebSocketDisconnect):
-                pass
+            await _close_stream_socket(websocket, close_code, "Workspace changed" if close_code == 4409 else "")
 
     @app.post(_UI_SESSION_RECOVERY_PATH)
     def recover_ui_session(request: Request) -> Response:
@@ -2357,6 +2366,7 @@ def main(
                     request_id=str(handoff["request_id"]),
                     instance_id=str(handoff["instance_id"]),
                     state_dir=str(handoff["state_dir"]),
+                    target_version=str(handoff["target_version"]),
                 )
         finally:
             if inherited_session_state is None:

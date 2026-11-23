@@ -23,6 +23,7 @@ UPDATE_LOCK_FILENAME = "coordination.lock"
 UPDATE_LOCK_GUARD_FILENAME = f"{UPDATE_LOCK_FILENAME}.guard"
 UPDATE_INSTANCES_DIRNAME = "instances"
 UPDATE_ACTIVITIES_DIRNAME = "activities"
+# Versions 0.3.20 and 0.3.21 can leave this stage on disk.
 ISOLATED_UPGRADE_STAGE = "staging-release"
 UPDATE_ACTIVE_STAGES = frozenset({"draining", "updating", ISOLATED_UPGRADE_STAGE})
 UPDATE_HEARTBEAT_SECONDS = 1.0
@@ -627,6 +628,12 @@ class CoordinationStore:
         return bool(request and str(request.get("stage", "")) in UPDATE_ACTIVE_STAGES)
 
     @staticmethod
+    def request_is_isolated(request: dict[str, Any] | None) -> bool:
+        return bool(request and (
+            request.get("isolated") is True or request.get("stage") == ISOLATED_UPGRADE_STAGE
+        ))
+
+    @staticmethod
     def request_is_stale(request: dict[str, Any]) -> bool:
         if not CoordinationStore.request_is_active(request):
             return False
@@ -818,7 +825,7 @@ class EnvironmentActivityLease:
         try:
             with self.store.locked():
                 request = self.store.active_request_locked(recover=True)
-                if request is not None and request.get("stage") != ISOLATED_UPGRADE_STAGE:
+                if request is not None and not self.store.request_is_isolated(request):
                     raise UpdateInProgressError(
                         "Pyruns is updating; new tasks are disabled until every UI restarts."
                     )
@@ -835,7 +842,7 @@ class EnvironmentActivityLease:
             if (
                 self.store.request_is_active(request)
                 and request is not None
-                and request.get("stage") != ISOLATED_UPGRADE_STAGE
+                and not self.store.request_is_isolated(request)
                 and not self.store.request_is_stale(request)
             ):
                 raise UpdateInProgressError(

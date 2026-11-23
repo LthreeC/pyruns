@@ -5300,7 +5300,7 @@ def test_web_main_restarts_idle_server_after_external_package_change(monkeypatch
     restart = events[3][1]
     assert restart["owner"] is True
     assert restart["installed_version"] == "0.4.0"
-    assert restart["request_id"]
+    assert restart["request_id"] == ""
     assert restart["state_dir"]
 
 
@@ -7087,6 +7087,34 @@ def test_tasks_endpoint_applies_selected_sort_before_pagination(tmp_path):
     assert response.status_code == 200
     assert [item["name"] for item in response.json()["items"]] == ["beta"]
     assert invalid.status_code == 422
+
+
+@pytest.mark.parametrize("disconnected", [True, False])
+def test_websocket_close_survives_disconnect_and_legacy_handshake_failure(disconnected):
+    import asyncio
+
+    from pyruns.web.app import _close_stream_socket
+
+    sent = []
+    incoming = iter([{"type": "websocket.connect"}, {"type": "websocket.disconnect", "code": 1006}])
+
+    async def receive():
+        return next(incoming)
+
+    async def send(message):
+        sent.append(message["type"])
+        if message["type"] == "websocket.close":
+            raise AttributeError("legacy transport has no transfer task", name="transfer_data_task")
+
+    async def close():
+        websocket = WebSocket({"type": "websocket"}, receive, send)
+        await websocket.accept()
+        if disconnected:
+            await websocket.receive()
+        await _close_stream_socket(websocket)
+
+    asyncio.run(close())
+    assert sent == (["websocket.accept"] if disconnected else ["websocket.accept", "websocket.close"])
 
 
 def test_logs_websocket_streams_live_chunks(tmp_path):
