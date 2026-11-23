@@ -766,11 +766,11 @@ describe('workspace-scoped stores', () => {
       },
     })
 
-    expect(() => useTaskStore.getState().setColumns(3)).not.toThrow()
+    expect(() => useTaskStore.getState().setSortMode('name_desc')).not.toThrow()
     expect(() => useGeneratorStore.getState().setColumns(4)).not.toThrow()
     expect(() => useGeneratorStore.getState().togglePin('trainer.lr')).not.toThrow()
     expect(() => useThemeStore.getState().toggle()).not.toThrow()
-    expect(useTaskStore.getState().columns).toBe(3)
+    expect(useTaskStore.getState().sortMode).toBe('name_desc')
     expect(useGeneratorStore.getState().columns).toBe(4)
     expect(useGeneratorStore.getState().pinnedParams).toContain('trainer.lr')
   })

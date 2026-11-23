@@ -9,9 +9,10 @@ interface Props {
   onOffsetChange: (offset: number) => void
   disabled?: boolean
   compact?: boolean
+  showTotal?: boolean
 }
 
-export default function Pagination({ total, offset, limit, onOffsetChange, disabled = false, compact = false }: Props) {
+export default function Pagination({ total, offset, limit, onOffsetChange, disabled = false, compact = false, showTotal = true }: Props) {
   const { t } = useTranslation()
   if (total <= limit) return null
 
@@ -52,9 +53,9 @@ export default function Pagination({ total, offset, limit, onOffsetChange, disab
       >
         <ChevronRight className="w-3.5 h-3.5" />
       </button>
-      <span className={clsx(compact ? 'text-[10px] text-txt-tertiary' : 'ml-1 text-txt-tertiary')}>
+      {showTotal && <span className={clsx(compact ? 'text-[10px] text-txt-tertiary' : 'ml-1 text-txt-tertiary')}>
         {t('{{total}} total', { total })}
-      </span>
+      </span>}
     </div>
   )
 }

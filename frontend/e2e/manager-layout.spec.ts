@@ -1,6 +1,6 @@
-import { expect, test, type Page } from '@playwright/test'
+import { expect, test, type Locator, type Page } from '@playwright/test'
 
-async function fixture(page: Page) {
+async function fixture(page: Page, taskCount = 50) {
   await page.route('**/api/workspace', route => route.fulfill({ json: {
     run_root: '/shared/experiments/_pyruns_/_shell_', working_root: '/shared/experiments',
     tasks_dir: '/shared/experiments/tasks', workspace_kind: 'shell', workspace_ready: true,
@@ -16,7 +16,7 @@ async function fixture(page: Page) {
     { runner_host: 'gpu-worker-03', runner_location: 'remote', runner_lease_expired: false },
     { task_storage: 'remote', task_source_host: 'gpu-worker-04', runner_location: 'remote' },
   ]
-  let tasks = Array.from({ length: 50 }, (_, index) => {
+  let tasks = Array.from({ length: taskCount }, (_, index) => {
     const name = `ours_lamp5_scholarly_title_${variants[index % variants.length]}_2026-11-15_17-${String(index).padStart(2, '0')}-08`
     return {
       name, dir: `/shared/experiments/tasks/${name}`, task_identity: `task-${index}`,
@@ -33,17 +33,21 @@ async function fixture(page: Page) {
   await page.route('**/api/tasks?*', route => {
     const params = new URL(route.request().url()).searchParams
     const status = params.get('status') || 'All'
+    const limit = Number(params.get('limit') ?? 50)
+    const offset = Number(params.get('offset') ?? 0)
     requests.push(status)
     const counts = Object.fromEntries(['pending', 'queued', 'running', 'completed', 'failed', 'cancelled'].map(status => [status, tasks.filter(task => task.status === status).length]))
     const filtered = tasks.filter(task => (status === 'All' || (status === 'active' ? ['running', 'queued'].includes(task.status) : task.status === status))
       && task.name.includes(params.get('query') || ''))
-    return route.fulfill({ json: { items: filtered, total: filtered.length, offset: 0, limit: 50, has_more: false, status_counts: counts } })
+    return route.fulfill({ json: { items: filtered.slice(offset, offset + limit), total: filtered.length, offset,
+      limit, has_more: offset + limit < filtered.length, status_counts: counts } })
   })
   await page.route('**/api/tasks/reorder?*', route => {
     const items = route.request().postDataJSON().items
     mutations.push('reorder')
     tasks = items.map((item: { name: string; pinned: boolean }) => ({ ...tasks.find(task => task.name === item.name)!, pinned: item.pinned }))
-    return route.fulfill({ json: { count: tasks.length, items: tasks } })
+    const includeItems = new URL(route.request().url()).searchParams.get('include_items') !== 'false'
+    return route.fulfill({ json: { count: tasks.length, items: includeItems ? tasks : [] } })
   })
   await page.route('**/api/tasks/*/pin?*', route => {
     mutations.push('pin')
@@ -51,11 +55,68 @@ async function fixture(page: Page) {
     tasks = tasks.map(task => task.name === name ? { ...task, pinned: !task.pinned } : task)
     return route.fulfill({ json: { ok: true, task: tasks.find(task => task.name === name) } })
   })
+  await page.route('**/api/tasks/batch/delete', route => {
+    const names = new Set<string>(route.request().postDataJSON().task_names)
+    const deleted = tasks.filter(task => names.has(task.name)).map(task => task.name)
+    tasks = tasks.filter(task => !names.has(task.name))
+    mutations.push('delete')
+    return route.fulfill({ json: { count: deleted.length, deleted } })
+  })
   await page.routeWebSocket('**/api/tasks/events?*', socket => socket.send(JSON.stringify({ type: 'ready' })))
   return { requests, mutations, first: tasks[0].name, reported: tasks[1].name, remoteRunning: tasks[5].name, remoteQueued: tasks[6].name }
 }
 
-test('manager combines quick filters with persistent views and keeps every task action', async ({ page, isMobile }, testInfo) => {
+test('manager drag keeps the grid in place and animates the new order only when motion is enabled', async ({ page, isMobile }) => {
+  test.skip(isMobile, 'Uses a mouse on a multi-column grid')
+  await page.setViewportSize({ width: 1440, height: 900 })
+  await page.emulateMedia({ reducedMotion: 'no-preference' })
+  await page.addInitScript(() => {
+    const animate = Element.prototype.animate
+    const moved: string[] = []
+    Object.assign(window, { movedTaskCards: moved })
+    Element.prototype.animate = function (...args) {
+      const name = this.getAttribute('data-task-card')
+      if (name) moved.push(name)
+      return animate.apply(this, args)
+    }
+  })
+  const { first, reported } = await fixture(page)
+  await page.goto('/manager?token=pyruns-e2e-access-token')
+  const cards = page.locator('[data-task-card]')
+  const moved = () => page.evaluate(() => (window as Window & { movedTaskCards?: string[] }).movedTaskCards ?? [])
+  const dragAfter = async (source: Locator, target: Locator, overIcon = false) => {
+    await source.hover()
+    const grip = (await source.locator('[data-task-drag-handle]').boundingBox())!
+    const before = (await source.boundingBox())!
+    const destination = (await target.boundingBox())!
+    const icon = overIcon ? (await target.locator('.task-card-actions .lucide-trash2').boundingBox())! : null
+    await page.mouse.move(grip.x + grip.width / 2, grip.y + grip.height / 2)
+    await page.mouse.down()
+    await page.mouse.move(
+      icon ? icon.x + icon.width / 2 : destination.x + destination.width * 0.75,
+      icon ? icon.y + icon.height / 2 : destination.y + destination.height / 2,
+      { steps: 8 },
+    )
+    await expect(page.getByText('Drop here to pin', { exact: true })).toBeVisible()
+    expect((await source.boundingBox())!.y).toBe(before.y)
+    await page.mouse.up()
+  }
+  await expect(cards.nth(1)).toHaveAttribute('data-task-card', reported)
+  const response = page.waitForResponse(res => new URL(res.url()).pathname === '/api/tasks/reorder')
+  await dragAfter(cards.nth(0), cards.nth(1), true)
+  expect(await (await response).json()).toEqual({ count: 50, items: [] })
+  await expect(cards.nth(1)).toHaveAttribute('data-task-card', first)
+  await expect.poll(moved).toEqual(expect.arrayContaining([first, reported]))
+  expect((await moved()).length).toBeLessThanOrEqual(4)
+
+  await page.emulateMedia({ reducedMotion: 'reduce' })
+  const previous = await moved()
+  await dragAfter(cards.nth(0), cards.nth(1))
+  await expect(cards.nth(0)).toHaveAttribute('data-task-card', first)
+  expect(await moved()).toEqual(previous)
+})
+
+test('manager groups its toolbar and offers direct delete and keyboard drag', async ({ page, isMobile }, testInfo) => {
   const errors: string[] = []
   page.on('pageerror', error => errors.push(error.message))
   if (!isMobile) await page.setViewportSize({ width: 1600, height: 1000 })
@@ -65,17 +126,17 @@ test('manager combines quick filters with persistent views and keeps every task 
   await page.goto('/manager?token=pyruns-e2e-access-token')
   const cards = page.locator('[data-task-card]')
   await expect(cards).toHaveCount(50)
-  const cardAppearance = (list = false) => cards.evaluateAll((elements, list) => Object.fromEntries(elements.map(element => {
+  const cardAppearance = () => cards.evaluateAll(elements => Object.fromEntries(elements.map(element => {
     const card = getComputedStyle(element)
     const label = getComputedStyle(element.querySelector('.task-card-status-label')!)
     const icon = element.querySelector('.task-card-status-icon')!
     return [element.getAttribute('data-task-tone')!, {
       surface: card.backgroundColor,
-      stripe: list ? card.borderInlineStartColor : card.borderBlockStartColor,
+      stripe: card.borderBlockStartColor,
       label: label.color,
       glyph: [...icon.classList].find(name => name.startsWith('lucide-')),
     }] as const
-  })), list)
+  })))
   const lightColors = await cardAppearance()
   expect(new Set(Object.values(lightColors).map(({ surface }) => surface))).toEqual(new Set(['rgb(255, 255, 255)']))
   expect(new Set(Object.values(lightColors).map(({ stripe }) => stripe)).size).toBe(7)
@@ -98,8 +159,8 @@ test('manager combines quick filters with persistent views and keeps every task 
   await expect(remoteQueuedCard).toHaveAttribute('data-task-tone', 'reported')
   await expect(runningCard).toHaveCSS('box-shadow', /0px 1px 1px/)
   await expect(runningCard).toHaveCSS('border-inline-start-width', '1px')
-  await expect(runningCard).toHaveCSS('border-block-start-width', '5px')
-  await expect(runningCard).toHaveCSS('border-radius', '0px')
+  await expect(runningCard).toHaveCSS('border-block-start-width', '2px')
+  await expect(runningCard).toHaveCSS('border-radius', '8px')
   const preview = runningCard.locator('.task-card-preview')
   await expect(preview).toHaveAttribute('title', 'export CUDA_VISIBLE_DEVICES=0\npython train.py --seed 0 --dataset LaMP-5')
   expect((await preview.boundingBox())!.height).toBe(16)
@@ -130,9 +191,21 @@ test('manager combines quick filters with persistent views and keeps every task 
       expect(height).toBeGreaterThanOrEqual(44)
     }
   }
-  await expect(page.getByRole('button', { name: 'Filter tasks: All tasks' })).toHaveAttribute('aria-pressed', 'true')
+  const status = page.getByRole('combobox', { name: 'Filter tasks by status' })
+  const sort = page.getByRole('combobox', { name: 'Sort task cards' })
+  await expect(status).toHaveValue('All')
+  await expect(status.getByRole('option', { name: 'All tasks · 50', exact: true })).toHaveCount(1)
+  await expect(page.getByRole('button', { name: 'List view', exact: true })).toHaveCount(0)
+  const toolbar = page.locator('[data-tour="manager-controls"]')
+  const [statusBox, sortBox] = await Promise.all([status.boundingBox(), sort.boundingBox()])
+  expect(statusBox!.y).toBe(sortBox!.y)
+  expect(sortBox!.x - statusBox!.x - statusBox!.width).toBeLessThanOrEqual(10)
+  if (!isMobile) {
+    const searchBox = (await page.getByRole('textbox', { name: 'Search tasks', exact: true }).boundingBox())!
+    expect(Math.abs(searchBox.y + searchBox.height / 2 - statusBox!.y - statusBox!.height / 2)).toBeLessThanOrEqual(1)
+  }
   await page.screenshot({ path: testInfo.outputPath('manager-cards.png') })
-  await page.locator('[data-tour="manager-controls"]').screenshot({ path: testInfo.outputPath('manager-toolbar.png') })
+  await toolbar.screenshot({ path: testInfo.outputPath('manager-toolbar.png') })
   if (!isMobile) {
     const grid = (await page.locator('[data-task-grid]').boundingBox())!
     const secondRow = (await cards.nth(9).boundingBox())!
@@ -148,82 +221,49 @@ test('manager combines quick filters with persistent views and keeps every task 
   await expect(runningCard).toHaveAttribute('data-task-card-pinned', 'true')
   await unpin.click()
   await expect(runningCard).toHaveAttribute('data-task-card-pinned', 'false')
-  await page.getByRole('button', { name: 'Filter tasks: Active' }).click()
+  await status.selectOption('active')
   await expect(cards).toHaveCount(5)
-  const options = page.getByRole('button', { name: 'View options', exact: true })
-  await options.click()
-  await expect(page.getByRole('combobox', { name: 'Filter tasks by status' })).toHaveValue('active')
-  const sort = page.getByRole('combobox', { name: 'Sort task cards' })
-  await expect(sort).toBeFocused()
-  await expect(sort).toHaveAccessibleDescription(/Pinned tasks always appear first.*Running and queued/)
-  await page.getByRole('combobox', { name: 'Maximum cards per row' }).selectOption('4')
-  await page.screenshot({ path: testInfo.outputPath('manager-options.png') })
-  await page.keyboard.press('Escape')
-  await expect(page.getByRole('dialog', { name: 'View options' })).toBeHidden()
-  await expect(options).toBeFocused()
-  await options.click()
-  await page.getByRole('combobox', { name: 'Filter tasks by status' }).selectOption('queued')
+  await status.selectOption('queued')
   await expect(cards).toHaveCount(2)
-  await page.keyboard.press('Escape')
-  await expect(options).toContainText('Queued')
-  await page.getByRole('button', { name: 'Filter tasks: Active' }).click()
+  await status.selectOption('active')
   await expect(cards).toHaveCount(5)
   expect(state.requests.at(-1)).toBe('active')
-  const all = page.getByRole('button', { name: 'Filter tasks: All tasks' })
-  await expect(all).toContainText('50')
-  await expect(all).toHaveAccessibleDescription('50')
-  await page.getByRole('button', { name: 'List view', exact: true }).click()
-  await expect(page.getByRole('button', { name: 'List view', exact: true })).toHaveAttribute('aria-pressed', 'true')
   const row = page.locator('[data-task-card]').filter({ has: page.getByRole('button', { name: `Open details for ${state.first}` }) })
-  for (const label of [`Stop ${state.first}`, `View logs for ${state.first}`]) {
+  for (const label of [`Stop ${state.first}`, `View logs for ${state.first}`, `Delete ${state.first}`]) {
     await expect(row.getByRole('button', { name: label, exact: true })).toBeVisible()
   }
-  const more = row.getByRole('button', { name: `More actions for ${state.first}`, exact: true })
-  const menu = page.getByRole('group', { name: `Task actions for ${state.first}`, exact: true })
-  await expect(menu).toBeHidden()
-  await more.press('Enter')
-  await expect(menu.getByRole('button', { name: 'Move earlier', exact: true })).toBeFocused()
-  await expect(menu.getByRole('button', { name: 'Delete task', exact: true })).toBeVisible()
-  await page.keyboard.press('Escape')
-  await expect(menu).toBeHidden()
-  await expect(more).toBeFocused()
-  await more.click()
-  await menu.getByRole('button', { name: 'Move later', exact: true }).click()
+  await expect(row.getByRole('button', { name: /More actions|Move earlier|Move later/ })).toHaveCount(0)
+  await expect(remoteQueuedCard.getByRole('button', { name: /^Delete / })).toHaveCount(0)
+  const grip = row.getByRole('button', { name: `Reorder ${state.first}`, exact: true })
+  await grip.press('Space')
+  await expect(grip).toHaveAttribute('aria-pressed', 'true')
+  await grip.press('ArrowRight')
+  await expect(page.locator('footer').getByRole('status')).toContainText(`Drop after ${state.reported}`)
+  await grip.press('Escape')
+  await expect(grip).toHaveAttribute('aria-pressed', 'false')
+  await expect(grip).toBeFocused()
+  expect(state.mutations).not.toContain('reorder')
+  await grip.press('Enter')
+  await grip.press('ArrowRight')
+  await grip.press('Enter')
   await expect.poll(() => state.mutations).toContain('reorder')
-  await pin.click()
-  await expect(row).toHaveAttribute('data-task-card-pinned', 'true')
-  await expect(unpin).toBeVisible()
-  await more.click()
-  await expect(menu).toBeVisible()
-  await page.getByRole('heading', { name: 'Task Manager', exact: true }).click()
-  await expect(menu).toBeHidden()
-  await more.click()
-  await menu.getByRole('button', { name: 'Delete task', exact: true }).click()
+  await expect(sort).toHaveValue('manual')
+  await row.getByRole('button', { name: `Delete ${state.first}`, exact: true }).click()
   await expect(page.getByRole('heading', { name: 'Stop and Delete Task', exact: true })).toBeVisible()
   await page.getByRole('button', { name: 'Close dialog', exact: true }).click()
-  await all.click()
-  await expect(page.locator('[data-task-card]')).toHaveCount(50)
+  expect(state.mutations).not.toContain('delete')
+  await status.selectOption('All')
+  await expect(cards).toHaveCount(50)
   await page.mouse.move(0, 0)
-  await expect.poll(() => cardAppearance(true)).toEqual(lightColors)
-  await expect(row).toHaveCSS('border-inline-start-width', '4px')
-  await expect(row.locator('.task-card-preview .truncate-2')).toHaveCSS('-webkit-line-clamp', '2')
-  await expect(row).not.toHaveCSS('box-shadow', /0px 1px 1px/)
-  await page.screenshot({ path: testInfo.outputPath('manager-list.png'), animations: 'disabled' })
-  if (!isMobile) {
-    expect((await row.boundingBox())!.height).toBeLessThan(180)
-    const name = (await row.locator('.task-card-name').boundingBox())!
-    const state = (await row.locator('.task-card-status-label').boundingBox())!
-    expect(state.x).toBeGreaterThan(name.x + name.width)
-    expect((await remoteQueuedCard.locator('.task-card-status-label').boundingBox())!.x).toBe(state.x)
-  }
+  await expect.poll(cardAppearance).toEqual(lightColors)
   const select = page.getByRole('button', { name: 'Select tasks', exact: true })
   const position = await select.boundingBox()
   await select.click()
   const cancel = page.locator('.manager-heading').getByRole('button', { name: 'Cancel', exact: true })
   expect(await cancel.boundingBox()).toEqual(position)
   await page.getByRole('button', { name: `Select ${state.first}`, exact: true }).click()
-  await page.getByRole('button', { name: 'Card view', exact: true }).click()
   await expect(page.getByRole('button', { name: `Deselect ${state.first}`, exact: true })).toHaveAttribute('aria-pressed', 'true')
+  await page.mouse.move(0, 0)
   await expect(runningCard).toHaveCSS('background-color', lightColors.running.surface)
   await expect(runningCard.locator('.task-card-status-icon')).toHaveCSS('color', lightColors.running.label)
   await expect(runningCard).toHaveClass(/\bring-accent\b/)
@@ -231,12 +271,10 @@ test('manager combines quick filters with persistent views and keeps every task 
   await expect(runningCard).toHaveCSS('border-block-start-color', lightColors.running.stripe)
   await page.screenshot({ path: testInfo.outputPath('manager-selection.png') })
   await cancel.click()
-  await page.getByRole('button', { name: 'List view', exact: true }).click()
   await page.reload()
-  await expect(page.getByRole('button', { name: 'List view', exact: true })).toHaveAttribute('aria-pressed', 'true')
   await page.getByRole('button', { name: 'Dark Mode', exact: true }).click()
   await expect(runningCard).toHaveCSS('background-color', 'rgb(28, 31, 40)')
-  const darkColors = await cardAppearance(true)
+  const darkColors = await cardAppearance()
   expect(new Set(Object.values(darkColors).map(({ surface }) => surface))).toEqual(new Set(['rgb(28, 31, 40)']))
   expect(new Set(Object.values(darkColors).map(({ stripe }) => stripe)).size).toBe(7)
   for (const [tone, colors] of Object.entries(lightColors)) {
@@ -245,7 +283,6 @@ test('manager combines quick filters with persistent views and keeps every task 
   }
   await expect(reportedCard.getByText('Runner status awaiting confirmation')).toHaveCSS('color', darkColors.reported.label)
   await page.screenshot({ path: testInfo.outputPath('manager-dark.png') })
-  await page.getByRole('button', { name: 'Card view', exact: true }).click()
   await page.screenshot({ path: testInfo.outputPath('manager-cards-dark.png') })
   await page.getByRole('button', { name: 'Switch to Chinese', exact: true }).click()
   await expect(page.getByRole('heading', { name: '任务管理', exact: true })).toBeVisible()
@@ -258,7 +295,32 @@ test('manager combines quick filters with persistent views and keeps every task 
       clientWidth: element.clientWidth, scrollWidth: element.scrollWidth,
     }))
     expect(scrollWidth).toBeLessThanOrEqual(clientWidth)
+    expect(await toolbar.evaluate(element => element.scrollWidth)).toBeLessThanOrEqual((await toolbar.boundingBox())!.width)
   }
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)
   expect(errors).toEqual([])
+})
+
+test('manager fits cards to the viewport and loads a fixed page at a time', async ({ page }) => {
+  await fixture(page, 51)
+  await page.addInitScript(() => localStorage.setItem('pyruns_manager_cols', '1'))
+  await page.setViewportSize({ width: 1440, height: 900 })
+  await page.goto('/manager?token=pyruns-e2e-access-token')
+  const cards = page.locator('[data-task-card]')
+  await expect(cards).toHaveCount(50)
+  expect((await cards.nth(0).boundingBox())!.y).toBe((await cards.nth(1).boundingBox())!.y)
+  const footer = page.locator('footer').filter({ hasText: 'matching task(s)' })
+  await expect(footer).toContainText('Showing 1–50 of 51 matching task(s)')
+
+  await page.setViewportSize({ width: 375, height: 812 })
+  expect((await cards.nth(1).boundingBox())!.y).toBeGreaterThan((await cards.nth(0).boundingBox())!.y)
+  await footer.getByRole('button', { name: 'Next page', exact: true }).click()
+  await expect(cards).toHaveCount(1)
+  await expect(footer).toContainText('Showing 51–51 of 51 matching task(s)')
+  await expect(footer.getByRole('button', { name: 'Next page', exact: true })).toBeDisabled()
+  const taskName = await cards.first().getAttribute('data-task-card')
+  await cards.first().getByRole('button', { name: `Delete ${taskName}`, exact: true }).click()
+  await page.getByRole('dialog', { name: 'Delete Task', exact: true }).getByRole('button', { name: 'Delete', exact: true }).click()
+  await expect(cards).toHaveCount(50)
+  await expect(footer).toContainText('Showing 1–50 of 50 matching task(s)')
 })

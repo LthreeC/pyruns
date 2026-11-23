@@ -44,46 +44,55 @@ def _build_export_rows(
     """Return one export row per task run, including runs without monitor data."""
 
     all_rows: List[Dict[str, Any]] = []
-    for t in tasks:
-        name = t.get("name", "")
-        try:
-            info = load_task_metadata(t["dir"], raise_error=True)
-        except (OSError, ValueError) as exc:
-            raise ValueError(f"Cannot export task '{name}': could not read task metadata ({exc})") from exc
+    for task in tasks:
+        all_rows.extend(run_export_rows(task.get("name", ""), load_export_metadata(task), statuses=statuses))
+    return all_rows
 
-        # A rerun may have started since selection; keep lifecycle and records together.
-        starts = info.get("start_times") or []
-        finishes = info.get("finish_times") or []
-        pids = info.get("pids") or []
-        durations = info.get("durations") or []
-        exit_codes = info.get("exit_codes") or []
-        data = info.get("records", [])
-        n_runs = run_slot_count(info)
 
-        for i in range(n_runs):
-            exit_code = exit_codes[i] if i < len(exit_codes) else ""
-            row: Dict[str, Any] = {
-                "name": name,
-                "status": run_history_status(info, i + 1) or "unknown",
-                "run": i + 1,
-                "start_time": starts[i] if i < len(starts) else "",
-                "finish_time": finishes[i] if i < len(finishes) else "",
-                "duration_seconds": durations[i] if i < len(durations) else "",
-                "exit_code": exit_code,
-                "pid": pids[i] if i < len(pids) else "",
-            }
+def load_export_metadata(task: Dict[str, Any]) -> Dict[str, Any]:
+    try:
+        return load_task_metadata(task["dir"], raise_error=True)
+    except (OSError, ValueError) as exc:
+        raise ValueError(f"Cannot export task '{task.get('name', '')}': could not read task metadata ({exc})") from exc
 
-            # Attach monitor entries that belong to this run (by index).
-            # If there are fewer monitor entries than runs, leave blank.
-            if i < len(data):
-                entry = data[i]
-                if isinstance(entry, dict):
-                    for k, v in entry.items():
-                        if isinstance(k, str) and k not in _LIFECYCLE_COLUMNS:
-                            row[k] = v
 
-            if statuses is None or row["status"] in statuses:
-                all_rows.append(row)
+def run_export_rows(
+    name: str, info: Dict[str, Any], *, statuses: set[str] | None = None,
+) -> List[Dict[str, Any]]:
+    all_rows: List[Dict[str, Any]] = []
+    # A rerun may have started since selection; keep lifecycle and records together.
+    starts = info.get("start_times") or []
+    finishes = info.get("finish_times") or []
+    pids = info.get("pids") or []
+    durations = info.get("durations") or []
+    exit_codes = info.get("exit_codes") or []
+    data = info.get("records", [])
+    n_runs = run_slot_count(info)
+
+    for i in range(n_runs):
+        exit_code = exit_codes[i] if i < len(exit_codes) else ""
+        row: Dict[str, Any] = {
+            "name": name,
+            "status": run_history_status(info, i + 1) or "unknown",
+            "run": i + 1,
+            "start_time": starts[i] if i < len(starts) else "",
+            "finish_time": finishes[i] if i < len(finishes) else "",
+            "duration_seconds": durations[i] if i < len(durations) else "",
+            "exit_code": exit_code,
+            "pid": pids[i] if i < len(pids) else "",
+        }
+
+        # Attach monitor entries that belong to this run (by index).
+        # If there are fewer monitor entries than runs, leave blank.
+        if i < len(data):
+            entry = data[i]
+            if isinstance(entry, dict):
+                for k, v in entry.items():
+                    if isinstance(k, str) and k not in _LIFECYCLE_COLUMNS:
+                        row[k] = v
+
+        if statuses is None or row["status"] in statuses:
+            all_rows.append(row)
 
     return all_rows
 

@@ -7,8 +7,8 @@ import {
   useState,
   type KeyboardEvent as ReactKeyboardEvent,
   type PointerEvent as ReactPointerEvent,
+  type ReactNode,
 } from 'react'
-import { Outlet } from 'react-router-dom'
 import clsx from 'clsx'
 import Sidebar from './Sidebar'
 import { usePreferencesStore } from '@/store'
@@ -49,7 +49,7 @@ function readCompactSidebar() {
   return window.matchMedia('(max-width: 700px)').matches
 }
 
-export default function AppShell() {
+export default function AppShell({ children, onRouteIntent }: { children: ReactNode; onRouteIntent: (path: string) => void }) {
   const { t } = useTranslation()
   const preferencesOpen = usePreferencesStore(state => state.isOpen)
   const [sidebarWidth, setSidebarWidth] = useState(readStoredSidebarWidth)
@@ -187,7 +187,7 @@ export default function AppShell() {
 
   return (
     <div className="flex h-dvh w-screen max-w-full overflow-hidden bg-surface-base">
-      <Sidebar width={effectiveSidebarWidth} compact={compactSidebar} />
+      <Sidebar width={effectiveSidebarWidth} compact={compactSidebar} onRouteIntent={onRouteIntent} />
       {!compactSidebar && (
         <button
           type="button"
@@ -217,7 +217,7 @@ export default function AppShell() {
         />
       )}
       <main id="route-heading" tabIndex={-1} className="min-w-0 flex-1 overflow-x-hidden overflow-y-auto focus:outline-none">
-        <Outlet />
+        {children}
       </main>
       {preferencesOpen && <Suspense fallback={null}><PreferencesDialog /></Suspense>}
     </div>

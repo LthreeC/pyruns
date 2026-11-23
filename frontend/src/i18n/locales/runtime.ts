@@ -1,4 +1,14 @@
 export default {
+  'Copy Python path': '复制 Python 路径',
+  'Python executable': 'Python 可执行文件',
+  'Insert variable': '插入变量',
+  'Insert environment variable': '插入环境变量',
+  'Workspace environment variables': '工作区环境变量',
+  'Wait for GPUs': '等待 GPU 就绪',
+  'Refresh GPU preview': '刷新 GPU 预览',
+  'Close GPU scheduling': '关闭 GPU 调度',
+  'Switching panels will discard the current draft.': '切换面板会丢弃当前草稿。',
+
   'Total Tasks': '任务总数',
   'Running': '运行中',
   'Completed': '已完成',

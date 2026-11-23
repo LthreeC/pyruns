@@ -24,37 +24,17 @@ _INPUT_FIELDS = (
 )
 
 
-def materialize_run_payload(
-    task_dir: str, task_kind: str, config_file: str, config: Any, *, argv_task: bool = False,
-) -> tuple[str, str | None]:
-    """Capture once and execute a sibling copy so task-relative SDK paths still work."""
+def materialize_config_run_input(task_dir: str, config_file: str, config: Any) -> tuple[str, str]:
+    """Capture the resolved task configuration for this Python run."""
     from omegaconf import OmegaConf
 
     from pyruns.utils.task_files import MAX_TASK_PAYLOAD_BYTES, resolve_task_payload_path
 
-    path = resolve_task_payload_path(task_dir, config_file)
-    if task_kind == "shell":
-        try:
-            with open(path, "rb", opener=regular_file_opener) as handle:
-                validate_open_file(handle, path, os.path.realpath(task_dir))
-                raw = read_bounded_bytes(handle, MAX_TASK_PAYLOAD_BYTES + 1)
-        except FileNotFoundError:
-            if argv_task:
-                return "", None
-            raise
-        if len(raw) > MAX_TASK_PAYLOAD_BYTES:
-            raise ValueError(f"Task payload is too large (max {MAX_TASK_PAYLOAD_BYTES} bytes)")
-        text = raw.decode("utf-8")
-        # Legacy argv still launches its recorded arguments. This copy is used
-        # only if a missing executable requires its existing shell fallback.
-        directory = os.path.dirname(path)
-        suffix = os.path.splitext(path)[1] or ".sh"
-    else:
-        text = OmegaConf.to_yaml(config, resolve=False)
-        if len(text.encode("utf-8")) > MAX_TASK_PAYLOAD_BYTES:
-            raise ValueError(f"Task payload is too large (max {MAX_TASK_PAYLOAD_BYTES} bytes)")
-        directory, suffix = task_dir, ".yaml"
-    fd, temporary = tempfile.mkstemp(prefix=".pyruns-input-", suffix=suffix, dir=directory)
+    resolve_task_payload_path(task_dir, config_file)
+    text = OmegaConf.to_yaml(config, resolve=False)
+    if len(text.encode("utf-8")) > MAX_TASK_PAYLOAD_BYTES:
+        raise ValueError(f"Task payload is too large (max {MAX_TASK_PAYLOAD_BYTES} bytes)")
+    fd, temporary = tempfile.mkstemp(prefix=".pyruns-input-", suffix=".yaml", dir=task_dir)
     try:
         with os.fdopen(fd, "w", encoding="utf-8", newline="") as handle:
             handle.write(text)

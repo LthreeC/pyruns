@@ -20,13 +20,19 @@ export const STATUS_LABELS: Record<TaskStatus, string> = {
 
 export const ALL_STATUSES: TaskStatus[] = ['pending', 'queued', 'running', 'completed', 'failed', 'cancelled']
 
+export function isTaskStopping(task: { status: TaskStatus; cancel_requested_at?: number | string | null }) {
+  return (task.status === 'running' || task.status === 'queued') && Boolean(task.cancel_requested_at)
+}
+
 export function taskStatusLabel(task: {
   status: TaskStatus
+  cancel_requested_at?: number | string | null
   runner_location?: string
   runner_lease_expired?: boolean | null
   task_storage?: string
   local_process_verified?: boolean
 }) {
+  if (isTaskStopping(task)) return 'Stopping'
   if (task.status === 'running' && task.local_process_verified) return 'Running'
   if (task.status === 'running' || task.status === 'queued') {
     if (task.task_storage === 'remote' || task.runner_lease_expired === true || task.runner_location === 'unknown' ||

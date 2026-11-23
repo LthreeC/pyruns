@@ -2,15 +2,16 @@ import { NavLink, useSearchParams } from 'react-router-dom'
 import { Suspense, lazy, useRef, useState } from 'react'
 import {
   LayoutDashboard, Wand2, ListTodo, Terminal, Rocket,
-  Sun, Moon, Languages, ChevronsUpDown, FileCode, SlidersHorizontal, Settings2,
+  Sun, Moon, Languages, ChevronsUpDown, FileCode, SlidersHorizontal, Settings2, Cpu,
 } from 'lucide-react'
 import clsx from 'clsx'
-import { useWorkspaceStore, useThemeStore, usePreferencesStore } from '@/store'
+import { requestConfirmation, useRuntimeStore, useWorkspaceStore, useThemeStore, usePreferencesStore } from '@/store'
 import { getWorkspaceWorkingPath } from '@/utils/workspace'
 import UpdateControl from './UpdateControl'
 import { setLanguage, useTranslation } from '@/i18n'
 
 const RuntimePanel = lazy(() => import('./RuntimePanel'))
+type RuntimeTool = 'runtime' | 'gpu'
 
 const NAV_ITEMS = [
   { to: '/', icon: LayoutDashboard, label: 'Home', end: true },
@@ -22,9 +23,10 @@ const NAV_ITEMS = [
 interface SidebarProps {
   width?: number
   compact?: boolean
+  onRouteIntent: (path: string) => void
 }
 
-export default function Sidebar({ width = 220, compact = false }: SidebarProps) {
+export default function Sidebar({ width = 220, compact = false, onRouteIntent }: SidebarProps) {
   const { t, i18n } = useTranslation()
   const chinese = i18n.resolvedLanguage === 'zh-CN'
   const languageAction = chinese ? 'Switch to English' : 'Switch to Chinese'
@@ -32,8 +34,9 @@ export default function Sidebar({ width = 220, compact = false }: SidebarProps) 
   const { theme, toggle } = useThemeStore()
   const openPreferences = usePreferencesStore(s => s.open)
   const [searchParams, setSearchParams] = useSearchParams()
-  const [runtimeOpen, setRuntimeOpen] = useState(false)
+  const [runtimeTool, setRuntimeTool] = useState<RuntimeTool | null>(null)
   const runtimeButtonRef = useRef<HTMLButtonElement>(null)
+  const gpuButtonRef = useRef<HTMLButtonElement>(null)
   const scriptFileName = workspace?.script_path?.split(/[\\/]/).pop() || ''
   const workspaceReady = workspace?.workspace_ready === true
   const shellWorkspaceActive = workspaceReady && workspace?.workspace_kind === 'shell'
@@ -65,9 +68,20 @@ export default function Sidebar({ width = 220, compact = false }: SidebarProps) 
     setSearchParams(nextParams)
   }
 
+  const openRuntimeTool = async (tool: RuntimeTool) => {
+    if (tool === runtimeTool) return
+    if (runtimeTool && useRuntimeStore.getState().dirty && !await requestConfirmation({
+      title: t('Discard unsaved runtime changes?'),
+      description: t('Switching panels will discard the current draft.'),
+      confirmLabel: t('Discard'),
+    })) return
+    setRuntimeTool(tool)
+  }
+
   const closeRuntime = () => {
-    setRuntimeOpen(false)
-    window.requestAnimationFrame(() => runtimeButtonRef.current?.focus())
+    const trigger = runtimeTool === 'gpu' ? gpuButtonRef : runtimeButtonRef
+    setRuntimeTool(null)
+    window.requestAnimationFrame(() => trigger.current?.focus())
   }
 
   return (
@@ -96,6 +110,8 @@ export default function Sidebar({ width = 220, compact = false }: SidebarProps) 
             to={to}
             data-tour={to === '/' ? 'home' : to.slice(1)}
             end={end}
+            onPointerEnter={() => onRouteIntent(to)}
+            onFocus={() => onRouteIntent(to)}
             aria-label={t(label)}
             title={t(label)}
             className={({ isActive }) => clsx(
@@ -157,9 +173,11 @@ export default function Sidebar({ width = 220, compact = false }: SidebarProps) 
         <button
           ref={runtimeButtonRef}
           data-tour="runtime"
+          data-runtime-tool="runtime"
           type="button"
-          onClick={() => setRuntimeOpen(true)}
+          onClick={() => void openRuntimeTool('runtime')}
           aria-label={t('Runtime')}
+          aria-expanded={runtimeTool === 'runtime'}
           title={t('Runtime')}
           className="touch-target mt-0.5 min-h-11 w-full rounded-md px-2 py-1.5 text-left transition-colors hover:bg-surface-overlay focus:outline-none focus:ring-2 focus:ring-accent/25 sm:min-h-9"
         >
@@ -176,6 +194,20 @@ export default function Sidebar({ width = 220, compact = false }: SidebarProps) 
               </>
             )}
           </div>
+        </button>
+
+        <button
+          ref={gpuButtonRef}
+          data-runtime-tool="gpu"
+          type="button"
+          onClick={() => void openRuntimeTool('gpu')}
+          aria-label={t('GPU scheduling')}
+          aria-expanded={runtimeTool === 'gpu'}
+          title={t('GPU scheduling')}
+          className={clsx('touch-target mt-0.5 flex min-h-11 w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm font-medium text-txt-secondary transition-colors hover:bg-surface-overlay aria-expanded:bg-accent/10 aria-expanded:text-accent-ink sm:min-h-9', compact && 'justify-center')}
+        >
+          <Cpu aria-hidden="true" className="size-4 flex-none text-txt-tertiary" />
+          {!compact && <span className="min-w-0 truncate">{t('GPU scheduling')}</span>}
         </button>
 
         <div className={clsx('mt-2 flex gap-1 border-t border-border-subtle pt-2', compact && 'flex-col')}>
@@ -217,9 +249,9 @@ export default function Sidebar({ width = 220, compact = false }: SidebarProps) 
           </button>
         </div>
       </div>
-      {runtimeOpen && (
+      {runtimeTool && (
         <Suspense fallback={null}>
-          <RuntimePanel open={runtimeOpen} left={width + 8} onClose={closeRuntime} />
+          <RuntimePanel key={runtimeTool} open section={runtimeTool} left={width + 8} onClose={closeRuntime} />
         </Suspense>
       )}
     </aside>

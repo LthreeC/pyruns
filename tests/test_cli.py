@@ -3161,6 +3161,9 @@ def test_human_and_json_output_survive_ascii_terminal_encoding(tmp_path):
 
 
 def test_show_and_log_accept_task_run_references(tmp_path):
+    from pyruns.core.run_inputs import save_run_input
+    from pyruns.utils.task_files import resolve_task_config_file
+
     bootstrap_shell_workspace(str(tmp_path / "_pyruns_"))
     created = _run_cli(
         tmp_path,
@@ -3170,15 +3173,16 @@ def test_show_and_log_accept_task_run_references(tmp_path):
         "-c", _command_string([sys.executable, "-c", "import os; print(os.environ['PYRUNS_RUN_INDEX'])"]),
     )
     task_dir = tmp_path / "_pyruns_" / "_shell_" / "tasks" / "versioned"
-    from pyruns.utils.task_files import resolve_task_config_file
-
     payload_path = task_dir / resolve_task_config_file(load_task_info(str(task_dir)), task_dir=str(task_dir))
     first_input = payload_path.read_text(encoding="utf-8")
-    payload_path.write_text(first_input + "\necho second-input\n", encoding="utf-8")
-    update_task_info(str(task_dir), lambda info: info.update(env={"SAVED_OVERRIDE": "second"}))
+    second_input = first_input + "\necho second-input\n"
+    second_env = {"SAVED_OVERRIDE": "second"}
+    payload_path.write_text(second_input, encoding="utf-8")
+    update_task_info(str(task_dir), lambda info: info.update(env=second_env))
     rerun = _run_cli(tmp_path, "-w", "shell", "run", "versioned")
     assert created.returncode == 0, created.stdout + created.stderr
     assert rerun.returncode == 0, rerun.stdout + rerun.stderr
+    assert not list((task_dir / RUN_LOGS_DIR).glob("run*.input.json"))
     payload_path.write_text("echo edited-after-both-runs\n", encoding="utf-8")
 
     first_log = _run_cli(tmp_path, "-w", "shell", "log", "versioned@1")
@@ -3216,8 +3220,13 @@ def test_show_and_log_accept_task_run_references(tmp_path):
     assert isinstance(detail["selected_run"]["record"], dict)
     assert isinstance(detail["selected_run"]["track"], dict)
     assert detail["selected_run"]["log"].endswith("run1.log")
-    assert detail["selected_run"]["input"]["payload_text"] == first_input
-    assert detail["selected_run"]["input"]["environment"] == {}
+    assert detail["selected_run"]["input"] is None
+    unavailable = _run_cli(tmp_path, "-w", "shell", "diff", "versioned@1", "versioned@2", "--json")
+    assert unavailable.returncode == 1
+    assert json.loads(unavailable.stdout)["available"] is False
+
+    for run, payload, environment in ((1, first_input, {}), (2, second_input, second_env)):
+        save_run_input(str(task_dir), run, {"task_kind": "shell", "payload_text": payload, "environment": environment})
     compared = _run_cli(tmp_path, "-w", "shell", "diff", "versioned@1", "versioned@2", "--json")
     assert compared.returncode == 0, compared.stderr
     difference = json.loads(compared.stdout)
@@ -3239,7 +3248,10 @@ def test_show_and_log_accept_task_run_references(tmp_path):
         "--json",
     )
     assert shown_with_option.returncode == 0, shown_with_option.stderr
-    assert json.loads(shown_with_option.stdout)["selected_run"] == detail["selected_run"]
+    selected_run = json.loads(shown_with_option.stdout)["selected_run"]
+    assert selected_run["input"]["payload_text"] == first_input
+    assert selected_run["input"]["environment"] == {}
+    assert {**selected_run, "input": None} == detail["selected_run"]
 
     conflict = _run_cli(
         tmp_path,

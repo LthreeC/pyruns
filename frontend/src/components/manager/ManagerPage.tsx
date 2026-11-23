@@ -4,23 +4,22 @@ import {
   useCallback,
   useEffect,
   useId,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
-  type CSSProperties,
   type PointerEvent as ReactPointerEvent,
   type ReactNode,
 } from 'react'
-import { createPortal } from 'react-dom'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import {
-  Activity, AlertTriangle, ArrowDown, ArrowDownWideNarrow, ArrowUp, Ban, Check, ChevronDown, Circle, CircleDashed, Clock3,
-  Cpu, Ellipsis, GripVertical, LayoutGrid, List, ListChecks, Loader2, Pin, Play,
+  Activity, AlertTriangle, ArrowDownWideNarrow, Ban, Check, ChevronDown, Circle, CircleDashed, Clock3,
+  Cpu, GripVertical, ListChecks, Loader2, Pin, Play,
   RefreshCw, RotateCcw, Rows3, Search, Square, Terminal, Trash2, X,
 } from 'lucide-react'
 import clsx from 'clsx'
 import { useShallow } from 'zustand/react/shallow'
-import { useMonitorStore, useSearchSettingsStore, useTaskStore, useToastStore, useWorkspaceStore } from '@/store'
+import { MANAGER_TASK_PAGE_SIZE, useMonitorStore, useSearchSettingsStore, useTaskStore, useToastStore, useWorkspaceStore } from '@/store'
 import { useTaskRefresh } from '@/hooks/useTaskRefresh'
 import TaskSearchInput from '@/components/shared/TaskSearchInput'
 import TaskSourceFilter from '@/components/shared/TaskSourceFilter'
@@ -33,33 +32,33 @@ import ActionButton from '@/components/shared/ActionButton'
 import CompactSection from '@/components/shared/CompactSection'
 import TaskDetailPanel from './TaskDetailPanel'
 import type { Task, TaskSortMode } from '@/types'
-import type { TaskStatus } from '@/theme/tokens'
-import { ALL_STATUSES, STATUS_LABELS, taskStatusLabel } from '@/theme/tokens'
+import { ALL_STATUSES, isTaskStopping, STATUS_LABELS, taskStatusLabel } from '@/theme/tokens'
 import { errorMessage } from '@/utils/errors'
 import { taskDetailRefreshKey } from '@/utils/taskSnapshots'
 import * as api from '@/api'
 
-const STATUS_OPTIONS = ['All', 'active', ...ALL_STATUSES]
+const STATUS_OPTIONS = ['All', 'active', ...ALL_STATUSES] as const
 const TASK_STATUS_ICONS = {
   pending: Circle,
   queued: Clock3,
   running: Activity,
+  stopping: Square,
   completed: Check,
   failed: X,
   cancelled: Ban,
   reported: CircleDashed,
 }
-const ACTIVITY_SORT_DESCRIPTION = 'Activity uses the last run’s finish time, its start time, or the task’s creation time.'
-const TASK_SORT_OPTIONS: { value: TaskSortMode; label: string; description: string }[] = [
-  { value: 'priority', label: 'Smart priority', description: 'Running and queued tasks lead each group. Tasks without a manual position show by recent activity, followed by manually ordered tasks.' },
-  { value: 'manual', label: 'Manual order', description: 'Tasks with a saved position come first in each group. Move or drag a task to save its position.' },
-  { value: 'activity_desc', label: 'Recent activity', description: ACTIVITY_SORT_DESCRIPTION },
-  { value: 'activity_asc', label: 'Oldest activity', description: ACTIVITY_SORT_DESCRIPTION },
-  { value: 'name_asc', label: 'Name A-Z', description: 'Sorts numbers in names numerically, so run2 comes before run10.' },
-  { value: 'name_desc', label: 'Name Z-A', description: 'Reverses name order, so run10 comes before run2.' },
+const TASK_SORT_OPTIONS: { value: TaskSortMode; label: string }[] = [
+  { value: 'priority', label: 'Active first' },
+  { value: 'manual', label: 'Manual order' },
+  { value: 'activity_desc', label: 'Recent activity' },
+  { value: 'activity_asc', label: 'Oldest activity' },
+  { value: 'name_asc', label: 'Name A-Z' },
+  { value: 'name_desc', label: 'Name Z-A' },
 ]
 type DragTarget = 'pinned' | 'tasks'
 type DragPlacement = 'before' | 'after'
+type KeyboardDragAction = 'toggle' | 'cancel' | 'previous' | 'next'
 type PendingTaskAction = 'run' | 'rerun' | 'cancel' | 'pin' | 'move' | 'delete'
 const DRAG_START_DISTANCE = 8
 const REORDER_TASK_LIMIT = 10_000
@@ -81,38 +80,53 @@ interface DropIntent {
 
 interface DragCandidate {
   taskName: string
+  pointerId: number
   startX: number
   startY: number
+  gridAxes: WeakMap<HTMLElement, DropIntent['axis']>
 }
 
-function getDropTargetFromElement(element: HTMLElement | null): DragTarget | null {
-  const target = element?.closest<HTMLElement>('[data-task-drop-target]')
+function visibleCardPositions(content: HTMLElement) {
+  const viewport = content.getBoundingClientRect()
+  const positions = new Map<string, { card: HTMLElement; left: number; top: number }>()
+  for (const card of content.querySelectorAll<HTMLElement>('[data-task-card]')) {
+    const rect = card.getBoundingClientRect()
+    if (rect.bottom > viewport.top && rect.top < viewport.bottom) {
+      positions.set(card.dataset.taskCard!, { card, left: rect.left - viewport.left, top: rect.top - viewport.top })
+    }
+  }
+  return positions
+}
+
+function getDropTargetFromElement(element: Element): DragTarget | null {
+  const target = element.closest<HTMLElement>('[data-task-drop-target]')
   const value = target?.dataset.taskDropTarget
   return value === 'pinned' || value === 'tasks' ? value : null
 }
 
-function getCardDropPlacement(card: HTMLElement, clientX: number, clientY: number): Pick<DropIntent, 'placement' | 'axis'> {
+function gridDropAxis(element: HTMLElement, gridAxes?: DragCandidate['gridAxes']): DropIntent['axis'] {
+  const grid = element.closest<HTMLElement>('[data-task-grid]')
+  if (!grid) return 'vertical'
+  const cachedAxis = gridAxes?.get(grid)
+  if (cachedAxis) return cachedAxis
+  const columns = window.getComputedStyle(grid).gridTemplateColumns.split(/\s+/).filter(track => Number.parseFloat(track) > 0)
+  const axis = columns.length <= 1 ? 'vertical' : 'horizontal'
+  gridAxes?.set(grid, axis)
+  return axis
+}
+
+function getCardDropPlacement(card: HTMLElement, clientX: number, clientY: number, gridAxes: DragCandidate['gridAxes']): Pick<DropIntent, 'placement' | 'axis'> {
   const rect = card.getBoundingClientRect()
-  const grid = card.closest<HTMLElement>('[data-task-grid]')
-  const renderedColumnCount = grid
-    ? window.getComputedStyle(grid).gridTemplateColumns
-        .split(/\s+/)
-        .filter(track => Number.parseFloat(track) > 0).length
-    : 0
-  const configuredColumnCount = Number.parseInt(grid?.dataset.taskGridColumns || '1', 10)
-  const columnCount = renderedColumnCount || configuredColumnCount
-  const axis = columnCount <= 1 ? 'vertical' : 'horizontal'
+  const axis = gridDropAxis(card, gridAxes)
   const placement = axis === 'vertical'
     ? (clientY < rect.top + rect.height / 2 ? 'before' : 'after')
     : (clientX < rect.left + rect.width / 2 ? 'before' : 'after')
   return { placement, axis }
 }
 
-function getPointerDropIntent(clientX: number, clientY: number): DropIntent | null {
+function getPointerDropIntent(clientX: number, clientY: number, gridAxes: DragCandidate['gridAxes']): DropIntent | null {
   const element = document.elementFromPoint(clientX, clientY)
-  if (!(element instanceof HTMLElement)) {
-    return null
-  }
+  if (!element) return null
 
   const card = element.closest<HTMLElement>('[data-task-card]')
   if (card) {
@@ -121,7 +135,7 @@ function getPointerDropIntent(clientX: number, clientY: number): DropIntent | nu
       return {
         target,
         targetName: card.dataset.taskCard || '',
-        ...getCardDropPlacement(card, clientX, clientY),
+        ...getCardDropPlacement(card, clientX, clientY, gridAxes),
       }
     }
   }
@@ -181,25 +195,23 @@ function hasReorderChanges(tasks: Task[], items: { name: string; pinned: boolean
 export default function ManagerPage() {
   useTranslation()
   const {
-    tasks, total, statusCounts, offset, limit, query, statusFilter, sortMode, selectedIds, loading, error, columns, viewMode, setViewMode,
-    setQuery, searchField, setSearchField, setStatusFilter, setSortMode, setOffset, setColumns, fetchTasks,
+    tasks, total, statusCounts, offset, query, statusFilter, sortMode, selectedIds, loading, error,
+    setQuery, searchField, setSearchField, setStatusFilter, setSortMode, setOffset, fetchTasks,
     searchOptions, setSearchOptions, searchLimitHit,
     toggleSelect, selectAll, clearSelection,
   } = useTaskStore(useShallow(state => ({
     tasks: state.tasks, total: state.total, statusCounts: state.statusCounts,
-    offset: state.offset, limit: state.limit, query: state.query,
+    offset: state.offset, query: state.query,
     statusFilter: state.statusFilter, sortMode: state.sortMode,
-    viewMode: state.viewMode, setViewMode: state.setViewMode,
-    selectedIds: state.selectedIds, loading: state.loading, error: state.error, columns: state.columns,
+    selectedIds: state.selectedIds, loading: state.loading, error: state.error,
     setQuery: state.setQuery, searchField: state.searchField, setSearchField: state.setSearchField,
     setStatusFilter: state.setStatusFilter, setSortMode: state.setSortMode,
-    setOffset: state.setOffset, setColumns: state.setColumns, fetchTasks: state.fetchTasks,
+    setOffset: state.setOffset, fetchTasks: state.fetchTasks,
     searchOptions: state.searchOptions, setSearchOptions: state.setSearchOptions,
     searchLimitHit: state.searchLimitHit, toggleSelect: state.toggleSelect,
     selectAll: state.selectAll, clearSelection: state.clearSelection,
   })))
   const maxResults = useSearchSettingsStore(state => state.maxResults)
-  const sortOption = TASK_SORT_OPTIONS.find(option => option.value === sortMode)!
 
   const [maxWorkersInput, setMaxWorkersInput] = useState('2')
   const [deleteConfirm, setDeleteConfirm] = useState(false)
@@ -208,40 +220,21 @@ export default function ManagerPage() {
   const [cancelTask, setCancelTask] = useState<Task | null>(null)
   const [detailTask, setDetailTask] = useState<Task | null>(null)
   const [selectMode, setSelectMode] = useState(false)
-  const [viewOptionsOpen, setViewOptionsOpen] = useState(false)
-  const viewOptionsRef = useRef<HTMLDivElement>(null)
-  const viewOptionsTriggerRef = useRef<HTMLButtonElement>(null)
-  const viewOptionsId = useId()
-  useEffect(() => {
-    if (!viewOptionsOpen) return
-    viewOptionsRef.current?.querySelector('select')?.focus()
-    const closeOutside = (event: PointerEvent) => {
-      if (!viewOptionsRef.current?.contains(event.target as Node)) setViewOptionsOpen(false)
-    }
-    const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key !== 'Escape') return
-      setViewOptionsOpen(false)
-      viewOptionsTriggerRef.current?.focus()
-    }
-    document.addEventListener('pointerdown', closeOutside)
-    document.addEventListener('keydown', closeOnEscape)
-    return () => {
-      document.removeEventListener('pointerdown', closeOutside)
-      document.removeEventListener('keydown', closeOnEscape)
-    }
-  }, [viewOptionsOpen])
   const [draggedTaskName, setDraggedTaskName] = useState('')
-  const [dragOverTarget, setDragOverTarget] = useState<DragTarget | null>(null)
   const [dropIntent, setDropIntent] = useState<DropIntent | null>(null)
+  const dragOverTarget = dropIntent?.target ?? null
   const [taskActionMessage, setTaskActionMessage] = useState('')
   const [pendingTaskActions, setPendingTaskActions] = useState<Map<string, PendingTaskAction>>(() => new Map())
   const [bulkAction, setBulkAction] = useState<'run' | 'delete' | null>(null)
   const dragCandidateRef = useRef<DragCandidate | null>(null)
   const draggedTaskNameRef = useRef('')
-  const dragOverTargetRef = useRef<DragTarget | null>(null)
   const dropIntentRef = useRef<DropIntent | null>(null)
   const pendingDragPointRef = useRef<{ clientX: number; clientY: number } | null>(null)
   const dragFrameRef = useRef<number | null>(null)
+  const tasksContentRef = useRef<HTMLElement>(null)
+  const orderMotionRef = useRef<{
+    view: string; tasks: Task[]; scrollTop: number; positions: ReturnType<typeof visibleCardPositions>
+  } | null>(null)
   const pendingTaskActionsRef = useRef<Map<string, PendingTaskAction>>(new Map())
   const bulkActionRef = useRef<'run' | 'delete' | null>(null)
   const detailRequestSeqRef = useRef(0)
@@ -254,6 +247,51 @@ export default function ManagerPage() {
   const notify = useToastStore(state => state.notify)
   const workspaceEpoch = useWorkspaceStore(state => state.workspaceEpoch)
   const workspaceKind = useWorkspaceStore(state => state.workspace?.workspace_kind)
+  const orderView = JSON.stringify([workspaceEpoch, query, statusFilter, offset, selectedSources])
+  const applyDropIntent = useCallback((intent: DropIntent | null) => {
+    if (!sameDropIntent(dropIntentRef.current, intent)) setDropIntent(intent)
+    dropIntentRef.current = intent
+  }, [])
+  const clearDrag = useCallback(() => {
+    dragCandidateRef.current = null
+    draggedTaskNameRef.current = ''
+    pendingDragPointRef.current = null
+    if (dragFrameRef.current != null) {
+      window.cancelAnimationFrame(dragFrameRef.current)
+      dragFrameRef.current = null
+    }
+    setDraggedTaskName('')
+    applyDropIntent(null)
+  }, [applyDropIntent])
+  const captureOrderMotion = useCallback(() => {
+    const content = tasksContentRef.current
+    orderMotionRef.current = content && !window.matchMedia('(prefers-reduced-motion: reduce)').matches
+      ? { view: orderView, tasks: useTaskStore.getState().tasks, scrollTop: content.scrollTop, positions: visibleCardPositions(content) }
+      : null
+  }, [orderView])
+  useLayoutEffect(() => {
+    const motion = orderMotionRef.current
+    const content = tasksContentRef.current
+    if (!motion || !content) return
+    if (motion.view !== orderView || motion.tasks.length !== tasks.length || motion.scrollTop !== content.scrollTop) {
+      orderMotionRef.current = null
+      return
+    }
+    if (motion.tasks.every((task, index) => task.name === tasks[index].name && Boolean(task.pinned) === Boolean(tasks[index].pinned))) return
+    orderMotionRef.current = null
+    if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return
+    for (const [name, { card, left, top }] of visibleCardPositions(content)) {
+      const previous = motion.positions.get(name)
+      if (!previous) continue
+      const dx = previous.left - left
+      const dy = previous.top - top
+      if (Math.abs(dx) < 1 && Math.abs(dy) < 1) continue
+      card.animate([{ transform: `translate(${dx}px, ${dy}px)` }, { transform: 'translate(0, 0)' }], {
+        duration: 185,
+        easing: 'cubic-bezier(0.2, 0.75, 0.25, 1)',
+      })
+    }
+  }, [orderView, tasks])
   const loadDetailTask = useCallback((task: Task) => {
     const requestId = ++detailRequestSeqRef.current
     const requestedKey = taskDetailRefreshKey(task)
@@ -304,18 +342,6 @@ export default function ManagerPage() {
     detailRequestControllerRef.current?.abort()
     detailRequestControllerRef.current = null
     detailTaskRef.current = null
-    dragCandidateRef.current = null
-    draggedTaskNameRef.current = ''
-    dragOverTargetRef.current = null
-    dropIntentRef.current = null
-    pendingDragPointRef.current = null
-    if (dragFrameRef.current != null) {
-      window.cancelAnimationFrame(dragFrameRef.current)
-      dragFrameRef.current = null
-    }
-    setDraggedTaskName('')
-    setDragOverTarget(null)
-    setDropIntent(null)
     setDeleteConfirm(false)
     setDeleteTask(null)
     setCancelTask(null)
@@ -327,6 +353,8 @@ export default function ManagerPage() {
     bulkActionRef.current = null
     setBulkAction(null)
   }, [workspaceEpoch])
+
+  useEffect(() => { clearDrag() }, [clearDrag, orderView, sortMode, selectMode])
 
   useEffect(() => {
     if (!focusTaskName) {
@@ -376,21 +404,11 @@ export default function ManagerPage() {
   const allPageSelected = mutableCount > 0 && visibleSelectedCount === mutableCount
   const pinnedTasks = useMemo(() => tasks.filter(task => task.pinned), [tasks])
   const otherTasks = useMemo(() => tasks.filter(task => !task.pinned), [tasks])
-  const draggedTask = useMemo(
-    () => tasks.find(task => task.name === draggedTaskName) || null,
-    [draggedTaskName, tasks],
-  )
-  const showPinnedSection = pinnedTasks.length > 0 || Boolean(draggedTask && !draggedTask.pinned)
+  const showPinnedSection = pinnedTasks.length > 0
   const summary = useMemo(() => statusCounts ? {
     total: Object.values(statusCounts).reduce((count, value) => count + value, 0),
     active: statusCounts.running + statusCounts.queued,
-    completed: statusCounts.completed,
-    failed: statusCounts.failed,
   } : null, [statusCounts])
-
-  draggedTaskNameRef.current = draggedTaskName
-  dragOverTargetRef.current = dragOverTarget
-  dropIntentRef.current = dropIntent
 
   useEffect(() => {
     if (!taskActionMessage) {
@@ -562,7 +580,7 @@ export default function ManagerPage() {
       notify({
         tone: 'success',
         title: action === 'cancel'
-          ? t("Cancel requested")
+          ? updatedTask?.status === 'cancelled' ? t("Task cancelled") : t("Cancel requested")
           : waitingForGpu
             ? t("Waiting for GPU capacity")
             : queued
@@ -615,20 +633,22 @@ export default function ManagerPage() {
       || pendingTaskActionsRef.current.has(task.name)
       || hasPendingOrderMutation(pendingTaskActionsRef.current)
       || event.button !== 0
+      || !event.isPrimary
     ) {
       return
     }
 
     event.preventDefault()
+    clearDrag()
     dragCandidateRef.current = {
       taskName: task.name,
+      pointerId: event.pointerId,
       startX: event.clientX,
       startY: event.clientY,
+      gridAxes: new WeakMap(),
     }
-    setDropIntent(null)
-    dropIntentRef.current = null
     setTaskActionMessage('')
-  }, [selectMode])
+  }, [clearDrag, selectMode])
 
   const refreshManualOrder = useCallback(async () => {
     if (useTaskStore.getState().sortMode === 'manual') {
@@ -638,15 +658,10 @@ export default function ManagerPage() {
     setSortMode('manual')
   }, [fetchTasks, setSortMode])
 
-  const handleTaskDrop = useCallback(async (intent: DropIntent, taskName = draggedTaskNameRef.current) => {
+  const handleTaskDrop = useCallback(async (intent: DropIntent, taskName: string) => {
     const isCurrentWorkspace = () => workspaceEpoch === useWorkspaceStore.getState().workspaceEpoch
     if (!isCurrentWorkspace()) return
-    const task = tasks.find(item => item.name === taskName)
-    setDragOverTarget(null)
-    setDropIntent(null)
-    setDraggedTaskName('')
-    draggedTaskNameRef.current = ''
-    dropIntentRef.current = null
+    const task = useTaskStore.getState().tasks.find(item => item.name === taskName)
 
     if (!task) {
       return
@@ -665,7 +680,7 @@ export default function ManagerPage() {
         limit: REORDER_TASK_LIMIT,
         refresh: false,
         compact: true,
-        sort: sortMode,
+        sort: useTaskStore.getState().sortMode,
       })
       if (!isCurrentWorkspace()) return
       if (rejectIncompleteReorder(allTasks)) {
@@ -681,6 +696,7 @@ export default function ManagerPage() {
         return
       }
 
+      captureOrderMotion()
       await api.reorderTasks(items)
       if (!isCurrentWorkspace()) return
       if (movedItem.pinned !== task.pinned) {
@@ -690,73 +706,49 @@ export default function ManagerPage() {
       }
       await refreshManualOrder()
     } catch (err) {
+      orderMotionRef.current = null
       if (isCurrentWorkspace()) notify({ tone: 'error', title: t("Could not move task"), detail: errorMessage(err) })
     } finally {
       if (isCurrentWorkspace()) finishTaskAction(task.name)
     }
-  }, [beginTaskAction, notify, refreshManualOrder, rejectIncompleteReorder, sortMode, tasks, finishTaskAction, workspaceEpoch])
+  }, [beginTaskAction, captureOrderMotion, notify, refreshManualOrder, rejectIncompleteReorder, finishTaskAction, workspaceEpoch])
 
-  const handleMoveTask = useCallback(async (task: Task, direction: -1 | 1) => {
-    const isCurrentWorkspace = () => workspaceEpoch === useWorkspaceStore.getState().workspaceEpoch
-    if (!isCurrentWorkspace()) return
-    if (!beginTaskAction(task.name, 'move')) return
-    try {
-      const visibleSectionTasks = tasks.filter(item => item.task_storage !== 'remote' && Boolean(item.pinned) === Boolean(task.pinned))
-      const currentIndex = visibleSectionTasks.findIndex(item => item.name === task.name)
-      const targetTask = visibleSectionTasks[currentIndex + direction]
-      if (currentIndex < 0 || !targetTask) {
-        setTaskActionMessage(
-          direction < 0
-            ? t('{{name}} is already first among the visible tasks.', { name: task.name })
-            : t('{{name}} is already last among the visible tasks.', { name: task.name }),
-        )
-        return
-      }
-
-      const allTasks = await api.getTasks({
-        sources: ['shared', 'local'],
-        limit: REORDER_TASK_LIMIT,
-        refresh: false,
-        compact: true,
-        sort: sortMode,
-      })
-      if (!isCurrentWorkspace()) return
-      if (rejectIncompleteReorder(allTasks)) {
-        return
-      }
-
-      const intent: DropIntent = {
-        target: task.pinned ? 'pinned' : 'tasks',
-        targetName: targetTask.name,
-        placement: direction < 0 ? 'before' : 'after',
-        axis: 'vertical',
-      }
-      const items = buildReorderedItems(allTasks.items, task.name, intent)
-      if (!items.length) {
-        return
-      }
-      await api.reorderTasks(items)
-      if (!isCurrentWorkspace()) return
-      setTaskActionMessage(t(direction < 0 ? 'Moved {{name}} earlier.' : 'Moved {{name}} later.', { name: task.name }))
-      await refreshManualOrder()
-    } catch (err) {
-      if (isCurrentWorkspace()) notify({ tone: 'error', title: t("Could not move task"), detail: errorMessage(err) })
-    } finally {
-      if (isCurrentWorkspace()) finishTaskAction(task.name)
+  const handleKeyboardDrag = useCallback((task: Task, action: KeyboardDragAction, grip: HTMLElement) => {
+    if (dragCandidateRef.current) return
+    const pickedUp = draggedTaskNameRef.current === task.name
+    if (action === 'cancel' || (action === 'toggle' && pickedUp)) {
+      if (!pickedUp) return
+      const intent = dropIntentRef.current
+      clearDrag()
+      setTaskActionMessage('')
+      if (action === 'toggle' && intent) void handleTaskDrop(intent, task.name)
+      return
     }
-  }, [beginTaskAction, notify, refreshManualOrder, rejectIncompleteReorder, sortMode, tasks, finishTaskAction, workspaceEpoch])
+    if (action === 'toggle') {
+      clearDrag()
+      draggedTaskNameRef.current = task.name
+      setDraggedTaskName(task.name)
+      setTaskActionMessage(t('Use the arrow keys to choose a drop position.'))
+      return
+    }
+    if (!pickedUp) return
+
+    const section = useTaskStore.getState().tasks.filter(item => item.task_storage !== 'remote' && Boolean(item.pinned) === Boolean(task.pinned))
+    const source = section.findIndex(item => item.name === task.name)
+    const anchor = section.findIndex(item => item.name === (dropIntentRef.current?.targetName || task.name))
+    const next = anchor + (action === 'previous' ? -1 : 1)
+    const target = section[next]
+    if (source < 0 || anchor < 0 || !target) return
+    const placement = next < source ? 'before' : 'after'
+    applyDropIntent(next === source ? null : {
+      target: task.pinned ? 'pinned' : 'tasks', targetName: target.name, placement, axis: gridDropAxis(grip),
+    })
+    setTaskActionMessage(next === source ? t('Original position') : t(placement === 'before' ? 'Drop before {{name}}' : 'Drop after {{name}}', { name: target.name }))
+    const grid = grip.closest('[data-task-grid]')
+    grid?.querySelector(`[data-task-card="${CSS.escape(target.name)}"]`)?.scrollIntoView({ block: 'nearest' })
+  }, [applyDropIntent, clearDrag, handleTaskDrop])
 
   useEffect(() => {
-    const applyDropIntent = (intent: DropIntent | null) => {
-      const previousIntent = dropIntentRef.current
-      dropIntentRef.current = intent
-      dragOverTargetRef.current = intent?.target ?? null
-      if (!sameDropIntent(previousIntent, intent)) {
-        setDropIntent(intent)
-        setDragOverTarget(intent?.target ?? null)
-      }
-    }
-
     const flushDragFrame = () => {
       dragFrameRef.current = null
       const candidate = dragCandidateRef.current
@@ -770,12 +762,12 @@ export default function ManagerPage() {
         setDraggedTaskName(candidate.taskName)
       }
 
-      applyDropIntent(getPointerDropIntent(point.clientX, point.clientY))
+      applyDropIntent(getPointerDropIntent(point.clientX, point.clientY, candidate.gridAxes))
     }
 
     const handleGlobalPointerMove = (event: PointerEvent) => {
       const candidate = dragCandidateRef.current
-      if (!candidate) {
+      if (!candidate || candidate.pointerId !== event.pointerId) {
         return
       }
 
@@ -793,51 +785,24 @@ export default function ManagerPage() {
 
     const finishPointerDrag = (event: PointerEvent) => {
       const candidate = dragCandidateRef.current
-      if (!candidate) {
+      if (!candidate || candidate.pointerId !== event.pointerId) {
         return
       }
 
       const distance = Math.hypot(event.clientX - candidate.startX, event.clientY - candidate.startY)
       const wasDragging = Boolean(draggedTaskNameRef.current) || distance >= DRAG_START_DISTANCE
-      const intent = getPointerDropIntent(event.clientX, event.clientY) || dropIntentRef.current
+      const intent = wasDragging ? getPointerDropIntent(event.clientX, event.clientY, candidate.gridAxes) : null
 
-      dragCandidateRef.current = null
-      pendingDragPointRef.current = null
-      if (dragFrameRef.current != null) {
-        window.cancelAnimationFrame(dragFrameRef.current)
-        dragFrameRef.current = null
-      }
-      dropIntentRef.current = null
-      dragOverTargetRef.current = null
-      setDropIntent(null)
-      setDragOverTarget(null)
-      setDraggedTaskName('')
+      clearDrag()
 
-      if (!wasDragging) {
-        return
-      }
-
-      draggedTaskNameRef.current = candidate.taskName
       if (intent) {
         void handleTaskDrop(intent, candidate.taskName)
-      } else {
-        draggedTaskNameRef.current = ''
       }
     }
 
-    const cancelPointerDrag = () => {
-      dragCandidateRef.current = null
-      draggedTaskNameRef.current = ''
-      pendingDragPointRef.current = null
-      if (dragFrameRef.current != null) {
-        window.cancelAnimationFrame(dragFrameRef.current)
-        dragFrameRef.current = null
-      }
-      dropIntentRef.current = null
-      dragOverTargetRef.current = null
-      setDropIntent(null)
-      setDragOverTarget(null)
-      setDraggedTaskName('')
+    const cancelPointerDrag = (event: PointerEvent) => {
+      if (dragCandidateRef.current?.pointerId !== event.pointerId) return
+      clearDrag()
     }
 
     window.addEventListener('pointermove', handleGlobalPointerMove)
@@ -852,10 +817,10 @@ export default function ManagerPage() {
         dragFrameRef.current = null
       }
     }
-  }, [handleTaskDrop])
+  }, [applyDropIntent, clearDrag, handleTaskDrop])
 
   useEffect(() => {
-    if (!draggedTaskName) {
+    if (!draggedTaskName || !dragCandidateRef.current) {
       return
     }
 
@@ -896,26 +861,20 @@ export default function ManagerPage() {
     setSearchParams(next, { replace: true })
   }, [searchParams, setSearchParams])
 
+  const refreshLabel = query ? loading ? 'Cancel search' : 'Refresh search results' : 'Refresh tasks'
+
   return (
-    <div className="manager-page flex h-full flex-col overflow-hidden bg-surface-base" data-view={viewMode}>
-      <header data-tour="manager-controls" className="workspace-header flex-none border-b border-border-subtle bg-surface-raised px-3 py-3 sm:px-5">
-        <div className="manager-heading flex flex-wrap items-center gap-x-6 gap-y-3">
-          <div className="min-w-0">
-            <div className="flex items-center gap-2">
-              <h1 className="workspace-heading text-lg font-semibold tracking-tight text-txt-primary">{t("Task Manager")}</h1>
+    <div className="manager-page flex h-full flex-col overflow-hidden bg-surface-base">
+      <header data-tour="manager-controls" className="workspace-header flex-none border-b border-border-subtle bg-surface-raised px-3 py-2.5 sm:px-5">
+        <div className="manager-heading">
+          <div className="manager-title flex min-w-0 items-center gap-2">
+            <h1 className="workspace-heading min-w-0 font-semibold tracking-tight text-txt-primary">{t("Task Manager")}</h1>
+            <div className="manager-title-actions flex shrink-0 items-center gap-1">
               <TaskSourceFilter />
               <button
                 type="button"
-                aria-label={loading && query
-                  ? t("Cancel search")
-                  : query
-                    ? t("Refresh search results")
-                    : t("Refresh tasks")}
-                title={loading && query
-                  ? t("Cancel search")
-                  : query
-                    ? t("Refresh search results")
-                    : t("Refresh tasks")}
+                aria-label={t(refreshLabel)}
+                title={t(refreshLabel)}
                 disabled={loading && !query}
                 onClick={() => loading && query
                   ? useTaskStore.getState().cancelTaskSearch()
@@ -925,12 +884,43 @@ export default function ManagerPage() {
                 {loading
                   ? query
                     ? <Square aria-hidden="true" className="h-3.5 w-3.5" />
-                    : <Loader2 aria-hidden="true" className="h-3.5 w-3.5 animate-spin" />
+                    : <Loader2 aria-hidden="true" className="h-3.5 w-3.5 motion-safe:animate-spin" />
                   : <RefreshCw aria-hidden="true" className="h-4 w-4" />}
               </button>
             </div>
           </div>
 
+          <div className="manager-filters">
+            <div className="manager-filter-control">
+              <select
+                className="manager-toolbar-select"
+                aria-label={t('Filter tasks by status')}
+                value={statusFilter}
+                onChange={event => setStatusFilter(event.target.value)}
+              >
+                {STATUS_OPTIONS.map(option => {
+                  const label = option === 'All' ? 'All tasks' : option === 'active' ? 'Active' : STATUS_LABELS[option]
+                  const count = option === 'All' ? summary?.total : option === 'active' ? summary?.active : statusCounts?.[option]
+                  return <option key={option} value={option}>{t(label)}{count != null ? ` · ${count}` : ''}</option>
+                })}
+              </select>
+              <ChevronDown aria-hidden="true" className="manager-filter-chevron" />
+            </div>
+            <div className="manager-filter-control manager-sort-control">
+              <ArrowDownWideNarrow aria-hidden="true" className="manager-sort-icon" />
+              <select
+                className="manager-toolbar-select"
+                aria-label={t('Sort task cards')}
+                value={sortMode}
+                onChange={event => setSortMode(event.target.value as TaskSortMode)}
+              >
+                {TASK_SORT_OPTIONS.map(option => (
+                  <option key={option.value} value={option.value}>{t(option.label)}</option>
+                ))}
+              </select>
+              <ChevronDown aria-hidden="true" className="manager-filter-chevron" />
+            </div>
+          </div>
           <div className="manager-search min-w-0">
             <TaskSearchInput
               compact minimal
@@ -963,102 +953,9 @@ export default function ManagerPage() {
           </ActionButton>
         </div>
 
-        <div className="manager-toolbar flex flex-wrap items-center justify-between gap-2">
-          <div
-            className="manager-status-tabs flex min-w-0 items-center gap-1"
-            role="group"
-            aria-label={t("Workspace task totals")}
-            title={t("Workspace totals are independent of the current search, status filter, and page.")}
-          >
-            <ManagerMetric label={t("All tasks")} value={summary?.total ?? '—'} selected={statusFilter === 'All'} onClick={() => setStatusFilter('All')} />
-            <ManagerMetric label={t("Active")} value={summary?.active ?? '—'} selected={statusFilter === 'active'} onClick={() => setStatusFilter('active')} />
-            <ManagerMetric label={t("Done")} value={summary?.completed ?? '—'} selected={statusFilter === 'completed'} onClick={() => setStatusFilter('completed')} />
-            <ManagerMetric label={t("Failed")} value={summary?.failed ?? '—'} selected={statusFilter === 'failed'} onClick={() => setStatusFilter('failed')} />
-          </div>
-
-          <div className="manager-view-tools flex items-center gap-3">
-            <div className="manager-view-options relative" ref={viewOptionsRef} onBlur={event => {
-              if (event.relatedTarget && !event.currentTarget.contains(event.relatedTarget as Node)) setViewOptionsOpen(false)
-            }}>
-              <button type="button" ref={viewOptionsTriggerRef} aria-label={t('View options')} aria-haspopup="dialog" aria-expanded={viewOptionsOpen} aria-controls={viewOptionsOpen ? viewOptionsId : undefined}
-                className="manager-options-trigger touch-target inline-flex min-h-11 items-center gap-2 rounded-md px-2 text-xs text-txt-secondary transition-colors hover:bg-surface-overlay aria-expanded:bg-accent/10 aria-expanded:text-accent-ink sm:min-h-9"
-                onClick={() => setViewOptionsOpen(open => !open)}>
-                <ArrowDownWideNarrow aria-hidden="true" className="size-4" />
-                <span>{!['All', 'active', 'completed', 'failed'].includes(statusFilter) && `${t(STATUS_LABELS[statusFilter as TaskStatus])} · `}{t(sortOption.label)}</span>
-                <ChevronDown aria-hidden="true" className="size-3.5" />
-              </button>
-              {viewOptionsOpen && (
-                <div id={viewOptionsId} role="dialog" aria-label={t('View options')} className="manager-options-panel">
-                  <h2 className="mb-2 text-sm font-semibold text-txt-primary">{t('View options')}</h2>
-                  <ManagerViewOption id={`${viewOptionsId}-sort`} label={t('Sort by')}>
-                    <select
-                      id={`${viewOptionsId}-sort`}
-                      value={sortMode}
-                      onChange={event => setSortMode(event.target.value as TaskSortMode)}
-                      aria-label={t('Sort task cards')}
-                      aria-describedby={`${viewOptionsId}-sort-description`}
-                    >
-                      {TASK_SORT_OPTIONS.map(option => (
-                        <option key={option.value} value={option.value}>{t(option.label)}</option>
-                      ))}
-                    </select>
-                  </ManagerViewOption>
-                  <p id={`${viewOptionsId}-sort-description`} className="px-0.5 pb-2 pt-1 text-2xs leading-5 text-txt-secondary">
-                    {t('Pinned tasks always appear first.')} {t(sortOption.description)}
-                  </p>
-                  <ManagerViewOption id={`${viewOptionsId}-status`} label={t('Status')}>
-                    <select
-                      id={`${viewOptionsId}-status`}
-                      value={statusFilter}
-                      onChange={event => setStatusFilter(event.target.value)}
-                      aria-label={t('Filter tasks by status')}
-                    >
-                      {STATUS_OPTIONS.map(option => (
-                        <option key={option} value={option}>
-                          {option === 'All' ? t('All statuses') : option === 'active' ? t('Active') : t(STATUS_LABELS[option as TaskStatus])}
-                        </option>
-                      ))}
-                    </select>
-                  </ManagerViewOption>
-                  {viewMode === 'cards' && (
-                    <ManagerViewOption id={`${viewOptionsId}-columns`} label={t('Cards per row')}>
-                      <select
-                        id={`${viewOptionsId}-columns`}
-                        value={columns}
-                        onChange={event => setColumns(Number(event.target.value))}
-                        aria-label={t('Maximum cards per row')}
-                        title={t('Maximum cards per row; narrow windows reduce the count automatically')}
-                      >
-                        {[1, 2, 3, 4, 5, 6, 7, 8].map(count => (
-                          <option key={count} value={count}>{t('{{count}} column(s)', { count })}</option>
-                        ))}
-                      </select>
-                    </ManagerViewOption>
-                  )}
-                </div>
-              )}
-            </div>
-            <div role="group" aria-label={t('Task view')} className="manager-view-toggle flex items-center divide-x divide-border-subtle rounded-md border border-border-subtle">
-              {([{ mode: 'cards', label: 'Card view', icon: LayoutGrid }, { mode: 'list', label: 'List view', icon: List }] as const).map(({ mode, label, icon: Icon }) => (
-                <button key={mode} type="button" aria-label={t(label)} title={t(label)} aria-pressed={viewMode === mode}
-                  onClick={() => setViewMode(mode)} className={clsx('touch-target flex h-10 w-10 items-center justify-center sm:h-8 sm:w-9', viewMode === mode ? 'bg-accent/10 text-accent-ink' : 'text-txt-secondary hover:bg-surface-overlay hover:text-txt-primary')}>
-                  <Icon aria-hidden="true" className="h-4 w-4" />
-                </button>
-              ))}
-            </div>
-          </div>
-        </div>
-
-        {taskActionMessage && (
-          <div
-            role="status"
-            aria-live="polite"
-            className="mt-2 border-l-2 border-accent/40 pl-2.5 text-xs text-txt-secondary"
-            title={taskActionMessage}
-          >
-            {taskActionMessage}
-          </div>
-        )}
+        <span id="manager-reorder-help" className="sr-only">
+          {t('Press Enter or Space to pick up or drop the card. Use the arrow keys to choose a position and Escape to cancel.')}
+        </span>
 
         {selectMode && (
           <div
@@ -1125,6 +1022,7 @@ export default function ManagerPage() {
       </header>
 
       <section
+        ref={tasksContentRef}
         className="manager-tasks-content min-h-0 flex-1 overflow-y-auto px-3 py-4 sm:px-6 sm:py-5"
         aria-label={t("Task list")}
         aria-busy={loading || undefined}
@@ -1151,8 +1049,19 @@ export default function ManagerPage() {
           </div>
         )}
 
+        {draggedTaskName && dragCandidateRef.current && !showPinnedSection && (
+          <div className="sticky top-0 z-20 h-0">
+            <div
+              data-task-drop-target="pinned"
+              className={clsx('absolute right-0 top-0 rounded-md border border-accent/40 bg-surface-raised px-4 py-3 text-xs font-medium text-accent-ink shadow-sm',
+                dragOverTarget === 'pinned' && 'ring-2 ring-accent/50')}
+            >
+              {t("Drop here to pin")}
+            </div>
+          </div>
+        )}
         {loading && tasks.length === 0 ? (
-          <ManagerLoadingState columns={viewMode === 'list' ? 1 : columns} />
+          <ManagerLoadingState />
         ) : tasks.length === 0 ? (
           error ? null : (
             <ManagerEmptyState
@@ -1181,30 +1090,23 @@ export default function ManagerPage() {
                   icon={<Pin className="h-3.5 w-3.5 text-txt-tertiary" />}
                   bodyClassName="pt-1"
                 >
-                  {pinnedTasks.length === 0 ? (
-                    <div className="px-2 py-5 text-center text-xs font-medium text-accent">
-                      {t("Drop here to pin")}
-                    </div>
-                  ) : (
-                    <TaskGrid
-                      tasks={pinnedTasks}
-                      columns={viewMode === 'list' ? 1 : columns}
-                      query={query}
-                      draggedTaskName={draggedTaskName}
-                      dropIntent={dropIntent}
-                      selectedIds={selectedIds}
-                      selectMode={selectMode}
-                      orderMutationPending={orderMutationPending}
-                      pendingTaskActions={pendingTaskActions}
-                      onCardClick={handleCardClick}
-                      onTaskAction={requestTaskAction}
-                      onPin={handlePin}
-                      onMove={handleMoveTask}
-                      onDelete={setDeleteTask}
-                      onMonitor={openTaskLogs}
-                      onPointerDown={handleTaskPointerDown}
-                    />
-                  )}
+                  <TaskGrid
+                    tasks={pinnedTasks}
+                    query={query}
+                    draggedTaskName={draggedTaskName}
+                    dropIntent={dragOverTarget === 'pinned' ? dropIntent : null}
+                    selectedIds={selectedIds}
+                    selectMode={selectMode}
+                    orderMutationPending={orderMutationPending}
+                    pendingTaskActions={pendingTaskActions}
+                    onCardClick={handleCardClick}
+                    onTaskAction={requestTaskAction}
+                    onPin={handlePin}
+                    onKeyboardDrag={handleKeyboardDrag}
+                    onDelete={setDeleteTask}
+                    onMonitor={openTaskLogs}
+                    onPointerDown={handleTaskPointerDown}
+                  />
                 </CompactSection>
               </div>
             )}
@@ -1224,10 +1126,9 @@ export default function ManagerPage() {
               )}
               <TaskGrid
                 tasks={otherTasks}
-                columns={viewMode === 'list' ? 1 : columns}
                 query={query}
                 draggedTaskName={draggedTaskName}
-                dropIntent={dropIntent}
+                dropIntent={dragOverTarget === 'tasks' ? dropIntent : null}
                 selectedIds={selectedIds}
                 selectMode={selectMode}
                 orderMutationPending={orderMutationPending}
@@ -1235,7 +1136,7 @@ export default function ManagerPage() {
                 onCardClick={handleCardClick}
                 onTaskAction={requestTaskAction}
                 onPin={handlePin}
-                onMove={handleMoveTask}
+                onKeyboardDrag={handleKeyboardDrag}
                 onDelete={setDeleteTask}
                 onMonitor={openTaskLogs}
                 onPointerDown={handleTaskPointerDown}
@@ -1246,12 +1147,18 @@ export default function ManagerPage() {
       </section>
 
       <footer className="flex flex-none items-center gap-3 border-t border-border-subtle bg-surface-raised px-3 py-2 sm:px-4">
-        <span className="min-w-0 flex-1 truncate text-2xs text-txt-secondary">
-          {selectMode && visibleSelectedCount > 0 ? t('{{count}} selected on page · ', { count: visibleSelectedCount }) : ''}
-          {tasks.length > 0 ? t('Showing {{start}}–{{end}} of ', { start: offset + 1, end: offset + tasks.length }) : ''}
-          {t('{{count}} matching task(s)', { count: total })}
+        <span className="min-w-0 flex-1 truncate text-2xs text-txt-secondary" title={taskActionMessage || undefined}>
+          <span role="status" aria-live="polite">{taskActionMessage}</span>
+          {!taskActionMessage && <>
+            {selectMode && visibleSelectedCount > 0 ? t('{{count}} selected on page · ', { count: visibleSelectedCount }) : ''}
+            {tasks.length > 0 ? t('Showing {{start}}–{{end}} of ', { start: offset + 1, end: offset + tasks.length }) : ''}
+            {t('{{count}} matching task(s)', { count: total })}
+          </>}
         </span>
-        <Pagination total={total} offset={offset} limit={limit} onOffsetChange={setOffset} />
+        <Pagination total={total} offset={offset} limit={MANAGER_TASK_PAGE_SIZE} showTotal={false} onOffsetChange={nextOffset => {
+          setOffset(nextOffset)
+          if (tasksContentRef.current) tasksContentRef.current.scrollTop = 0
+        }} />
       </footer>
 
       <ConfirmDialog
@@ -1315,9 +1222,8 @@ export default function ManagerPage() {
   )
 }
 
-function TaskGrid({
+const TaskGrid = memo(function TaskGrid({
   tasks,
-  columns,
   query,
   draggedTaskName,
   dropIntent,
@@ -1328,13 +1234,12 @@ function TaskGrid({
   onCardClick,
   onTaskAction,
   onPin,
-  onMove,
+  onKeyboardDrag,
   onDelete,
   onMonitor,
   onPointerDown,
 }: {
   tasks: Task[]
-  columns: number
   query: string
   draggedTaskName: string
   dropIntent: DropIntent | null
@@ -1345,7 +1250,7 @@ function TaskGrid({
   onCardClick: (task: Task) => void
   onTaskAction: (task: Task, action: 'run' | 'cancel' | 'rerun') => void | Promise<void>
   onPin: (task: Task) => void | Promise<void>
-  onMove: (task: Task, direction: -1 | 1) => void | Promise<void>
+  onKeyboardDrag: (task: Task, action: KeyboardDragAction, grip: HTMLElement) => void
   onDelete: (task: Task) => void
   onMonitor: (task: Task) => void
   onPointerDown: (task: Task, event: ReactPointerEvent<HTMLElement>) => void
@@ -1356,14 +1261,7 @@ function TaskGrid({
   }
 
   return (
-    <div
-      data-task-grid="true"
-      data-task-grid-columns={columns}
-      className="manager-task-grid grid"
-      style={{
-        gridTemplateColumns: `repeat(auto-fill, minmax(min(100%, max(15rem, calc((100% - ${columns - 1} * var(--manager-grid-gap)) / ${columns}))), 1fr))`,
-      }}
-    >
+    <div data-task-grid="true" className="manager-task-grid">
       {tasks.map(task => (
         <TaskCard
           key={task.name}
@@ -1383,7 +1281,7 @@ function TaskGrid({
           onCardClick={onCardClick}
           onTaskAction={onTaskAction}
           onPin={onPin}
-          onMove={onMove}
+          onKeyboardDrag={onKeyboardDrag}
           onDelete={onDelete}
           onMonitor={onMonitor}
           onPointerDown={onPointerDown}
@@ -1391,7 +1289,7 @@ function TaskGrid({
       ))}
     </div>
   )
-}
+})
 
 const TaskCard = memo(function TaskCard({
   task,
@@ -1406,7 +1304,7 @@ const TaskCard = memo(function TaskCard({
   onCardClick,
   onTaskAction,
   onPin,
-  onMove,
+  onKeyboardDrag,
   onDelete,
   onMonitor,
   onPointerDown,
@@ -1423,7 +1321,7 @@ const TaskCard = memo(function TaskCard({
   onCardClick: (task: Task) => void
   onTaskAction: (task: Task, action: 'run' | 'cancel' | 'rerun') => void | Promise<void>
   onPin: (task: Task) => void | Promise<void>
-  onMove: (task: Task, direction: -1 | 1) => void | Promise<void>
+  onKeyboardDrag: (task: Task, action: KeyboardDragAction, grip: HTMLElement) => void
   onDelete: (task: Task) => void
   onMonitor: (task: Task) => void
   onPointerDown: (task: Task, event: ReactPointerEvent<HTMLElement>) => void
@@ -1433,7 +1331,8 @@ const TaskCard = memo(function TaskCard({
   const readOnly = task.task_storage === 'remote'
   const statusId = useId()
   const statusLabel = taskStatusLabel(task)
-  const statusTone = statusLabel === STATUS_LABELS[task.status] ? task.status : 'reported'
+  const stopping = isTaskStopping(task)
+  const statusTone = stopping ? 'stopping' : statusLabel === STATUS_LABELS[task.status] ? task.status : 'reported'
   const StatusIcon = TASK_STATUS_ICONS[statusTone]
   const displayName = task.display_name ?? task.name
   const accessibleName = task.task_source_host ? `${displayName} · ${task.task_source_host}` : displayName
@@ -1458,9 +1357,9 @@ const TaskCard = memo(function TaskCard({
       data-selection-mode={selectMode}
       aria-busy={taskPending || undefined}
       className={clsx(
-        'task-card relative flex min-w-0 flex-col bg-surface-raised [contain-intrinsic-size:auto_176px] [content-visibility:auto] transition-colors duration-150',
+        'task-card relative flex min-w-0 flex-col bg-surface-raised [contain-intrinsic-size:auto_176px] [content-visibility:auto] motion-safe:transition-[opacity,background-color] duration-150',
         selected && 'z-[1] ring-1 ring-accent',
-        dragging && 'scale-[0.985] opacity-70 ring-1 ring-accent/50',
+        dragging && 'opacity-70 ring-1 ring-accent/50',
         dropPlacement && !dragging && 'ring-1 ring-accent/35',
       )}
     >
@@ -1537,18 +1436,33 @@ const TaskCard = memo(function TaskCard({
       {!selectMode && (
         <div className="task-card-footer flex min-w-0 items-center justify-end">
           {!readOnly && (
-            <span
+            <button
+              type="button"
               data-task-drag-handle="true"
-              aria-hidden="true"
+              aria-label={t('Reorder {{name}}', { name: accessibleName })}
+              aria-describedby="manager-reorder-help"
+              aria-pressed={dragging}
+              disabled={taskPending || reorderDisabled}
               onPointerDown={event => onPointerDown(task, event)}
-              className={clsx(
-                'task-card-grip task-card-control touch-target me-auto flex shrink-0 cursor-grab touch-none items-center justify-center text-txt-tertiary transition-opacity hover:bg-surface-overlay hover:text-txt-primary active:cursor-grabbing',
-                (taskPending || reorderDisabled) && 'pointer-events-none opacity-40',
-              )}
-              title={t("Drag to set manual order; keyboard users can use Move earlier and Move later")}
+              onClick={event => {
+                if (event.detail === 0) onKeyboardDrag(task, 'toggle', event.currentTarget)
+              }}
+              onKeyDown={event => {
+                if (event.repeat && (event.key === 'Enter' || event.key === ' ')) event.preventDefault()
+                if (!dragging) return
+                const action = event.key === 'Escape' ? 'cancel'
+                  : event.key === 'ArrowLeft' || event.key === 'ArrowUp' ? 'previous'
+                  : event.key === 'ArrowRight' || event.key === 'ArrowDown' ? 'next' : null
+                if (!action) return
+                event.preventDefault()
+                onKeyboardDrag(task, action, event.currentTarget)
+              }}
+              onBlur={event => onKeyboardDrag(task, 'cancel', event.currentTarget)}
+              className="task-card-grip task-card-control touch-target me-auto flex shrink-0 cursor-grab touch-none items-center justify-center text-txt-secondary transition-[opacity,color,background-color] hover:bg-surface-overlay hover:text-txt-primary active:cursor-grabbing disabled:cursor-not-allowed disabled:opacity-40"
+              title={t('Drag to reorder')}
             >
-              <GripVertical className="size-4" />
-            </span>
+              <GripVertical aria-hidden="true" className="size-4" />
+            </button>
           )}
           <div className="task-card-actions flex flex-none items-center">
             {!readOnly && (
@@ -1569,7 +1483,7 @@ const TaskCard = memo(function TaskCard({
               <TaskIconButton
                 label={t('{{action}} {{name}}', { action: t(actionBtn.label), name: task.name })}
                 title={t(actionBtn.label)}
-                disabled={taskPending}
+                disabled={taskPending || stopping}
                 busy={pendingAction === actionBtn.action}
                 danger={actionBtn.action === 'cancel'}
                 onClick={() => void onTaskAction(task, actionBtn.action)}
@@ -1586,14 +1500,20 @@ const TaskCard = memo(function TaskCard({
             >
               <Terminal className="h-3.5 w-3.5" />
             </TaskIconButton>
-            {!readOnly && <TaskCardMenu name={accessibleName} items={[
-              { label: t('Move earlier'), icon: ArrowUp,
-                disabled: taskPending || reorderDisabled, onClick: () => void onMove(task, -1) },
-              { label: t('Move later'), icon: ArrowDown,
-                disabled: taskPending || reorderDisabled, onClick: () => void onMove(task, 1) },
-              { label: t('Delete task'), icon: Trash2, danger: true,
-                disabled: taskPending, onClick: () => onDelete(task) },
-            ]} />}
+            {!readOnly && (
+              <TaskIconButton
+                label={t('Delete {{name}}', { name: accessibleName })}
+                title={t('Delete task')}
+                danger
+                disabled={taskPending}
+                busy={pendingAction === 'delete'}
+                onClick={() => onDelete(task)}
+              >
+                {pendingAction === 'delete'
+                  ? <Loader2 aria-hidden="true" className="size-3.5 motion-safe:animate-spin" />
+                  : <Trash2 aria-hidden="true" className="size-3.5" />}
+              </TaskIconButton>
+            )}
           </div>
         </div>
       )}
@@ -1603,158 +1523,6 @@ const TaskCard = memo(function TaskCard({
     </article>
   )
 })
-
-function ManagerViewOption({ id, label, children }: { id: string; label: string; children: ReactNode }) {
-  return (
-    <div className="manager-option-row">
-      <label htmlFor={id} className="text-xs font-medium text-txt-secondary">{label}</label>
-      <div className="relative min-w-0">
-        {children}
-        <ChevronDown aria-hidden="true" className="pointer-events-none absolute right-2.5 top-1/2 size-3.5 -translate-y-1/2 text-txt-secondary" />
-      </div>
-    </div>
-  )
-}
-
-function ManagerMetric({
-  label,
-  value,
-  selected,
-  onClick,
-}: {
-  label: string
-  value: number | string
-  selected: boolean
-  onClick: () => void
-}) {
-  useTranslation()
-  const countId = useId()
-  return (
-    <button type="button" onClick={onClick} aria-pressed={selected} aria-label={t('Filter tasks: {{status}}', { status: label })} aria-describedby={countId} className={clsx(
-      'manager-status-tab touch-target flex min-h-11 shrink-0 items-center justify-between gap-2 rounded-lg px-3 py-1.5 text-xs transition-colors sm:min-h-9',
-      selected ? 'bg-surface-overlay text-txt-primary' : 'text-txt-secondary hover:bg-surface-overlay',
-    )}>
-      <span className="font-medium">{t(label)}</span>
-      <span id={countId} className="text-txt-tertiary tabular-nums">{value}</span>
-    </button>
-  )
-}
-
-interface TaskCardMenuItem {
-  label: string
-  icon: typeof Pin
-  onClick: () => void
-  disabled: boolean
-  danger?: boolean
-}
-
-function TaskCardMenu({ name, items }: { name: string; items: TaskCardMenuItem[] }) {
-  const { t } = useTranslation()
-  const id = useId()
-  const trigger = useRef<HTMLButtonElement>(null)
-  const panel = useRef<HTMLDivElement>(null)
-  const [position, setPosition] = useState<CSSProperties | null>(null)
-
-  useEffect(() => {
-    if (!position) return
-    const popover = panel.current
-    const first = popover?.querySelector<HTMLButtonElement>('button:not(:disabled)') ?? popover
-    first?.focus({ preventScroll: true })
-
-    const dismissOutside = (event: Event) => {
-      if (event.target instanceof Node && !trigger.current?.contains(event.target) && !popover?.contains(event.target)) {
-        setPosition(null)
-      }
-    }
-    const dismissOnViewportChange = (event: Event) => {
-      if (event.target instanceof Node && popover?.contains(event.target)) return
-      setPosition(null)
-      if (popover?.contains(document.activeElement)) trigger.current?.focus({ preventScroll: true })
-    }
-    document.addEventListener('pointerdown', dismissOutside)
-    document.addEventListener('focusin', dismissOutside)
-    document.addEventListener('scroll', dismissOnViewportChange, true)
-    window.addEventListener('resize', dismissOnViewportChange)
-    return () => {
-      document.removeEventListener('pointerdown', dismissOutside)
-      document.removeEventListener('focusin', dismissOutside)
-      document.removeEventListener('scroll', dismissOnViewportChange, true)
-      window.removeEventListener('resize', dismissOnViewportChange)
-    }
-  }, [position])
-
-  const close = () => {
-    setPosition(null)
-    trigger.current?.focus({ preventScroll: true })
-  }
-
-  return (
-    <>
-      <button
-        type="button"
-        ref={trigger}
-        aria-label={t('More actions for {{name}}', { name })}
-        aria-expanded={position !== null}
-        aria-controls={position ? id : undefined}
-        title={t('More actions')}
-        className="task-card-control touch-target inline-flex items-center justify-center text-txt-secondary transition-colors hover:bg-surface-overlay hover:text-txt-primary focus-visible:outline-offset-0 aria-expanded:bg-surface-overlay"
-        onClick={event => {
-          if (position) {
-            close()
-            return
-          }
-          const rect = event.currentTarget.getBoundingClientRect()
-          const width = Math.min(208, innerWidth - 16)
-          const below = innerHeight - rect.bottom - 14
-          const above = rect.top - 14
-          const opensAbove = below < 184 && above > below
-          setPosition({
-            width,
-            left: Math.max(8, Math.min(rect.right - width, innerWidth - width - 8)),
-            maxHeight: Math.max(0, opensAbove ? above : below),
-            ...(opensAbove ? { bottom: innerHeight - rect.top + 6 } : { top: rect.bottom + 6 }),
-          })
-        }}
-      >
-        <Ellipsis className="size-4" aria-hidden="true" />
-      </button>
-      {position && createPortal(
-        <div
-          id={id}
-          ref={panel}
-          role="group"
-          tabIndex={-1}
-          aria-label={t('Task actions for {{name}}', { name })}
-          style={position}
-          className="fixed z-50 overflow-y-auto overscroll-contain border border-border bg-surface-raised p-1 text-sm shadow-[0_8px_24px_rgb(0_0_0/12%)]"
-          onKeyDown={event => {
-            if (event.key === 'Escape') {
-              event.preventDefault()
-              event.stopPropagation()
-              close()
-            }
-          }}
-        >
-          {items.map(item => (
-            <button
-              key={item.label}
-              type="button"
-              disabled={item.disabled}
-              onClick={() => { close(); item.onClick() }}
-              className={clsx(
-                'touch-target flex min-h-11 w-full items-center gap-2.5 px-2.5 text-left hover:bg-surface-overlay focus-visible:outline-offset-[-2px] disabled:opacity-40 sm:min-h-9',
-                item.danger && 'mt-1 border-t border-border-subtle text-rose-700 dark:text-rose-300',
-              )}
-            >
-              <item.icon aria-hidden="true" className="size-4 flex-none" />
-              {item.label}
-            </button>
-          ))}
-        </div>, document.body,
-      )}
-    </>
-  )
-}
 
 function TaskIconButton({
   children,
@@ -1797,19 +1565,13 @@ function TaskIconButton({
   )
 }
 
-function ManagerLoadingState({ columns }: { columns: number }) {
+function ManagerLoadingState() {
   useTranslation()
-  const count = Math.min(8, Math.max(2, columns * 2))
   return (
     <div role="status" aria-live="polite" aria-label={t("Loading tasks")}>
-      <div
-        className="grid gap-2"
-        style={{
-          gridTemplateColumns: `repeat(auto-fill, minmax(min(100%, max(15rem, calc((100% - ${(columns - 1) * 8}px) / ${columns}))), 1fr))`,
-        }}
-      >
-        {Array.from({ length: count }, (_, index) => (
-          <div key={index} className="animate-pulse rounded-md border border-border-subtle bg-surface-raised p-3">
+      <div className="manager-task-grid">
+        {Array.from({ length: 8 }, (_, index) => (
+          <div key={index} className="rounded-lg border border-border-subtle bg-surface-raised p-3 motion-safe:animate-pulse">
             <div className="h-5 w-24 rounded bg-surface-overlay" />
             <div className="mt-3 h-4 w-2/3 rounded bg-surface-overlay" />
             <div className="mt-2 h-3 w-full rounded bg-surface-overlay" />

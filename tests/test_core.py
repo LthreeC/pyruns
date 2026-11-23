@@ -2361,6 +2361,40 @@ def test_task_manager_cancel_task_keeps_request_for_a_live_process_after_timeout
     assert info["_pending_stop_summary"]["reason"] == "cancelled_by_user"
 
 
+@pytest.mark.parametrize("attempt_matches", [True, False])
+def test_task_manager_cancel_rechecks_run_markers_after_wsl_clock_shift(tmp_path, monkeypatch, attempt_matches):
+    tasks_dir = tmp_path / "tasks"
+    task_dir = tasks_dir / "runner"
+    task_dir.mkdir(parents=True)
+    _write_running_config_task(task_dir)
+    manager = _make_task_manager(tasks_dir)
+    _mark_task_owned_by_manager(manager, "runner", task_dir)
+    monkeypatch.setattr("pyruns.utils.runner_device.local_runner_device", lambda: "test-wsl-device")
+    monkeypatch.setattr(task_manager_module.platform, "release", lambda: "6.6.87.2-microsoft-standard-WSL2")
+    update_task_info(str(task_dir), lambda info: info.update(_attempt_id="test-attempt", runner_device="test-wsl-device"))
+
+    monkeypatch.setattr(task_manager_module, "get_process_create_time", lambda pid: 917.0)
+    monkeypatch.setattr(task_manager_module, "process_identity_matches", lambda pid, stamp: stamp == 917.0)
+
+    def matches_environment(pid, markers):
+        assert pid == 12345
+        assert markers == {"PYRUNS_RUN_ATTEMPT_ID": "test-attempt", "PYRUNS_RUN_INDEX": "1"}
+        return attempt_matches
+
+    attempted_stops = []
+
+    def stop(pid, expected_create_time):
+        attempted_stops.append((pid, expected_create_time))
+        return expected_create_time == 917.0
+
+    monkeypatch.setattr(task_manager_module, "process_environment_matches", matches_environment)
+    monkeypatch.setattr(task_manager_module, "kill_process", stop)
+
+    assert manager.cancel_task("runner") is attempt_matches
+    assert attempted_stops == [(12345, 917.0 if attempt_matches else 1000.0)]
+    assert bool(load_task_info(str(task_dir)).get("cancel_requested_at")) is attempt_matches
+
+
 def test_kill_process_rejects_mismatched_creation_time_without_signalling(monkeypatch):
     from pyruns.utils import process_utils
 

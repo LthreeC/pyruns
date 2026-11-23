@@ -38,7 +38,7 @@ from pyruns.core.task_manager import (
     TaskStateConflict,
     active_task_run_index,
 )
-from pyruns.core.report import build_export_csv
+from pyruns.core.report import build_export_csv, load_export_metadata, run_export_rows
 from pyruns.launcher import (
     bootstrap_shell_workspace,
     bootstrap_workspace,
@@ -94,12 +94,15 @@ from pyruns.utils.task_files import (
     task_search_found,
     normalize_task_kind,
     normalize_workspace_kind,
+    read_task_payload_text,
     resolve_task_payload_path,
 )
 
 
 _DEFAULT_GPU_SCHEDULER_CONFIG = GpuSchedulerConfig.from_settings({})
 MAX_MONITOR_LOG_TAIL_BYTES = _cfg.MAX_MONITOR_CHUNK_SIZE
+EXPORT_LOG_TAIL_BYTES = 64 * 1024
+MAX_JSON_EXPORT_BYTES = 32 * 1024 * 1024
 # Larger batches reduce ripgrep startup costs for log-only requests.
 # Streaming searches use smaller batches for early results. Match limits are
 # consumed in task/field/file order independently of these execution batches.
@@ -1667,9 +1670,7 @@ class PyrunsRuntime:
         )
         if not ok:
             latest = self.get_task(task_name, include_tracks=include_tracks)
-            # Cancellation markers are intentionally internal task metadata
-            # and are omitted from API snapshots. Read the same locked state
-            # file to distinguish a durable request from an identity race.
+            # Verify the durable request and attempt against the state file.
             latest_info = load_task_metadata(task_dir) or {}
             latest_status = str(latest_info.get("status", "") or "").lower()
             if not task_attempt_matches(latest_info, requested_attempt_id):
@@ -1801,31 +1802,66 @@ class PyrunsRuntime:
             "deleted": deleted_names,
         }
 
+    def _tasks_for_export(self, task_names: List[str]):
+        self.ensure_tasks_loaded(full_refresh=False)
+        names = dict.fromkeys(str(name or "").strip() for name in task_names)
+        names.pop("", None)
+        if not names:
+            raise ValueError("No valid tasks were provided for export.")
+        for name in names:
+            task = self.get_task(name, refresh=True, summary=True)
+            if task is None:
+                raise KeyError(name)
+            yield task
+
     @_with_stable_workspace
     def export_tasks_csv(self, task_names: List[str]) -> str:
         """Build a CSV export for the selected tasks."""
-        self.ensure_tasks_loaded(full_refresh=False)
-        normalized_names: List[str] = []
-        seen: set[str] = set()
-        tasks: List[Dict[str, Any]] = []
-        for name in task_names:
-            task_name = str(name or "").strip()
-            if not task_name or task_name in seen:
-                continue
-            task = self.get_task(task_name, refresh=True, summary=True)
-            if task is None:
-                raise KeyError(task_name)
-            normalized_names.append(task_name)
-            tasks.append(task)
-            seen.add(task_name)
-
-        if not normalized_names:
-            raise ValueError("No valid tasks were provided for export.")
-
-        csv_text = build_export_csv(tasks)
+        csv_text = build_export_csv(list(self._tasks_for_export(task_names)))
         if not csv_text:
             raise ValueError("No monitor data available to export.")
         return csv_text
+
+    @_with_stable_workspace
+    def export_tasks_json(self, task_names: List[str], fields: set[str]) -> str:
+        """Export task summaries and run data with opt-in attachments."""
+        prefix = '{"tasks":['
+        entries: List[str] = []
+        size = len(prefix) + len("]}")
+        for task in self._tasks_for_export(task_names):
+            name = task["name"]
+            info = load_export_metadata(task)
+            runs = run_export_rows(name, info)
+            entry = {
+                "name": name,
+                "kind": task.get("task_kind"),
+                "status": info.get("status", task["status"]),
+                "created_at": info.get("created_at"),
+                "runs": runs,
+            }
+            if "environment" in fields:
+                entry["run_environments"] = info.get("run_environments", [])
+            if "notes" in fields:
+                entry["notes"] = info.get("notes", "")
+            if "config" in fields:
+                config_file = task["config_file"]
+                try:
+                    text = read_task_payload_text(task["dir"], config_file)
+                except (OSError, ValueError) as exc:
+                    raise ValueError(f"Cannot export configuration for '{name}': {exc}") from exc
+                entry["config"] = {"file": config_file, "text": text}
+            if "logs" in fields:
+                log = self.get_task_logs(name, tail_bytes=EXPORT_LOG_TAIL_BYTES, include_log_options=False)
+                if log["selected_log"]:
+                    entry["latest_log"] = {
+                        "file": log["selected_log"], "text": log["content"], "truncated": log["tail_truncated"],
+                    }
+            encoded = json.dumps(entry, ensure_ascii=False, allow_nan=False, separators=(",", ":"))
+            size += len(encoded.encode("utf-8")) + bool(entries)
+            if size > MAX_JSON_EXPORT_BYTES:
+                raise ValueError("Export exceeds 32 MiB. Select fewer tasks or fewer optional fields.")
+            entries.append(encoded)
+        return prefix + ",".join(entries) + "]}"
 
     @_with_stable_workspace
     def set_task_pin(
@@ -1842,16 +1878,20 @@ class PyrunsRuntime:
         return self.require_task(task_name, refresh=True, include_tracks=include_tracks)
 
     @_with_stable_workspace
-    def reorder_tasks(self, items: List[Dict[str, Any]], *, include_tracks: bool = True) -> Dict[str, Any]:
+    def reorder_tasks(
+        self, items: List[Dict[str, Any]], *, include_tracks: bool = True, include_items: bool = True,
+    ) -> Dict[str, Any]:
         """Persist manual card order for the Manager page."""
         self.ensure_tasks_loaded(full_refresh=False)
         self.invalidate_cache()
-        ok, result = self.task_manager.reorder_tasks(items, include_tracks=include_tracks)
+        ok, result = self.task_manager.reorder_tasks(items, include_tracks=include_tracks, include_items=include_items)
         if not ok:
             message = str(result)
             if message.startswith("Task not found: "):
                 raise KeyError(message.split(": ", 1)[1])
             raise ValueError(message)
+        if isinstance(result, int):
+            return {"count": result, "items": []}
         return {
             "count": len(result),
             "items": result,

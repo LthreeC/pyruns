@@ -102,8 +102,10 @@ test('a delayed reorder read cannot write to a newly selected workspace', async 
       await route.fulfill({ response })
     })
     try {
-      await page.getByRole('button', { name: `More actions for ${firstName}`, exact: true }).click()
-      await page.getByRole('group', { name: `Task actions for ${firstName}`, exact: true }).getByRole('button', { name: 'Move later', exact: true }).click()
+      const grip = page.getByRole('button', { name: `Reorder ${firstName}`, exact: true })
+      await grip.press('Space')
+      await grip.press('ArrowRight')
+      await grip.press('Space')
       await started
       const selectedSecond = page.waitForResponse(async response => (
         new URL(response.url()).pathname === '/api/workspace'

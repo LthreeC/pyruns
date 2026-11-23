@@ -135,7 +135,8 @@ UI 更新交接时，实例记录的发布与最终交接或删除使用同一�
 - 根据 `task_kind` 选择命令构造方式
 - python task 注入 `__PYRUNS_CONFIG__`
 - shell task 解析 shell runtime
-- 启动前捕获配置或 Shell 正文，执行同一份输入，原子保存 `run_logs/runN.input.json`
+- Python 任务执行启动时捕获的配置，并原子保存 `run_logs/runN.input.json`
+- Bash 任务直接执行任务目录中的 `config.sh`
 - 采集 stdout / stderr 到 `run_logs`
 - 把实时日志推给 Monitor websocket
 
@@ -275,7 +276,7 @@ SDK 在锁内检查标记后才开始写入记录或曲线，避免 SQLite 事�
 - `task_info.json`
 - `config.yaml` / `config.ps1` / `config.cmd` / `config.sh`
 - `run_logs/`
-- `run_logs/runN.input.json`（每次运行单独保存的输入，按需读取，旧历史允许缺失）
+- `run_logs/runN.input.json`（Python 运行保存的配置与启动参数，按需读取，也可读取旧 Shell 运行留下的快照）
 - `tracks.sqlite3`（指标历史达到自动迁移门槛后创建）
 
 这带来的好处很直接：

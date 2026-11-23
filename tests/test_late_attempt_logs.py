@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from pyruns._config import ERROR_LOG_FILENAME, RUN_LOGS_DIR, TASK_KIND_SHELL
+from pyruns._config import ERROR_LOG_FILENAME, RUN_LOGS_DIR, TASK_KIND_CONFIG, TASK_KIND_SHELL
 from pyruns.core import executor
 from pyruns.utils.info_io import load_task_metadata, save_task_info, update_task_metadata
 
@@ -19,7 +19,6 @@ def owned_task(tmp_path, monkeypatch):
         "status": "running", "run_index": 1, "runner_id": "owner",
         "_attempt_id": "original", "run_attempt_ids": ["original"],
     })
-    monkeypatch.setattr(executor, "materialize_run_payload", lambda *a, **k: ("", None))
     monkeypatch.setattr(executor, "_resolve_python_runtime", lambda *a, **k: {})
     monkeypatch.setattr(executor, "_build_command", lambda *a, **k: (["unused"], str(tmp_path), []))
     monkeypatch.setattr(executor, "_build_run_source_state", lambda **k: "")
@@ -60,6 +59,7 @@ def _assert_replacement_untouched(task_dir):
 
 
 def test_rejected_run_input_does_not_log_errors_into_replacement(owned_task, monkeypatch):
+    update_task_metadata(str(owned_task), lambda info: info.update(task_kind=TASK_KIND_CONFIG))
     save_input = executor.save_run_input
 
     def replace_before_input(*args, **kwargs):

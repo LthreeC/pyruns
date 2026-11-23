@@ -171,6 +171,14 @@ def _read_text_limited(path: str, *, max_bytes: int = MAX_TASK_PAYLOAD_BYTES) ->
     return _decode_payload_text(raw, path, max_bytes)
 
 
+def read_task_payload_text(task_dir: str, config_file: str) -> str:
+    """Read the current configuration file without parsing its contents."""
+    resolved_paths: dict[str, str | None] = {}
+    path = resolve_task_payload_path(task_dir, config_file, _resolved_paths=resolved_paths)
+    raw, _ = _read_payload_bytes(path, MAX_TASK_PAYLOAD_BYTES, _boundary=resolved_paths[_workspace_abspath(task_dir)])
+    return _decode_payload_text(raw, path, MAX_TASK_PAYLOAD_BYTES)
+
+
 def read_task_payload_signature(task_dir: str, config_file: str) -> TaskPayloadSignature | None:
     """Probe content changes without constructing or parsing a configuration."""
     try:

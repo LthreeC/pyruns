@@ -141,7 +141,6 @@ test('Manager cancels obsolete lists and preserves results through timeout and r
   await stall(true)
   await refresh.click()
   await expect.poll(snapshot).toMatchObject({ reads: 2, aborts: 0 })
-  await page.getByRole('button', { name: 'View options', exact: true }).click()
   await page.getByRole('combobox', { name: 'Filter tasks by status' }).selectOption('completed')
   await expect.poll(snapshot).toMatchObject({ reads: 3, aborts: 1 })
   await page.clock.runFor(10_001)

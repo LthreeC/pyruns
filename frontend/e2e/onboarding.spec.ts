@@ -213,6 +213,7 @@ test('the welcome waits for a delayed initial route', async ({ page }) => {
   try {
     await page.goto('/?token=pyruns-e2e-access-token', { waitUntil: 'domcontentloaded' })
     await expect(page.getByText('正在加载工作区...', { exact: true })).toBeVisible()
+    await expect(page.locator('[data-tour="home"]')).toBeVisible()
     await expect(page.getByRole('dialog', { name: '欢迎使用 Pyruns', exact: true })).toHaveCount(0)
     releaseRoute()
     await expect(page.getByRole('dialog', { name: '欢迎使用 Pyruns', exact: true })).toBeVisible()
@@ -233,7 +234,7 @@ test('session recovery takes priority over onboarding and clears the active tour
   await page.getByRole('button', { name: '重新连接', exact: true }).click()
   await page.getByRole('button', { name: '开始引导', exact: true }).click()
   await expectStep(page, 'home')
-  await page.route('**/api/runtime', route => route.fulfill({ status: 401, json: { detail: 'UI authentication required' } }))
+  await page.route('**/api/runtime?refresh_providers=false', route => route.fulfill({ status: 401, json: { detail: 'UI authentication required' } }))
   for (const target of ['workspace', 'workspace-picker', 'generator', 'generator-controls', 'generator-create', 'manager', 'manager-controls', 'monitor', 'monitor-controls', 'runtime']) {
     await next(page, target)
   }

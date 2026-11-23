@@ -42,7 +42,7 @@ from pyruns._config import (
 )
 from pyruns.core.gpu_scheduler import CUDA_VISIBLE_DEVICES, PYRUNS_ASSIGNED_GPUS
 from pyruns.core.run_environment import collect_run_environment
-from pyruns.core.run_inputs import materialize_run_payload, save_run_input
+from pyruns.core.run_inputs import materialize_config_run_input, save_run_input
 from pyruns.utils import get_logger, get_now_str
 from pyruns.utils.events import log_emitter
 from pyruns.utils.info_io import (
@@ -73,6 +73,7 @@ from pyruns.utils.env_utils import normalize_environment
 from pyruns.utils.temp_paths import create_inherited_temp_dir
 from pyruns.utils.task_files import (
     normalize_task_kind,
+    read_task_payload_text,
     resolve_task_config_file,
     resolve_task_payload_path,
 )
@@ -910,11 +911,10 @@ def _shell_executable_name(shell_path: str) -> str:
     return normalized.rsplit("/", 1)[-1].lower()
 
 
-def _read_shell_script_body(script_path: str) -> str:
+def _read_shell_script_body(task_dir: str, script_path: str) -> str:
     """Read the stored shell script and strip any shebang for native wrappers."""
 
-    with open(script_path, "r", encoding="utf-8") as handle:
-        body = handle.read()
+    body = read_task_payload_text(task_dir, script_path).replace("\r\n", "\n").replace("\r", "\n")
 
     if body.startswith("#!"):
         _, _, remainder = body.partition("\n")
@@ -1000,7 +1000,7 @@ def _materialize_windows_shell_wrapper(
     if _is_posix_shell_executable(shell_path):
         return [shell_path, _windows_posix_script_arg(shell_path, script_path)], task_dir, []
 
-    script_body = _read_shell_script_body(script_path)
+    script_body = _read_shell_script_body(task_dir, script_path)
     if _is_powershell_executable(shell_path):
         wrapper_body = "\n".join(
             [
@@ -1917,21 +1917,17 @@ def run_task_worker(
                 process_terminated=False,
             )
 
-        payload_text, frozen_payload = materialize_run_payload(
-            task_dir, task_kind, config_file, config,
-            argv_task=task_kind == TASK_KIND_SHELL and isinstance(meta_cmd, list) and bool(meta_cmd),
-        )
+        execution_config_file = config_file
         if task_kind == TASK_KIND_CONFIG:
             from pyruns.utils.config_utils import load_config_text
 
+            payload_text, frozen_payload = materialize_config_run_input(task_dir, config_file, config)
+            cleanup_paths.append(frozen_payload)
+            execution_config_file = os.path.relpath(frozen_payload, task_dir)
             captured_config = load_config_text(payload_text)
             if not isinstance(captured_config, DictConfig):
                 raise RuntimeError("Task configuration must be a mapping")
             config = captured_config
-        execution_config_file = config_file
-        if frozen_payload:
-            cleanup_paths.append(frozen_payload)
-            execution_config_file = os.path.relpath(frozen_payload, task_dir)
         python_runtime = _resolve_python_runtime(task_dir, env_vars)
         command, workdir, command_cleanup_paths = _build_command(
             meta_cmd,
@@ -2004,23 +2000,24 @@ def run_task_worker(
                 "error": "task ownership changed before process launch",
             }
 
-        save_run_input(
-            task_dir, run_index,
-            {
-                "captured_at": get_now_str(),
-                "task_kind": task_kind,
-                "payload_file": config_file,
-                "payload_text": payload_text,
-                "script": script_path if task_kind == TASK_KIND_CONFIG else None,
-                "command": meta_cmd if meta_cmd else None,
-                "workdir": os.path.abspath(workdir or os.getcwd()),
-                "shell_executable": shell_executable if task_kind == TASK_KIND_SHELL else None,
-                "environment": normalize_environment(env_vars or {}),
-                "launch_argv": command,
-            },
-            runner_id=runner_id,
-            expected_attempt_id=attempt_id,
-        )
+        if task_kind == TASK_KIND_CONFIG:
+            save_run_input(
+                task_dir, run_index,
+                {
+                    "captured_at": get_now_str(),
+                    "task_kind": task_kind,
+                    "payload_file": config_file,
+                    "payload_text": payload_text,
+                    "script": script_path,
+                    "command": meta_cmd if meta_cmd else None,
+                    "workdir": os.path.abspath(workdir or os.getcwd()),
+                    "shell_executable": None,
+                    "environment": normalize_environment(env_vars or {}),
+                    "launch_argv": command,
+                },
+                runner_id=runner_id,
+                expected_attempt_id=attempt_id,
+            )
         try:
             proc = _spawn_captured_process(
                 command,

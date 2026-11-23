@@ -300,6 +300,12 @@ class TaskBatchDeleteRequest(RequestModel):
     task_names: list[str] = Field(default_factory=list)
 
 
+class TaskJsonExportRequest(TaskBatchDeleteRequest):
+    """Select optional fields for a task report."""
+
+    fields: set[Literal["environment", "notes", "config", "logs"]] = Field(default_factory=set)
+
+
 class TaskPinRequest(RequestModel):
     """Pin or unpin one task."""
 
@@ -850,8 +856,9 @@ def create_app(
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     @app.get("/api/runtime")
-    def get_runtime_info() -> dict[str, Any]:
-        return get_runtime().get_runtime_info()
+    def get_runtime_info(refresh_providers: bool = Query(True)) -> dict[str, Any]:
+        runtime = get_runtime()
+        return runtime.get_runtime_info() if refresh_providers else runtime.get_runtime_info(refresh_providers=False)
 
     @app.patch("/api/runtime")
     def update_runtime_info(
@@ -1107,14 +1114,16 @@ def create_app(
         return serialize_page(page)
 
     @app.post("/api/tasks/reorder")
-    def reorder_tasks(payload: TaskReorderRequest, include_tracks: bool = True) -> dict[str, Any]:
+    def reorder_tasks(
+        payload: TaskReorderRequest, include_tracks: bool = True, include_items: bool = True,
+    ) -> dict[str, Any]:
         try:
             require_item_limit(payload.items, label="Task reorder")
             items = [
                 item.model_dump() if hasattr(item, "model_dump") else item.dict()
                 for item in payload.items
             ]
-            return get_runtime().reorder_tasks(items, include_tracks=include_tracks)
+            return get_runtime().reorder_tasks(items, include_tracks=include_tracks, include_items=include_items)
         except KeyError as exc:
             raise HTTPException(status_code=404, detail=f"Task '{exc.args[0]}' not found") from exc
         except ValueError as exc:
@@ -1204,6 +1213,17 @@ def create_app(
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         return Response(content=csv_text, media_type="text/csv; charset=utf-8")
+
+    @app.post("/api/tasks/export/json")
+    def export_tasks_json(payload: TaskJsonExportRequest) -> Response:
+        try:
+            require_item_limit(payload.task_names, label="Task export")
+            report = get_runtime().export_tasks_json(payload.task_names, payload.fields)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=f"Task '{exc.args[0]}' not found") from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return Response(content=report, media_type="application/json")
 
     @app.post("/api/tasks/{task_name}/run")
     def run_task(

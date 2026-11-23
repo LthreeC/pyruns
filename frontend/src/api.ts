@@ -177,7 +177,8 @@ export const setRunRoot = (path: string) =>
   request<WorkspaceInfo>('/api/workspace/run-root', { method: 'POST', body: JSON.stringify({ path }) })
 export const openShellWorkspace = () =>
   request<WorkspaceInfo>('/api/workspace/shell', { method: 'POST' })
-export const getRuntimeInfo = () => request<RuntimeInfo>('/api/runtime')
+export const getRuntimeInfo = (refreshProviders = true) =>
+  request<RuntimeInfo>(refreshProviders ? '/api/runtime' : '/api/runtime?refresh_providers=false')
 export const updateRuntimeInfo = (payload: Partial<{
   task_storage: 'shared' | 'local'
   python_executable: string
@@ -350,13 +351,17 @@ export const batchDeleteTasks = (taskNames: string[]) =>
     body: JSON.stringify({ task_names: taskNames }),
   })
 
-export async function exportTasksCsv(taskNames: string[]): Promise<Blob> {
+export type TaskExportField = 'environment' | 'notes' | 'config' | 'logs'
+
+export const exportTasksCsv = (taskNames: string[]) => exportTaskReport(taskNames, 'csv')
+
+export async function exportTaskReport(taskNames: string[], format: 'csv' | 'json', fields?: TaskExportField[]): Promise<Blob> {
   const requestAuthorizationEpoch = authorizationEpoch
   const context = workspaceContext
-  const res = await fetch(`${BASE}/api/tasks/export/csv`, {
+  const res = await fetch(`${BASE}/api/tasks/export/${format}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', ...workspaceHeaders(context) },
-    body: JSON.stringify({ task_names: taskNames }),
+    body: JSON.stringify({ task_names: taskNames, fields: format === 'json' ? fields : undefined }),
   })
   if (!res.ok) {
     throw await responseError(res, requestAuthorizationEpoch, context)
@@ -379,7 +384,7 @@ export const pinTask = (name: string, pinned?: boolean) =>
   })
 
 export const reorderTasks = (items: { name: string; pinned: boolean }[]) =>
-  request<{ count: number; items: Task[] }>('/api/tasks/reorder?include_tracks=false', {
+  request<{ count: number }>('/api/tasks/reorder?include_items=false', {
     method: 'POST',
     body: JSON.stringify({ items }),
   })

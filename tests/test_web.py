@@ -6974,7 +6974,8 @@ def test_task_env_endpoint_rejects_values_that_subprocess_cannot_use(tmp_path, e
     assert load_task_info(str(workspace / TASKS_DIR / "alpha")).get("env", {}) == {}
 
 
-def test_reorder_tasks_endpoint_persists_manual_order_and_pin_state(tmp_path):
+@pytest.mark.parametrize("include_items", [True, False])
+def test_reorder_tasks_endpoint_persists_manual_order_and_pin_state(tmp_path, include_items):
     workspace = _make_workspace(tmp_path, "main")
     _add_task(workspace, "alpha")
     _add_task(workspace, "beta")
@@ -6997,6 +6998,7 @@ def test_reorder_tasks_endpoint_persists_manual_order_and_pin_state(tmp_path):
 
     response = client.post(
         "/api/tasks/reorder",
+        params={"include_items": "false"} if not include_items else None,
         json={
             "items": [
                 {"name": "gamma", "pinned": True},
@@ -7014,8 +7016,12 @@ def test_reorder_tasks_endpoint_persists_manual_order_and_pin_state(tmp_path):
     )
 
     assert response.status_code == 200
-    assert [item["name"] for item in response.json()["items"]] == ["gamma", "alpha", "beta"]
-    assert response.json()["items"][0]["pinned"] is True
+    assert response.json()["count"] == 3
+    if include_items:
+        assert [item["name"] for item in response.json()["items"]] == ["gamma", "alpha", "beta"]
+        assert response.json()["items"][0]["pinned"] is True
+    else:
+        assert response.json()["items"] == []
     assert [item["name"] for item in listed[:3]] == ["gamma", "alpha", "beta"]
     assert gamma_info["pinned"] is True
     assert gamma_info["task_order"] == 0
@@ -8835,6 +8841,46 @@ def test_runtime_export_tasks_csv_handles_duplicate_names_and_empty_monitor_data
     }]
     with pytest.raises(ValueError, match="No valid tasks"):
         runtime.export_tasks_csv(["", " "])
+
+
+def test_web_json_export_includes_only_selected_task_attachments(tmp_path, monkeypatch):
+    from pyruns.web import runtime as runtime_mod
+
+    workspace = _make_workspace(tmp_path, "main")
+    _add_task(workspace, "alpha", status="completed", log_text="a" * 65_536 + "\nlast line\n")
+    _add_task(workspace, "pending")
+    task_dir = workspace / TASKS_DIR / "alpha"
+    update_task_info(str(task_dir), lambda info: info.update(
+        records=[{"loss": 0.25}], notes="review me", env={"PRIVATE": "exclude"},
+        run_environments=[{"host": "worker"}],
+    ))
+    runtime = _build_runtime(workspace)
+    with TestClient(create_app(runtime)) as client:
+        path = "/api/tasks/export/json"
+        names = {"task_names": ["alpha", "pending", "alpha"]}
+        response = client.post(path, json=names)
+        assert response.status_code == 200
+        alpha, pending = response.json()["tasks"]
+        assert set(alpha) == {"name", "kind", "status", "created_at", "runs"}
+        assert alpha["runs"][0]["loss"] == 0.25
+        assert pending["runs"] == []
+
+        response = client.post(path, json={**names, "fields": ["environment", "config", "notes", "logs"]})
+        assert response.status_code == 200, response.text
+        alpha, pending = response.json()["tasks"]
+        assert alpha["run_environments"] == [{"host": "worker"}]
+        assert alpha["notes"] == "review me"
+        assert alpha["config"]["file"] == CONFIG_FILENAME
+        assert "lr:" in alpha["config"]["text"]
+        assert alpha["latest_log"]["file"] == "run1.log"
+        assert alpha["latest_log"]["truncated"] is True
+        assert alpha["latest_log"]["text"].splitlines()[-1] == "last line"
+        assert "latest_log" not in pending
+        assert "PRIVATE" not in response.text
+        assert client.post(path, json={**names, "fields": ["unknown"]}).status_code == 422
+
+        monkeypatch.setattr(runtime_mod, "MAX_JSON_EXPORT_BYTES", 16)
+        assert client.post(path, json=names).status_code == 400
 
 
 def test_export_reports_unreadable_metadata_without_overwriting_output_and_recovers(tmp_path):

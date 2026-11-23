@@ -55,9 +55,9 @@ import ConfirmDialog from '@/components/shared/ConfirmDialog'
 import CompactSection from '@/components/shared/CompactSection'
 import Pagination from '@/components/shared/Pagination'
 import TaskDetailPanel from '@/components/manager/TaskDetailPanel'
+import TaskExportDialog from './TaskExportDialog'
 import type { GPUWaitStatus, LogStreamMessage, Task, TaskSearchMatch } from '@/types'
-import type { TaskStatus } from '@/theme/tokens'
-import { taskStatusLabel } from '@/theme/tokens'
+import { isTaskStopping, STATUS_COLORS, taskStatusLabel } from '@/theme/tokens'
 import { errorMessage } from '@/utils/errors'
 import * as api from '@/api'
 import {
@@ -225,6 +225,7 @@ export default function MonitorPage() {
   const [sidebarQuery, setSidebarQuery] = useState('')
   const [compactSearchFocused, setCompactSearchFocused] = useState(false)
   const [exportMode, setExportMode] = useState(false)
+  const [exportOptionsOpen, setExportOptionsOpen] = useState(false)
   const [detailTask, setDetailTask] = useState<Task | null>(null)
   const detailTaskRef = useRef(detailTask)
   const detailRequestSeqRef = useRef(0)
@@ -293,6 +294,7 @@ export default function MonitorPage() {
     )
   const runLogName = selectedTask ? `run${Math.max(selectedTask.run_index || 1, 1)}.log` : ''
   const liveLogName = selectedTask?.status === 'queued' ? QUEUE_LOG_NAME : runLogName
+  const stopping = taskActionPending === 'cancel' || Boolean(selectedTask && isTaskStopping(selectedTask))
   const isFollowingQueuedTask = queuedLiveLogTaskRef.current.taskName === selectedTask?.name
   const isLive = Boolean(!logMatch && selectedTask && (
     (selectedTask.status === 'queued' && (!selectedLog || selectedLog === QUEUE_LOG_NAME))
@@ -545,6 +547,7 @@ export default function MonitorPage() {
     setSidebarQuery('')
     setCompactSearchFocused(false)
     setExportMode(false)
+    setExportOptionsOpen(false)
     setDetailTask(null)
     setSelectedTaskSnapshot(null)
     setTaskActionPending(null)
@@ -1498,7 +1501,7 @@ export default function MonitorPage() {
       })
       notify({
         tone: 'success',
-        title: action === 'run' ? t("Task started") : t("Cancel requested"),
+        title: action === 'run' ? t("Task started") : task?.status === 'cancelled' ? t("Task cancelled") : t("Cancel requested"),
         detail: currentTaskName,
       })
     } catch (err) {
@@ -1520,39 +1523,30 @@ export default function MonitorPage() {
     loadDetailTask(task)
   }, [loadDetailTask])
 
-  const handleExport = useCallback(async () => {
-    const names = [...exportIds]
-    if (!names.length) return
+  const handleExport = async (names: string[], format: 'csv' | 'json', fields: api.TaskExportField[]) => {
     const requestedWorkspaceKey = workspaceKeyRef.current
-    try {
-      const blob = await api.exportTasksCsv(names)
-      const url = URL.createObjectURL(blob)
-      const anchor = document.createElement('a')
-      anchor.href = url
-      anchor.download = `pyruns_export_${new Date().toISOString().slice(0, 19).replace(/:/g, '-')}.csv`
-      // Keep the temporary anchor in the document until the browser has
-      // started the download. Immediate revocation can cancel downloads in
-      // Safari and older Chromium/WebView implementations.
-      anchor.style.display = 'none'
-      document.body.appendChild(anchor)
-      anchor.click()
-      window.setTimeout(() => {
-        URL.revokeObjectURL(url)
-        anchor.remove()
-      }, 0)
-      if (workspaceKeyRef.current === requestedWorkspaceKey) {
-        setExportMode(false)
-        clearExport()
-      }
-      notify({
-        tone: 'success',
-        title: t("CSV exported"),
-        detail: t('{{count}} task(s) exported.', { count: names.length }),
-      })
-    } catch (err) {
-      notify({ tone: 'error', title: t("Could not export CSV"), detail: errorMessage(err) })
-    }
-  }, [clearExport, exportIds, notify])
+    const blob = await api.exportTaskReport(names, format, fields)
+    if (workspaceKeyRef.current !== requestedWorkspaceKey) return
+    const url = URL.createObjectURL(blob)
+    const anchor = document.createElement('a')
+    anchor.href = url
+    anchor.download = `pyruns_export_${new Date().toISOString().slice(0, 19).replace(/:/g, '-')}.${format}`
+    anchor.style.display = 'none'
+    document.body.appendChild(anchor)
+    anchor.click()
+    window.setTimeout(() => {
+      URL.revokeObjectURL(url)
+      anchor.remove()
+    }, 0)
+    setExportMode(false)
+    setExportOptionsOpen(false)
+    clearExport()
+    notify({
+      tone: 'success',
+      title: t('Tasks exported'),
+      detail: t('{{count}} task(s) exported.', { count: names.length }),
+    })
+  }
 
   const handleSelectLogFile = useCallback((logName: string, tailBytes?: number) => {
     const taskName = selectedTaskNameRef.current
@@ -1784,8 +1778,8 @@ export default function MonitorPage() {
               icon={<FileDown className="h-3.5 w-3.5" />}
               variant="secondary"
               className="w-full border-border-subtle"
-              onClick={() => setExportMode(true)}
-              disabled={filteredTasks.length === 0}
+              onClick={() => setExportOptionsOpen(true)}
+              disabled={!selectedTask && filteredTasks.length === 0}
             >
               {t("Export")}
             </ActionButton>
@@ -1809,7 +1803,7 @@ export default function MonitorPage() {
                   icon={<Download className="h-3.5 w-3.5" />}
                   variant="primary"
                   className="flex-1"
-                  onClick={handleExport}
+                  onClick={() => setExportOptionsOpen(true)}
                   disabled={exportIds.size === 0}
                 >
                   {t("Export")}
@@ -1968,9 +1962,9 @@ export default function MonitorPage() {
                       : <Square className="h-3.5 w-3.5" />}
                     variant="danger"
                     onClick={() => setStopConfirmTask(selectedTask.name)}
-                    disabled={taskActionPending !== null}
+                    disabled={stopping || taskActionPending !== null}
                   >
-                    {taskActionPending === 'cancel' ? t("Stopping") : t("Stop")}
+                    {stopping ? t("Stopping") : t("Stop")}
                   </ActionButton>
                 )}
               </div>
@@ -2162,6 +2156,19 @@ export default function MonitorPage() {
           onRefresh={() => {
             void fetchMonitorTasks()
           }}
+        />
+      )}
+      {exportOptionsOpen && (
+        <TaskExportDialog
+          current={selectedTask?.name || ''}
+          page={filteredTasks.map(task => task.name)}
+          selected={[...exportIds]}
+          onClose={() => setExportOptionsOpen(false)}
+          onChoose={() => {
+            setExportOptionsOpen(false)
+            setExportMode(true)
+          }}
+          onDownload={handleExport}
         />
       )}
       <ConfirmDialog
@@ -2425,17 +2432,10 @@ const SearchResultGroup = memo(function SearchResultGroup({
 
 
 function StatusDot({ task }: { task: Task }) {
-  const colors: Record<TaskStatus, string> = {
-    pending: 'bg-gray-500',
-    queued: 'bg-blue-500',
-    running: 'bg-amber-500',
-    completed: 'bg-emerald-500',
-    failed: 'bg-rose-500',
-    cancelled: 'bg-slate-500',
-  }
-
   const label = taskStatusLabel(task)
   const recorded = label !== 'Running' && label !== 'Queued' && (task.status === 'running' || task.status === 'queued')
-  return <span className={clsx('h-2 w-2 flex-none rounded-full', recorded ? 'border border-current text-txt-secondary' : colors[task.status])}
+  const color = isTaskStopping(task) ? 'border-2 border-accent'
+    : recorded ? 'border border-current text-txt-secondary' : STATUS_COLORS[task.status].dot
+  return <span className={clsx('size-2 flex-none rounded-full', color)}
     role="img" title={t(label)} aria-label={t(label)} />
 }

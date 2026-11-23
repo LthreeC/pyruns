@@ -1,5 +1,32 @@
 import { expect, test } from '@playwright/test'
 
+test('monitor exports the current task with selected JSON fields', async ({ page }, testInfo) => {
+  const task = { name: 'report-task', status: 'completed', run_index: 1, task_kind: 'shell' }
+  await page.route('**/api/tasks?*', route => route.fulfill({ json: { items: [task], total: 1 } }))
+  await page.route('**/api/tasks/report-task/logs?*', route => route.fulfill({ json: {
+    selected_log: 'run1.log', available_logs: ['run1.log'], content: 'finished\n', offset: 9,
+  } }))
+  await page.route('**/api/tasks/export/json', route => {
+    expect(route.request().postDataJSON()).toEqual({
+      task_names: ['report-task'], fields: ['environment', 'config', 'logs'],
+    })
+    return route.fulfill({ json: { tasks: [{ name: 'report-task' }] } })
+  })
+  await page.goto('/monitor?token=pyruns-e2e-access-token')
+  await page.getByRole('button', { name: 'Export', exact: true }).click()
+  const dialog = page.getByRole('dialog', { name: 'Export tasks', exact: true })
+  await expect(dialog.getByRole('combobox', { name: 'Tasks' })).toHaveValue('current')
+  await expect(dialog.getByRole('checkbox', { name: 'Recorded run environment' })).toBeChecked()
+  await dialog.getByRole('checkbox', { name: 'Current configuration' }).check()
+  await dialog.getByRole('checkbox', { name: 'Latest log tail (64 KiB per task)' }).check()
+  expect(await dialog.evaluate(element => element.scrollWidth <= element.clientWidth)).toBe(true)
+  await dialog.screenshot({ path: testInfo.outputPath('export-options.png') })
+  const download = page.waitForEvent('download')
+  await dialog.getByRole('button', { name: 'Download JSON', exact: true }).click()
+  expect((await download).suggestedFilename()).toMatch(/\.json$/)
+  await expect(dialog).toBeHidden()
+})
+
 test('monitor pages beyond 10000 tasks while preserving the open log and cross-page export', async ({ page }, testInfo) => {
   test.setTimeout(90_000)
   const tasks = Array.from({ length: 10_201 }, (_, index) => ({
@@ -54,6 +81,9 @@ test('monitor pages beyond 10000 tasks while preserving the open log and cross-p
   const historicalReads = logReads
 
   await sidebar.getByRole('button', { name: 'Export', exact: true }).click()
+  const dialog = page.getByRole('dialog', { name: 'Export tasks', exact: true })
+  await expect(dialog.getByRole('combobox', { name: 'Tasks' })).toHaveValue('current')
+  await dialog.getByRole('button', { name: 'Choose tasks', exact: true }).click()
   await sidebar.getByRole('button', { name: 'Select page', exact: true }).click()
   await expect(sidebar.getByText('200 selected', { exact: true })).toBeVisible()
   const next = sidebar.getByRole('button', { name: 'Next page', exact: true })
@@ -64,8 +94,11 @@ test('monitor pages beyond 10000 tasks while preserving the open log and cross-p
   await sidebar.getByRole('button', { name: 'Deselect page', exact: true }).click()
   await expect(sidebar.getByText('200 selected', { exact: true })).toBeVisible()
   await sidebar.getByRole('button', { name: 'Select page-00200, completed', exact: true }).click()
-  const download = page.waitForEvent('download')
   await sidebar.getByRole('button', { name: 'Export', exact: true }).click()
+  await expect(dialog.getByRole('combobox', { name: 'Tasks' })).toHaveValue('selected')
+  await dialog.getByRole('combobox', { name: 'File format' }).selectOption('csv')
+  const download = page.waitForEvent('download')
+  await dialog.getByRole('button', { name: 'Download CSV', exact: true }).click()
   await download
   expect(exported).toEqual(tasks.slice(0, 201).map(task => task.name))
 

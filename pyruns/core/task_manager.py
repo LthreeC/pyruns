@@ -7,6 +7,7 @@ import copy
 import dataclasses
 import math
 import os
+import platform
 import re
 import secrets
 import threading
@@ -506,7 +507,7 @@ class TaskManager:
             return False
         identity = task.get("_current_process_identity")
         pid, created_at = identity if identity is not None else cls._current_process_identity(task)
-        if not pid or created_at is None or not process_identity_matches(pid, created_at) or not is_pid_running(pid):
+        if not pid or cls._verified_run_process_time(task, pid, created_at) is None or not is_pid_running(pid):
             return False
         # A matching PID and timestamp alone cannot disambiguate a legacy
         # record copied from another machine with the same hostname.
@@ -1294,7 +1295,7 @@ class TaskManager:
             not owner_may_be_remote
             and pid
             and (
-                process_identity_matches(pid, created_at)
+                self._verified_run_process_time(info, pid, created_at) is not None
                 if created_at is not None
                 else is_pid_running(pid)
             )
@@ -2544,8 +2545,8 @@ class TaskManager:
         return True, new_value
 
     def reorder_tasks(
-        self, items: List[Dict[str, Any]], *, include_tracks: bool = True,
-    ) -> tuple[bool, List[Dict[str, Any]] | str]:
+        self, items: List[Dict[str, Any]], *, include_tracks: bool = True, include_items: bool = True,
+    ) -> tuple[bool, List[Dict[str, Any]] | int | str]:
         """Persist manual task order and optional pinned states."""
         normalized: list[tuple[str, Optional[bool], int]] = []
         seen: set[str] = set()
@@ -2659,15 +2660,18 @@ class TaskManager:
                 self._apply_task_metadata_update(
                     task_name, task_dir, target, revision, updated_info[task_name],
                 )
-            with self._lock:
-                reordered = [
-                    self._snapshot_task_for_api(
-                        self._resolve_identifier_locked(task_name), summary=False, include_tracks=include_tracks,
-                    )
-                    for task_name, _, _ in normalized
-                ]
+            if include_items:
+                with self._lock:
+                    reordered = [
+                        self._snapshot_task_for_api(
+                            self._resolve_identifier_locked(task_name), summary=False, include_tracks=include_tracks,
+                        )
+                        for task_name, _, _ in normalized
+                    ]
 
         self.trigger_update()
+        if not include_items:
+            return True, len(normalized)
         return True, [
             self._finalize_full_task_snapshot(task, include_tracks=include_tracks)
             for task in reordered if task is not None
@@ -2997,9 +3001,10 @@ class TaskManager:
                 return False
             if self._is_foreign_live_runner(latest):
                 return True  # The recovered runner can honor the durable request.
-            if not pid or created_at is None or not kill_process(
-                pid, expected_create_time=created_at,
-            ):
+            if not pid or created_at is None:
+                return False
+            verified_time = self._verified_run_process_time(latest, pid, created_at)
+            if not kill_process(pid, expected_create_time=verified_time or created_at):
                 return False
             self._mark_failed_on_disk(
                 {"name": task_name, "dir": task_dir, "run_index": run_index},
@@ -3154,7 +3159,8 @@ class TaskManager:
                         expected_attempt_id=disk_attempt_id,
                     )
                     return False
-                if not kill_process(int(pid), expected_create_time=created_at):
+                verified_time = self._verified_run_process_time(disk_info, pid, created_at) or created_at
+                if not kill_process(pid, expected_create_time=verified_time):
                     logger.warning(
                         "Could not verify termination of PID %s for %s",
                         pid,
@@ -3165,10 +3171,7 @@ class TaskManager:
                     # transient termination failure, while a reused PID is
                     # rolled back so an unrelated process is never stopped.
                     try:
-                        process_still_matches = process_identity_matches(
-                            int(pid),
-                            created_at,
-                        )
+                        process_still_matches = self._verified_run_process_time(disk_info, pid, verified_time) is not None
                     except Exception:
                         process_still_matches = False
                     if not process_still_matches:
@@ -4438,6 +4441,25 @@ class TaskManager:
         if not math.isfinite(created_at) or created_at <= 0:
             return pid, None
         return pid, created_at
+
+    @staticmethod
+    def _verified_run_process_time(info: Dict[str, Any], pid: int, recorded: float | None) -> float | None:
+        if recorded is None:
+            return None
+        if process_identity_matches(pid, recorded):
+            return recorded
+        attempt_id = str(info.get("_attempt_id") or "")
+        if not attempt_id or "microsoft" not in platform.release().lower() or runner_location(info) != "local":
+            return None
+        # WSL can change the wall-clock boot time used to compute a process's
+        # creation time. Verify the unique launch markers and recheck the PID.
+        observed = get_process_create_time(pid)
+        if observed is not None and process_environment_matches(pid, {
+            ENV_KEY_RUN_ATTEMPT_ID: attempt_id,
+            ENV_KEY_RUN_INDEX: str(info["run_index"]),
+        }) and process_identity_matches(pid, observed):
+            return observed
+        return None
 
     def _latest_pid_from_disk(self, task: Dict[str, Any]) -> Any:
         task_info = load_task_metadata(task["dir"])

@@ -4,6 +4,7 @@ import {
   useCallback,
   useEffect,
   useLayoutEffect,
+  useMemo,
   useRef,
   type ComponentType,
   type KeyboardEvent as ReactKeyboardEvent,
@@ -23,6 +24,7 @@ import ActionButton from '@/components/shared/ActionButton'
 import RunInputView from './RunInputView'
 import { useTaskDetailDraftStore, useToastStore } from '@/store'
 import type { RunEnvironment, Task } from '@/types'
+import { isTaskStopping, taskStatusLabel } from '@/theme/tokens'
 import { errorMessage } from '@/utils/errors'
 import { formatElapsedDuration, formatStoredCommand, parseTaskTimestampMillis } from '@/utils/taskRuntime'
 import { summarizeGpuWait } from '@/utils/gpuWait'
@@ -549,7 +551,7 @@ export default function TaskDetailPanel({ task, onClose, onTaskUpdated, onRefres
 
   const tabs: { key: Tab; label: string; icon: ComponentType<{ className?: string }> }[] = [
     { key: 'info', label: 'Info', icon: FileText },
-    { key: 'config', label: isShellTask(task) ? t("Script") : t("Config"), icon: Settings },
+    { key: 'config', label: 'Config', icon: Settings },
     { key: 'notes', label: 'Notes', icon: StickyNote },
     { key: 'env', label: 'Env', icon: Variable },
   ]
@@ -694,7 +696,7 @@ export default function TaskDetailPanel({ task, onClose, onTaskUpdated, onRefres
             )}
           />
         </button>
-        <div className="flex flex-wrap items-center gap-2 px-4 py-2">
+        <div className="flex min-h-14 flex-wrap items-center gap-2 px-4 pb-1 pt-2 sm:px-5">
           <div className="order-2 w-full sm:order-none sm:w-auto">
             <StatusBadge task={task} />
           </div>
@@ -740,7 +742,7 @@ export default function TaskDetailPanel({ task, onClose, onTaskUpdated, onRefres
               </div>
             ) : (
               <div className="flex items-center gap-2">
-                <span className="min-w-0 select-text break-all text-base font-semibold text-txt-primary">{displayName}</span>
+                <span className="min-w-0 select-text text-base font-semibold tracking-tight text-txt-primary [overflow-wrap:anywhere]">{displayName}</span>
                 <button
                   type="button"
                   onClick={() => setRenaming(true)}
@@ -767,55 +769,60 @@ export default function TaskDetailPanel({ task, onClose, onTaskUpdated, onRefres
           </button>
         </div>
 
-        <div role="tablist" aria-label={t("Task detail sections")} className="grid grid-cols-4 gap-1 border-b border-border-subtle px-4 sm:flex sm:gap-3">
-          {tabs.map(({ key, label, icon: Icon }) => (
-            <button
-              key={key}
-              type="button"
-              id={`task-detail-tab-${key}`}
-              role="tab"
-              aria-selected={tab === key}
-              aria-controls={`task-detail-panel-${key}`}
-              tabIndex={tab === key ? 0 : -1}
-              onClick={() => setTab(key)}
-              onKeyDown={event => {
-                if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return
-                event.preventDefault()
-                const currentIndex = tabs.findIndex(item => item.key === key)
-                const nextIndex = event.key === 'Home'
-                  ? 0
-                  : event.key === 'End'
-                    ? tabs.length - 1
-                    : (currentIndex + (event.key === 'ArrowRight' ? 1 : -1) + tabs.length) % tabs.length
-                const nextTab = tabs[nextIndex].key
-                setTab(nextTab)
-                panelRef.current?.querySelector<HTMLElement>(`#task-detail-tab-${nextTab}`)?.focus()
-              }}
-              className={clsx(
-                'touch-target -mb-px flex min-h-11 min-w-0 items-center justify-center gap-1 border-b-2 px-1 py-2.5 text-xs font-medium transition-colors sm:gap-1.5 sm:px-2',
-                tab === key
-                  ? 'border-accent text-txt-primary'
-                  : 'border-transparent text-txt-secondary hover:border-border hover:text-txt-primary'
-              )}
-            >
-              <Icon className="h-3.5 w-3.5" />
-              <span>{t(label)}</span>
-            </button>
-          ))}
+        <div className="border-b border-border-subtle px-4 pb-2 pt-1 sm:px-5">
+          <div role="tablist" aria-label={t("Task detail sections")} className="panel-tabs">
+            {tabs.map(({ key, label, icon: Icon }) => (
+              <button
+                key={key}
+                type="button"
+                id={`task-detail-tab-${key}`}
+                role="tab"
+                aria-selected={tab === key}
+                aria-controls={`task-detail-panel-${key}`}
+                tabIndex={tab === key ? 0 : -1}
+                onClick={() => setTab(key)}
+                onKeyDown={event => {
+                  if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return
+                  event.preventDefault()
+                  const currentIndex = tabs.findIndex(item => item.key === key)
+                  const nextIndex = event.key === 'Home'
+                    ? 0
+                    : event.key === 'End'
+                      ? tabs.length - 1
+                      : (currentIndex + (event.key === 'ArrowRight' ? 1 : -1) + tabs.length) % tabs.length
+                  const nextTab = tabs[nextIndex].key
+                  setTab(nextTab)
+                  panelRef.current?.querySelector<HTMLElement>(`#task-detail-tab-${nextTab}`)?.focus()
+                }}
+                className="touch-target panel-tab"
+              >
+                <Icon className="h-3.5 w-3.5" />
+                <span>{t(label)}</span>
+              </button>
+            ))}
+          </div>
         </div>
 
         <div
+          hidden={tab !== 'info'}
+          id="task-detail-panel-info"
+          role="tabpanel"
+          aria-labelledby="task-detail-tab-info"
+          className="task-detail-body min-h-0 flex-1 overflow-y-auto p-4 sm:px-5"
+        >
+          <InfoTab key={task.task_identity || `${task.dir}:${task.created_at}`} task={task} active={tab === 'info'} />
+        </div>
+        {tab !== 'info' && <div
           key={tab}
           id={`task-detail-panel-${tab}`}
           role="tabpanel"
           aria-labelledby={`task-detail-tab-${tab}`}
-          className="task-detail-body min-h-0 flex-1 overflow-y-auto p-4"
+          className="task-detail-body min-h-0 flex-1 overflow-y-auto p-4 sm:px-5"
         >
-          {tab === 'info' && <InfoTab key={task.task_identity || `${task.dir}:${task.created_at}`} task={task} />}
           {tab === 'config' && <ConfigTab task={task} />}
           {tab === 'notes' && (
             <div className="flex min-h-full flex-col gap-3">
-              <label htmlFor="task-notes" className="text-sm font-semibold text-txt-primary">{t("Notes")}</label>
+              <label htmlFor="task-notes" className="sr-only">{t("Notes")}</label>
               <textarea
                 id="task-notes"
                 readOnly={task.task_storage === 'remote'}
@@ -828,7 +835,7 @@ export default function TaskDetailPanel({ task, onClose, onTaskUpdated, onRefres
                 }}
                 placeholder={t("Add notes...")}
                 aria-label={t("Task notes")}
-                className="min-h-[220px] flex-1 resize-y rounded-lg border border-border bg-surface-base p-3 text-sm leading-relaxed text-txt-primary placeholder:text-txt-secondary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
+                className="min-h-[220px] flex-1 resize-y rounded-lg border border-border-subtle bg-surface-base p-4 text-sm leading-relaxed text-txt-primary placeholder:text-txt-secondary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
               />
               {notesFeedback && (
                 <div
@@ -981,7 +988,7 @@ export default function TaskDetailPanel({ task, onClose, onTaskUpdated, onRefres
               </div>
             </div>
           )}
-        </div>
+        </div>}
         </div>
       </div>
       <ConfirmDialog
@@ -1044,7 +1051,7 @@ function formatTimestampValue(value: string | number | null | undefined): string
     const millis = parseTaskTimestampMillis(value)
     return millis === null ? String(value) : new Date(millis).toLocaleString()
   }
-  return String(value)
+  return String(value).replace(/^(\d{4}-\d{2}-\d{2})_(\d{2})-(\d{2})-(\d{2})$/, '$1 $2:$3:$4')
 }
 
 function formatRecordValue(value: unknown): string {
@@ -1139,13 +1146,19 @@ function InfoValueRow({
   )
 }
 
-function RunMetric({ label, value }: { label: string; value: string }) {
+function RunMetric({ label, value, detail, copyLabel, mono, fullWidth }: {
+  label: string; value: string; detail?: string; copyLabel?: string; mono?: boolean; fullWidth?: boolean
+}) {
   useTranslation()
   return (
-    <div className="min-w-0">
+    <div className={clsx('relative min-w-0', fullWidth && 'col-span-full', copyLabel && 'pr-11 sm:pr-7')}>
       <dt className="text-xs text-txt-secondary">{t(label)}</dt>
-      <dd className="mt-1 break-words text-xs font-medium tabular-nums text-txt-primary" title={value}>
-        {value === '(none)' || value === '(empty)' ? t(value) : value}
+      <dd className="mt-1 text-xs leading-5">
+        <span className={clsx('whitespace-pre-wrap font-medium tabular-nums text-txt-primary [overflow-wrap:anywhere]', mono && 'font-mono')}>
+          {value === '(none)' || value === '(empty)' ? t(value) : value}
+          {detail && <span className="block font-mono text-2xs font-normal text-txt-secondary">{detail}</span>}
+        </span>
+        {copyLabel && <CopyButton value={[value, detail].filter(Boolean).join('\n')} label={copyLabel} size="xs" className="absolute right-0 top-0" />}
       </dd>
     </div>
   )
@@ -1185,21 +1198,22 @@ function RunEnvironmentRows({ environment }: { environment?: RunEnvironment | nu
     ['GPU', gpuValue],
     ['Launcher', [environment.launcher, environment.conda_env && `Conda: ${environment.conda_env}`].filter(Boolean).join(' · ')],
   ]
-  return <>{rows.map(([label, value]) => (
-    <InfoValueRow
+  return <dl className="task-detail-environment grid grid-cols-1 gap-x-5 gap-y-3 rounded-md border border-border-subtle bg-surface-base p-3">{rows.map(([label, value]) => (
+    <RunMetric
       key={label}
       label={t(label)}
       value={value || t("Not recorded")}
       detail={label === 'GPU' ? visibility : undefined}
       mono={label === 'Launcher'}
+      fullWidth={label === 'GPU' || label === 'Launcher'}
       copyLabel={value ? t('Copy {{label}}', { label: t(label) }) : undefined}
     />
-  ))}</>
+  ))}</dl>
 }
 
-function InfoTab({ task }: { task: Task }) {
+function InfoTab({ task, active }: { task: Task; active: boolean }) {
   useTranslation()
-  const runs = buildRunEntries(task)
+  const runs = useMemo(() => buildRunEntries(task), [task])
   const [openRunIndexes, setOpenRunIndexes] = useState<Set<number>>(
     () => new Set(),
   )
@@ -1216,7 +1230,7 @@ function InfoTab({ task }: { task: Task }) {
   const [nowMillis, setNowMillis] = useState(Date.now)
   useEffect(() => {
     setNowMillis(Date.now())
-    if (!live) return
+    if (!live || !active) return
     let interval: number | undefined
     const stop = () => {
       if (interval !== undefined) {
@@ -1242,11 +1256,11 @@ function InfoTab({ task }: { task: Task }) {
       stop()
       document.removeEventListener('visibilitychange', handleVisibility)
     }
-  }, [live, task.name])
+  }, [live, active, task.name])
 
   const overview: [string, string][] = [
-    ['Created', task.created_at],
-    ['Mode', getTaskMode(task)],
+    ['Created', formatTimestampValue(task.created_at)],
+    ['Mode', t(isShellTask(task) ? 'Shell' : 'Python')],
     ['Recorded Runs', String(runs.length)],
   ]
 
@@ -1271,12 +1285,10 @@ function InfoTab({ task }: { task: Task }) {
   const durationValue = live
     ? elapsedSeconds === null ? '(none)' : formatElapsedDuration(elapsedSeconds)
     : formatRunDuration(displayedRun?.duration, displayedRun?.start, displayedRun?.finish)
-  const displayedStatus = task.status === 'queued' || task.status === 'running'
-    ? task.status
-    : displayedRun?.status || task.status
+  const displayedStatus = live ? taskStatusLabel(task) : displayedRun?.status || task.status
   const displayedStart = task.status === 'queued'
     ? formatTimestampValue(task.queued_at ?? task.gpu_wait?.started_at)
-    : formatScalarValue(displayedRun?.start)
+    : formatTimestampValue(displayedRun?.start)
   const running = task.status === 'running'
   const gpuLabel = running ? gpuAssignmentLabel(task) : ''
   const currentMetrics = live && displayedRunIndex > 0
@@ -1298,9 +1310,13 @@ function InfoTab({ task }: { task: Task }) {
       : t("Configured Command")
   const executionWorkdir = launchMatchesRun ? task.launch_workdir : task.workdir
   const shell = [task.shell_kind, task.shell_executable].filter(Boolean).join(' | ')
+  const taskScript = isShellTask(task) ? task.config_file : task.script
+  const usesShellSnapshot = isShellTask(task) && launchMatchesRun && command.includes('.pyruns-input-')
   const executionRows: [string, string, string?][] = [
+    ...(taskScript ? [[isShellTask(task) ? 'Config' : 'Script', taskScript, 'Copy script path'] as [string, string, string]] : []),
     ...(executionWorkdir ? [['Working Directory', executionWorkdir, 'Copy working directory'] as [string, string, string]] : []),
-    ...(task.script ? [['Script', task.script, 'Copy script path'] as [string, string, string]] : []),
+  ]
+  const launchRows: [string, string, string?][] = [
     ...(shell ? [['Shell', shell, 'Copy shell information'] as [string, string, string]] : []),
     ...(task.command_mode && task.command_mode !== getTaskMode(task) ? [['Command Mode', task.command_mode] as [string, string]] : []),
     ...(running && task.runner_host ? [['Runner Host', task.runner_host, 'Copy runner host'] as [string, string, string]] : []),
@@ -1310,7 +1326,7 @@ function InfoTab({ task }: { task: Task }) {
 
   return (
     <div className="task-detail-info space-y-3">
-        <TaskExecutionInfo task={task} showRecordedHost={false} />
+      <TaskExecutionInfo task={task} showRecordedHost={false} />
       {currentMetrics.length > 0 && (
         <section className="space-y-2" aria-labelledby="task-current-run-heading">
           <h3 id="task-current-run-heading" className="text-sm font-semibold text-txt-primary">
@@ -1328,7 +1344,7 @@ function InfoTab({ task }: { task: Task }) {
 
       <section className="space-y-2" aria-labelledby="task-overview-heading">
         <h3 id="task-overview-heading" className="text-sm font-semibold text-txt-primary">{t("Task")}</h3>
-        <dl className="task-detail-overview gap-x-6 gap-y-3 py-1">
+        <dl className="task-detail-overview gap-x-5 gap-y-3 rounded-md border border-border-subtle bg-surface-base p-3">
           {overview.map(([label, value]) => <RunMetric key={label} label={t(label)} value={value} />)}
         </dl>
         <div className="pt-1">
@@ -1348,35 +1364,36 @@ function InfoTab({ task }: { task: Task }) {
               <div className="py-3 text-xs text-txt-secondary">{t("Environment will be recorded when this run starts.")}</div>
             ) : <RunEnvironmentRows environment={displayedRun?.environment} />}
           </div>
-          {displayedRun?.environment && task.status !== 'queued' && (
-            <p className="text-xs leading-5 text-txt-secondary">{t("Recorded at launch · GPUs reflect assignment or visibility.")}</p>
-          )}
         </section>
       )}
 
       <section className="space-y-2" aria-labelledby="task-execution-heading">
         <h3 id="task-execution-heading" className="text-sm font-semibold text-txt-primary">{t("Execution")}</h3>
-        {command ? (
-          <div className="overflow-hidden rounded-md bg-surface-base">
-            <div className="flex items-center justify-between gap-2 px-3 pt-2">
-              <span className="text-xs font-medium text-txt-secondary">{t(commandLabel)}</span>
-              <CopyButton value={command} label={t('Copy {{label}}', { label: commandLabel })} size="xs" />
+        {executionRows.map(([label, value, copyLabel]) => (
+          <InfoValueRow key={label} label={label} value={value} copyLabel={copyLabel} mono />
+        ))}
+        {(command || launchRows.length > 0) && (
+          <details className="group rounded-md border border-border-subtle bg-surface-base">
+            <summary className="flex min-h-11 cursor-pointer list-none items-center gap-2 rounded-md px-3 text-xs font-medium text-txt-primary hover:bg-surface-overlay">
+              <ChevronDown aria-hidden="true" className="size-3.5 -rotate-90 group-open:rotate-0" />
+              {t('Launch details')}
+            </summary>
+            <div className="border-t border-border-subtle px-3 pb-2">
+              {command && (
+                <div className="py-2">
+                  <div className="flex items-center justify-between gap-2 text-xs font-medium text-txt-secondary">
+                    {commandLabel}
+                    <CopyButton value={command} label={t('Copy {{label}}', { label: commandLabel })} size="xs" />
+                  </div>
+                  {usesShellSnapshot && <p className="my-1 text-xs text-txt-secondary">{t('The runner executed a snapshot of {{file}} captured at launch.', { file: taskScript })}</p>}
+                  <pre className="max-h-56 overflow-auto whitespace-pre-wrap [overflow-wrap:anywhere] font-mono text-xs leading-relaxed text-txt-primary">{command}</pre>
+                </div>
+              )}
+              {launchRows.map(([label, value, copyLabel]) => (
+                <InfoValueRow key={label} label={label} value={value} copyLabel={copyLabel} mono={label === 'Runner ID' || label === 'Shell'} />
+              ))}
             </div>
-            <pre className="max-h-56 overflow-auto whitespace-pre-wrap break-all px-3 pb-3 pt-1 font-mono text-xs leading-relaxed text-txt-primary">
-              {command}
-            </pre>
-          </div>
-        ) : (
-          <div className="py-2 text-xs text-txt-secondary">
-            {t("Launch command was not recorded for this run.")}
-          </div>
-        )}
-        {executionRows.length > 0 && (
-          <div>
-            {executionRows.map(([label, value, copyLabel]) => (
-              <InfoValueRow key={label} label={t(label)} value={value} copyLabel={copyLabel} mono={['Working Directory', 'Script', 'Shell', 'Runner ID'].includes(label)} />
-            ))}
-          </div>
+          </details>
         )}
       </section>
 
@@ -1409,7 +1426,8 @@ function InfoTab({ task }: { task: Task }) {
                 <summary className="flex min-h-11 cursor-pointer list-none items-center gap-2 py-2 text-xs transition-colors hover:bg-surface-overlay focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent/35">
                   <ChevronDown className="h-3.5 w-3.5 shrink-0 -rotate-90 text-txt-secondary transition-transform group-open:rotate-0" />
                   <span className="font-medium text-txt-primary">{t('Run #{{index}}', { index: run.index })}</span>
-                  <span className="text-txt-secondary">{run.status || (run.index === task.run_index ? task.status : '')}</span>
+                  <span className="text-txt-secondary">{run.index === displayedRunIndex && isTaskStopping(task)
+                    ? t('Stopping') : run.status || (run.index === task.run_index ? task.status : '')}</span>
                   <span className="ml-auto tabular-nums text-txt-secondary">{formatRunDuration(run.duration, run.start, run.finish)}</span>
                 </summary>
                 <div className="mb-3 ml-1.5 border-l border-border-subtle py-1 pl-4">
@@ -1486,21 +1504,23 @@ function ConfigTab({ task }: { task: Task }) {
       ? yamlStringify(normalizedConfig)
       : ''
   const shell = isShellTask(task)
-  const title = shell ? t("Script") : t("Configuration")
+  const filename = task.config_file?.split(/[\\/]/).pop()
+
+  const title = filename || t('Config')
 
   return (
-    <section className="space-y-3" aria-label={t(title)}>
-      <div className="flex items-center justify-between gap-2">
-        <h3 className="text-sm font-semibold text-txt-primary">{t(title)}</h3>
+    <section className="overflow-hidden rounded-lg border border-border-subtle" aria-label={t("Configuration")}>
+      <div className="flex min-h-11 items-center justify-between gap-2 border-b border-border-subtle px-3">
+        <h3 className="min-w-0 truncate font-mono text-xs font-medium text-txt-primary">{title}</h3>
         {content && (
           <CopyButton value={content} label={shell ? t("Copy script") : t("Copy configuration")} size="xs" />
         )}
       </div>
       {content ? (
-        <pre className="whitespace-pre-wrap rounded-md bg-surface-base p-4 font-mono text-xs leading-relaxed text-txt-primary [overflow-wrap:anywhere]">
+        <pre className="whitespace-pre-wrap bg-surface-base p-4 font-mono text-xs leading-relaxed text-txt-primary [overflow-wrap:anywhere]">
           {content}
         </pre>
-      ) : <p className="py-3 text-xs text-txt-secondary">{t(shell ? 'No script recorded for this task.' : 'No configuration recorded for this task.')}</p>}
+      ) : <p className="p-3 text-xs text-txt-secondary">{t(shell ? 'No script recorded for this task.' : 'No configuration recorded for this task.')}</p>}
     </section>
   )
 }

@@ -84,24 +84,13 @@ test('Generator remembers the storage and timestamp checkboxes per browser works
   }
 })
 
-test('new-task storage persists across a reload', async ({ page }) => {
+test('Runtime Python settings omit the new-task storage selector', async ({ page }) => {
   await page.goto('/manager?token=pyruns-e2e-access-token')
-  const initial = await (await page.request.get('/api/runtime')).json()
-  const next = initial.task_storage === 'local' ? 'shared' : 'local'
-  const openPanel = async () => {
-    await page.getByRole('button', { name: 'Runtime', exact: true }).click()
-    return page.getByRole('dialog', { name: 'Runtime settings' })
-  }
-  try {
-    const panel = await openPanel()
-    await panel.getByRole('combobox', { name: /Save new tasks to/ }).selectOption(next)
-    await panel.getByRole('button', { name: 'Save', exact: true }).click()
-    await expect.poll(async () => (await (await page.request.get('/api/runtime')).json()).task_storage).toBe(next)
-    await page.reload()
-    await expect((await openPanel()).getByRole('combobox', { name: /Save new tasks to/ })).toHaveValue(next)
-  } finally {
-    await page.request.patch('/api/runtime', { data: { task_storage: initial.task_storage } })
-  }
+  await page.getByRole('button', { name: 'Runtime', exact: true }).click()
+  const panel = page.getByRole('dialog', { name: 'Runtime settings' })
+  await panel.getByRole('button', { name: 'Path', exact: true }).click()
+  await expect(panel.getByRole('textbox', { name: 'Python executable path' })).toBeVisible()
+  await expect(panel.getByRole('combobox', { name: /Save new tasks to/ })).toHaveCount(0)
 })
 
 test('task source and uncertainty remain distinct from running and log connectivity', async ({ page, isMobile }, testInfo) => {
@@ -122,6 +111,10 @@ test('task source and uncertainty remain distinct from running and log connectiv
     status_counts: { pending: 0, queued: 0, running: 2, completed: 0, failed: 0, cancelled: 0 },
   } }))
   await page.route('**/api/tasks/remote-task?*', route => route.fulfill({ json: task }))
+  await page.route('**/api/tasks/remote-task/cancel?*', route => {
+    task.cancel_requested_at = Date.now() / 1000
+    return route.fulfill({ json: { ok: true, task } })
+  })
   for (const observed of [task, local]) {
     await page.route(`**/api/tasks/${observed.name}/logs?*`, route => route.fulfill({ json: {
       task_name: observed.name, content: 'hello\n', offset: 6, selected_log: 'run1.log', available_logs: ['run1.log'], log_identity: 'log-1',
@@ -140,7 +133,6 @@ test('task source and uncertainty remain distinct from running and log connectiv
   await expect(localCard.getByText('Running', { exact: true })).toBeVisible()
   await expect(localCard.getByText('Runner status awaiting confirmation')).toHaveCount(0)
   await page.screenshot({ path: testInfo.outputPath('task-source.png') })
-  task.cancel_requested_at = Date.now() / 1000
   await page.goto('/monitor')
   const localRow = page.getByRole('button', { name: 'View local-task, running', exact: true })
   const recordedRow = page.getByRole('button', { name: 'View remote-task, last reported running', exact: true })
@@ -150,7 +142,13 @@ test('task source and uncertainty remain distinct from running and log connectiv
   const title = page.locator('.monitor-task-title')
   await expect(header.getByText('Running', { exact: true })).toBeVisible()
   await recordedRow.click()
-  await expect(header.getByText('Last reported running', { exact: true })).toBeVisible()
+  await header.getByRole('button', { name: 'Stop', exact: true }).click()
+  await page.getByRole('button', { name: 'Stop Task', exact: true }).click()
+  const stoppingRow = page.getByRole('button', { name: 'View remote-task, stopping', exact: true })
+  await expect(stoppingRow.getByRole('img', { name: 'Stopping', exact: true })).toHaveClass(/border-accent/)
+  await expect(stoppingRow.locator('.animate-pulse')).toHaveCount(0)
+  await expect(header.getByText('Stopping', { exact: true }).first()).toBeVisible()
+  await expect(header.getByRole('button', { name: 'Stopping', exact: true })).toBeDisabled()
   const execution = title.getByRole('group', { name: 'Execution source' })
   await expect(execution.getByText('gpu-worker-02', { exact: true })).toBeVisible()
   const warning = execution.getByTitle('Cancellation was requested. Waiting for the runner to confirm the result.')
@@ -168,6 +166,11 @@ test('task source and uncertainty remain distinct from running and log connectiv
     await page.screenshot({ path: testInfo.outputPath('monitor-execution-wide.png') })
   }
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true)
+  task.status = 'cancelled'
+  await page.getByRole('button', { name: 'Refresh tasks', exact: true }).click()
+  const cancelledRow = page.getByRole('button', { name: 'View remote-task, cancelled', exact: true })
+  await expect(cancelledRow.getByRole('img', { name: 'Cancelled', exact: true })).toHaveClass(/bg-slate-500/)
+  await expect(header.getByText('Cancelled', { exact: true })).toBeVisible()
 })
 
 test('source checkboxes filter both task views and allow an empty selection', async ({ page }, testInfo) => {

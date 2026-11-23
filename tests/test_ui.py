@@ -130,9 +130,8 @@ STATIC_INDEX = Path(__file__).resolve().parents[1] / "pyruns" / "web" / "static"
         ), id='polling'),
         pytest.param(FRONTEND_STORE, (
             'function clampInteger',
-            'readStoredNumber(MANAGER_COLS_STORAGE_KEY, 5, 1, 8)',
+            'const MANAGER_TASK_PAGE_SIZE = 50',
             'readStoredNumber(GENERATOR_COLS_STORAGE_KEY, 5, 2, 8)',
-            'const next = clampInteger(n, 5, 1, 8)',
             'const next = clampInteger(n, 5, 2, 8)',
             'let runtimeRequestSeq = 0',
             'let dashboardRequestSeq = 0',
@@ -286,8 +285,7 @@ STATIC_INDEX = Path(__file__).resolve().parents[1] / "pyruns" / "web" / "static"
             'className="min-w-0 flex-1 overflow-x-hidden overflow-y-auto focus:outline-none"',
         ), id='app-shell'),
         pytest.param(FRONTEND_MANAGER, (
-            'repeat(auto-fill, minmax(min(100%, max(15rem',
-            'const renderedColumnCount = grid',
+            'className="manager-task-grid"',
             'window.getComputedStyle(grid).gridTemplateColumns',
             'const TaskCard = memo(function TaskCard',
             '[content-visibility:auto]',
@@ -386,13 +384,13 @@ def test_react_app_lazy_loads_routes_and_runtime_panel():
     assert "window.sessionStorage.setItem(storageKey, '1')" in source
     assert "window.location.reload()" in source
     assert "class RouteErrorBoundary" in source
-    assert '<RouteErrorBoundary key={location.pathname}>' in source
+    assert '<RouteErrorBoundary key={pathname}>' in source
     assert "<Suspense fallback={<RouteLoadingFallback />}>" in source
     assert "function RouteLoadingFallback()" in source
     assert "const RuntimePanel = lazy(() => import('./RuntimePanel'))" in sidebar
     assert "import RuntimePanel from './RuntimePanel'" not in sidebar
     assert "<Suspense fallback={null}>" in sidebar
-    assert "{runtimeOpen && (" in sidebar
+    assert "{runtimeTool && (" in sidebar
 
 
 def test_frontend_entrypoints_use_local_lightweight_assets():
@@ -434,7 +432,7 @@ def test_react_modal_surfaces_support_backdrop_and_escape_dismissal():
     assert "window.clearTimeout(pointerListenerTimer)" in runtime_panel
     assert "document.addEventListener('keydown', handleKeyDown)" in runtime_panel
     assert "onClick={event => event.stopPropagation()}" in runtime_panel
-    assert "aria-label={t('Runtime settings')}" in runtime_panel
+    assert "aria-label={gpuPanel ? title : t('Runtime settings')}" in runtime_panel
     assert "onCancel={event =>" in confirm_dialog
     assert "event.preventDefault()" in confirm_dialog
     assert "backdropPointerStartedRef.current = event.target === event.currentTarget" in confirm_dialog
@@ -479,7 +477,7 @@ def test_react_toasts_cover_command_feedback_without_blocking_ui():
     assert "Could not load task logs" in manager
     assert "Could not load task logs" in dashboard
     assert "Log copied" in monitor
-    assert "CSV exported" in monitor
+    assert "Tasks exported" in monitor
     assert "Could not load log file" in monitor
     assert "Could not load task details" in monitor
     assert "Workspace env saved" in runtime_panel
@@ -595,10 +593,8 @@ def test_react_manager_uses_global_counts_page_scoped_selection_and_pending_lock
     assert "t('Stop {{active}} active task(s) and move all {{selected}} selected tasks from this page to trash?', { active: activeSelectedCount, selected: visibleSelectedCount })" in manager
     assert "hasReorderChanges(allTasks.items, items)" in manager
     assert "is already in this position" in manager
-    assert "label: t('Move earlier')" in manager
-    assert "label: t('Move later')" in manager
-    assert "disabled: taskPending || reorderDisabled, onClick: () => void onMove(task, -1)" in manager
-    assert "disabled: taskPending || reorderDisabled, onClick: () => void onMove(task, 1)" in manager
+    assert 'aria-describedby="manager-reorder-help"' in manager
+    assert 'const limit = MANAGER_TASK_PAGE_SIZE' in store
     assert 'role="button"' in manager
     assert "tabIndex={0}" in manager
     assert "event.key === 'Enter' || event.key === ' '" in manager
@@ -636,7 +632,7 @@ def test_react_icon_only_buttons_have_accessible_names():
     assert "label={t(task.pinned ? 'Unpin {{name}}' : 'Pin {{name}}', { name: accessibleName })}" in manager
     assert "label={t('{{action}} {{name}}', { action: t(actionBtn.label), name: task.name })}" in manager
     assert "label={t('View logs for {{name}}', { name: accessibleName })}" in manager
-    assert "aria-label={t('More actions for {{name}}', { name })}" in manager
+    assert "label={t('Delete {{name}}', { name: accessibleName })}" in manager
     assert "aria-label={label}" in manager
     assert "aria-label={t('Previous page')}" in pagination
     assert "aria-label={t('Next page')}" in pagination
@@ -704,17 +700,15 @@ def test_react_manager_cards_support_drag_pin_and_search_match_labels():
     assert "api.reorderTasks" in source
     assert "const REORDER_TASK_LIMIT = 10_000" in source
     assert "limit: REORDER_TASK_LIMIT" in source
-    assert "sort: sortMode" in source
+    assert "sort: useTaskStore.getState().sortMode" in source
     assert "setSortMode('manual')" in source
-    assert "const visibleSectionTasks = tasks.filter" in source
-    assert "already first among the visible tasks" in source
+    assert "handleKeyboardDrag" in source
     assert "buildReorderedItems" in source
     assert "dragFrameRef" in source
     assert "pendingDragPointRef" in source
     assert "window.requestAnimationFrame(flushDragFrame)" in source
     assert "sameDropIntent" in source
-    assert "data-task-grid-columns={columns}" in source
-    assert "Number.parseInt(grid?.dataset.taskGridColumns || '1', 10)" in source
+    assert "gridDropAxis" in source
     assert "function DropIndicator" in source
 
 
@@ -989,10 +983,11 @@ def test_react_runtime_panel_loads_and_saves_conda_runtime_choices():
     api = FRONTEND_API.read_text(encoding="utf-8")
     store = FRONTEND_STORE.read_text(encoding="utf-8")
 
-    assert "export const getRuntimeInfo = () => request<RuntimeInfo>('/api/runtime')" in api
+    assert "export const getRuntimeInfo = (refreshProviders = true)" in api
+    assert "/api/runtime?refresh_providers=false" in api
     assert "export const updateRuntimeInfo" in api
     assert "export const useRuntimeStore = create<RuntimeState>" in store
-    assert "const next = await fetchRuntime()" in runtime_panel
+    assert "const next = await fetchRuntime(useConda)" in runtime_panel
     assert "applyRuntimeState(next)" in runtime_panel
     assert "refresh_providers=${refreshProviders}" in api
     assert "const next = await updateRuntime(payload, false)" in runtime_panel

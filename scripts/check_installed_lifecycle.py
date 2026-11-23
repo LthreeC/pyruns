@@ -211,10 +211,11 @@ def _verify_ui(project, report, scripts, env, identities, package):
             for side in ("left", "right"):
                 run = comparison[side]
                 assert run["status"] == "completed" and run["exit_code"] == 0, run
-                assert run["input_available"] and run["duration_seconds"] >= 0, run
+                assert run["input_available"] is False and run["duration_seconds"] >= 0, run
                 assert "environment" in run and "source_state" in run and "record" in run, run
                 assert "tracks" not in run, run
-            assert comparison["input_diff"]["available"] and comparison["input_diff"]["equal"], comparison
+            assert comparison["input_diff"]["available"] is False, comparison
+            assert comparison["input_diff"]["equal"] is None, comparison
             entry["run_comparison"] = comparison
 
             cookie_header = "; ".join(f"{cookie.name}={cookie.value}" for cookie in cookies)
@@ -370,13 +371,16 @@ def _verify(project, report, identities):
     assert shell_tail and shell_raw_log.endswith(shell_tail)
     assert len(shell_tail.rstrip("\n").split("\n")) == 1
     assert cli("-w", "shell", "log", "wheel-shell", "--tail", "0") == ""
+    Path(shell["payload"]).write_text(script_text + "echo wheel-shell-rerun\n", encoding="utf-8", newline="\n")
     cli("-w", "shell", "run", "wheel-shell")
     shell = show("shell", "wheel-shell")
     assert shell["exit_codes"] == [0, 0]
-    shell_input = show("shell", "wheel-shell@1")["selected_run"]["input"]
-    assert shell_input["payload_text"] == script_text
-    assert json.loads(cli("-w", "shell", "diff", "wheel-shell@1", "wheel-shell@2", "--json"))["equal"]
-    report["checks"].append("detached stdin script, saved parameters, logs, and rerun")
+    assert "wheel-shell-rerun" in cli("-w", "shell", "log", "wheel-shell@2").splitlines()
+    assert all(show("shell", f"wheel-shell@{run}")["selected_run"]["input"] is None for run in (1, 2))
+    assert not list((Path(shell["directory"]) / "run_logs").glob("run*.input.json"))
+    difference = json.loads(cli("-w", "shell", "diff", "wheel-shell@1", "wheel-shell@2", "--json", expected=1))
+    assert difference["available"] is False
+    report["checks"].append("detached stdin script, saved parameters, logs, and rerun from the edited shell file")
 
     report["phase"] = "config snapshot and failed run"
     config = {"steps": 600, "label": "wheel 中文", "nested": {"enabled": True, "values": [1, 2, 3]}}

@@ -1520,7 +1520,7 @@ def test_executor_shell_workdir_and_wrapper_edge_paths(tmp_path):
 
     script_path = task_dir / "run.sh"
     script_path.write_text("#!/usr/bin/env bash\necho hello\n", encoding="utf-8")
-    assert executor._read_shell_script_body(str(script_path)) == "echo hello\n"
+    assert executor._read_shell_script_body(str(task_dir), str(script_path)) == "echo hello\n"
 
     command, workdir, cleanup_paths = executor._materialize_windows_shell_wrapper(
         str(task_dir),

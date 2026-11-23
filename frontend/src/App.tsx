@@ -12,6 +12,7 @@ import {
 import {
   Routes,
   Route,
+  Outlet,
   type BlockerFunction,
   useBlocker,
   useLocation,
@@ -71,11 +72,22 @@ function lazyWithReload<T extends ComponentType<any>>(
   })
 }
 
-const DashboardPage = lazyWithReload('dashboard', () => import('@/components/dashboard/DashboardPage'))
-const GeneratorPage = lazyWithReload('generator', () => import('@/components/generator/GeneratorPage'))
-const ManagerPage = lazyWithReload('manager', () => import('@/components/manager/ManagerPage'))
-const MonitorPage = lazyWithReload('monitor', () => import('@/components/monitor/MonitorPage'))
+const routeLoaders = {
+  '/': () => import('@/components/dashboard/DashboardPage'),
+  '/generator': () => import('@/components/generator/GeneratorPage'),
+  '/manager': () => import('@/components/manager/ManagerPage'),
+  '/monitor': () => import('@/components/monitor/MonitorPage'),
+}
+const DashboardPage = lazyWithReload('dashboard', routeLoaders['/'])
+const GeneratorPage = lazyWithReload('generator', routeLoaders['/generator'])
+const ManagerPage = lazyWithReload('manager', routeLoaders['/manager'])
+const MonitorPage = lazyWithReload('monitor', routeLoaders['/monitor'])
 const LauncherPage = lazyWithReload('launcher', () => import('@/components/launcher/LauncherPage'))
+
+function prefetchRoute(path: string) {
+  const load = routeLoaders[path as keyof typeof routeLoaders]
+  void load?.().catch(() => undefined)
+}
 
 class RouteErrorBoundary extends Component<{ children: ReactNode }, { failed: boolean }> {
   state = { failed: false }
@@ -89,7 +101,7 @@ class RouteErrorBoundary extends Component<{ children: ReactNode }, { failed: bo
       return this.props.children
     }
     return (
-      <div role="alert" className="flex min-h-dvh items-center justify-center bg-surface-base p-6">
+      <div role="alert" data-route-unavailable className="flex h-full min-h-[16rem] items-center justify-center bg-surface-base p-6">
         <div className="w-full max-w-md rounded-lg border border-border-default bg-surface-raised p-6 text-center shadow-lg">
           <h1 className="text-base font-semibold text-txt-primary">{t('Reconnect to the interface')}</h1>
           <p className="mt-2 text-sm leading-6 text-txt-secondary">
@@ -110,9 +122,20 @@ class RouteErrorBoundary extends Component<{ children: ReactNode }, { failed: bo
 
 function RouteLoadingFallback() {
   return (
-    <div role="status" aria-live="polite" className="flex h-full min-h-[16rem] items-center justify-center bg-surface-base text-sm text-txt-tertiary">
+    <div role="status" aria-live="polite" data-route-unavailable className="flex h-full min-h-[16rem] items-center justify-center bg-surface-base text-sm text-txt-tertiary">
       {t('Loading workspace...')}
     </div>
+  )
+}
+
+function WorkspaceRouteShell() {
+  const { pathname } = useLocation()
+  return (
+    <AppShell onRouteIntent={prefetchRoute}>
+      <RouteErrorBoundary key={pathname}>
+        <Suspense fallback={<RouteLoadingFallback />}><Outlet /></Suspense>
+      </RouteErrorBoundary>
+    </AppShell>
   )
 }
 
@@ -519,21 +542,19 @@ export default function App() {
         ref={appRoot}
         aria-hidden={connectionBlocked || undefined}
       >
-        <RouteErrorBoundary key={location.pathname}>
-          <Suspense fallback={<RouteLoadingFallback />}>
-            <Routes>
-              <Route element={<AppShell />}>
-                <Route index element={<DashboardPage />} />
-                <Route path="launcher" element={<DashboardPage />} />
-                <Route path="generator" element={<GeneratorPage />} />
-                <Route path="manager" element={<ManagerPage />} />
-                <Route path="monitor" element={<MonitorPage />} />
-                <Route path="*" element={<NotFoundPage />} />
-              </Route>
-            </Routes>
-            {showLauncher && <LauncherPage onClose={closeLauncher} />}
-          </Suspense>
-        </RouteErrorBoundary>
+        <Routes>
+          <Route element={<WorkspaceRouteShell />}>
+            <Route index element={<DashboardPage />} />
+            <Route path="launcher" element={<DashboardPage />} />
+            <Route path="generator" element={<GeneratorPage />} />
+            <Route path="manager" element={<ManagerPage />} />
+            <Route path="monitor" element={<MonitorPage />} />
+            <Route path="*" element={<NotFoundPage />} />
+          </Route>
+        </Routes>
+        {showLauncher && <RouteErrorBoundary>
+          <Suspense fallback={null}><LauncherPage onClose={closeLauncher} /></Suspense>
+        </RouteErrorBoundary>}
         <ConfirmDialog
           open={navigationBlocker.state === 'blocked' && !launcherLoading && taskDetailDirty}
           title={t('Discard unsaved task details?')}

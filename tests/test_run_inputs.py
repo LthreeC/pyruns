@@ -71,7 +71,7 @@ def test_run_input_refuses_redirected_and_corrupt_history(tmp_path):
 
 
 @pytest.mark.parametrize("kind", ["config", "shell"])
-def test_worker_executes_captured_input_after_original_changes(tmp_path, monkeypatch, kind):
+def test_worker_uses_live_shell_file_and_captured_python_config(tmp_path, monkeypatch, kind):
     filename = "config.yaml" if kind == "config" else "config.cmd" if os.name == "nt" else "config.sh"
     shell = (shutil.which("cmd.exe") if os.name == "nt" else shutil.which("sh")) if kind == "shell" else None
     task_dir = _task(tmp_path, task_kind=kind, config_file=filename, shell_executable=shell)
@@ -102,13 +102,19 @@ def test_worker_executes_captured_input_after_original_changes(tmp_path, monkeyp
     )
     assert result["status"] == "completed", result
     saved = run_inputs.load_run_input(str(task_dir), 1)
-    assert saved["payload_text"] == initial
-    assert saved["environment"]["EXPLICIT"] == "saved"
-    assert "PATH" not in saved["environment"]
     output = (task_dir / "run_logs" / "run1.log").read_text(encoding="utf-8")
-    assert "captured-value" in output and "later-value" not in output
     assert not list(task_dir.glob(".pyruns-input-*"))
-    if kind == "config":
+    if kind == "shell":
+        assert saved is None
+        # Windows CMD adapts the original script into its UTF-8 launch wrapper.
+        expected = "captured-value" if os.name == "nt" else "later-value"
+        assert expected in output
+        assert ".pyruns-input-" not in load_task_metadata(str(task_dir))["launch_command"]
+    else:
+        assert saved["payload_text"] == initial
+        assert saved["environment"]["EXPLICIT"] == "saved"
+        assert "PATH" not in saved["environment"]
+        assert "captured-value" in output and "later-value" not in output
         assert load_task_metadata(str(task_dir))["records"][0]["value"] == "captured-value"
 
 

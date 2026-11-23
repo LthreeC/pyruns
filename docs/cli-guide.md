@@ -492,9 +492,8 @@ pyr -w train show baseline --run 2
 
 `show` 包含置顶状态、任务目录、payload、run index、PID、最新日志、配置、环境变量、备注和加载错误。`show --json` 还提供对齐的运行时长、退出码、源码状态、record 和 track 历史。`TASK@RUN` 与 `TASK --run RUN` 都可选择一个历史运行，并显示该次运行的开始时间、结束时间、时长、原始退出码、PID、源码状态、record、track 和日志路径。
 
-新运行会在启动前保存脚本或配置正文、工作目录、任务环境覆盖值，并使用捕获的输入执行。
-`show TASK@RUN --json` 的 `selected_run.input` 返回该次快照；旧记录或尚未启动的运行可能为 `null`。
-任务当前输入可继续编辑，历史快照不会被后续运行覆盖。
+Python 任务使用启动时捕获的配置，并保存该次配置、工作目录、环境覆盖值与启动参数。Bash 任务直接执行当前的 `config.sh`。
+`show TASK@RUN --json` 的 `selected_run.input` 返回该次快照，也支持旧 Shell 运行保存的快照。Shell 新运行及其他缺少快照的记录返回 `null`。
 
 ```bash
 pyr -w train diff baseline@1 baseline@2

@@ -42,14 +42,13 @@ let toastIdSeq = 0
 let confirmationIdSeq = 0
 let confirmationResolver: ((confirmed: boolean) => void) | null = null
 const THEME_STORAGE_KEY = 'pyruns_theme'
-const MANAGER_COLS_STORAGE_KEY = 'pyruns_manager_cols'
 const MANAGER_SORT_STORAGE_KEY = 'pyruns_manager_sort'
-const MANAGER_VIEW_STORAGE_KEY = 'pyruns_manager_view'
 const GENERATOR_COLS_STORAGE_KEY = 'pyruns_generator_cols'
 const GENERATOR_STORAGE_PREFERENCE_KEY = 'pyruns_generator_task_storage'
 const GENERATOR_TIMESTAMP_PREFERENCE_KEY = 'pyruns_generator_append_timestamp'
 const TASK_SOURCES_PREFERENCE_KEY = 'pyruns_task_sources'
 const PINNED_PARAMS_STORAGE_KEY = 'pyruns_pinned_params_v2'
+export const MANAGER_TASK_PAGE_SIZE = 50
 export const MONITOR_TASK_PAGE_SIZE = 200
 const DEFAULT_SEARCH_OPTIONS: TaskSearchOptions = { matchCase: false, wholeWord: false, useRegex: false }
 const DEFAULT_SOURCES = [{ id: 'shared', host: '' }, { id: 'local', host: '' }]
@@ -577,7 +576,7 @@ interface RuntimeState {
   dirty: boolean
   setRuntime: (runtime: RuntimeInfo | null) => void
   setDirty: (dirty: boolean) => void
-  fetchRuntime: () => Promise<RuntimeInfo>
+  fetchRuntime: (refreshProviders?: boolean) => Promise<RuntimeInfo>
   updateRuntime: (
     payload: Parameters<typeof api.updateRuntimeInfo>[0],
     refreshProviders?: boolean,
@@ -593,12 +592,12 @@ export const useRuntimeStore = create<RuntimeState>((set) => ({
     set({ runtime, loading: false, dirty: false })
   },
   setDirty(dirty) { set({ dirty }) },
-  async fetchRuntime() {
+  async fetchRuntime(refreshProviders = true) {
     const requestId = ++runtimeRequestSeq
     const workspaceKey = currentWorkspaceKey()
     set({ loading: true })
     try {
-      const runtime = await api.getRuntimeInfo()
+      const runtime = await api.getRuntimeInfo(refreshProviders)
       if (requestId === runtimeRequestSeq && workspaceKey === currentWorkspaceKey()) {
         set({ runtime })
       }
@@ -728,20 +727,16 @@ interface TaskState {
   total: number
   statusCounts: TaskStatusCounts | null
   offset: number
-  limit: number
   hasMore: boolean
   query: string
   searchField: TaskSearchScope
   searchOptions: TaskSearchOptions
   statusFilter: string
   sortMode: TaskSortMode
-  viewMode: 'cards' | 'list'
-  setViewMode: (mode: 'cards' | 'list') => void
   selectedIds: Set<string>
   loading: boolean
   error: string | null
   searchLimitHit: boolean
-  columns: number
   setQuery: (q: string) => void
   setSearchField: (field: TaskSearchScope) => void
   setMonitorSearchField: (field: TaskSearchScope) => void
@@ -750,7 +745,6 @@ interface TaskState {
   setStatusFilter: (s: string) => void
   setSortMode: (mode: TaskSortMode) => void
   setOffset: (o: number) => void
-  setColumns: (n: number) => void
   fetchTasks: (options?: { refresh?: boolean; forceRefresh?: boolean; background?: boolean }) => Promise<void>
   fetchMonitorTasks: (options?: {
     query?: string
@@ -815,23 +809,16 @@ export const useTaskStore = create<TaskState>((set, get) => ({
   total: 0,
   statusCounts: null,
   offset: 0,
-  limit: 50,
   hasMore: false,
   query: '',
   searchField: 'all',
   searchOptions: { ...DEFAULT_SEARCH_OPTIONS },
   statusFilter: 'All',
   sortMode: readStoredTaskSortMode(),
-  viewMode: readLocalStorage(MANAGER_VIEW_STORAGE_KEY) === 'list' ? 'list' : 'cards',
-  setViewMode(viewMode) {
-    writeLocalStorage(MANAGER_VIEW_STORAGE_KEY, viewMode)
-    set({ viewMode })
-  },
   selectedIds: new Set(),
   loading: false,
   error: null,
   searchLimitHit: false,
-  columns: readStoredNumber(MANAGER_COLS_STORAGE_KEY, 5, 1, 8),
   setQuery(q) {
     if (q !== get().query) {
       taskSearchController?.abort()
@@ -882,11 +869,6 @@ export const useTaskStore = create<TaskState>((set, get) => ({
       set({ offset: o, selectedIds: new Set() })
     }
   },
-  setColumns(n) {
-    const next = clampInteger(n, 5, 1, 8)
-    writeLocalStorage(MANAGER_COLS_STORAGE_KEY, String(next))
-    set({ columns: next })
-  },
   async fetchTasks(options = {}) {
     if (options.background && (get().loading || get().query)) return
     taskSearchController?.abort()
@@ -894,7 +876,8 @@ export const useTaskStore = create<TaskState>((set, get) => ({
     taskSearchController = controller
     const requestId = ++taskRequestSeq
     const workspaceKey = currentWorkspaceKey()
-    const { query, searchField, searchOptions, statusFilter, sortMode, offset, limit } = get()
+    const { query, searchField, searchOptions, statusFilter, sortMode, offset } = get()
+    const limit = MANAGER_TASK_PAGE_SIZE
     // Searching may scan remote logs; only ordinary list reads use this budget.
     const timeout = query ? undefined : setTimeout(() => {
       controller.abort(new Error('Task list loading timed out. Refresh to retry.'))
@@ -911,7 +894,6 @@ export const useTaskStore = create<TaskState>((set, get) => ({
         && current.statusFilter === statusFilter
         && current.sortMode === sortMode
         && current.offset === requestedOffset
-        && current.limit === limit
         && useSearchSettingsStore.getState().maxResults === maxResults
     }
     const onProgress = query ? (page: TaskPage) => {

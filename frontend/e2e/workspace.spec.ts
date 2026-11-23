@@ -851,6 +851,45 @@ test('GPU process query failures are distinct from an empty list and can recover
   expect(detailRequests).toBe(4)
 })
 
+test('navigation keeps the sidebar mounted across lazy routes', async ({ page }) => {
+  await page.goto('/manager?token=pyruns-e2e-access-token')
+  await expect(page.getByRole('heading', { name: 'Task Manager', exact: true })).toBeVisible()
+  const sidebar = page.locator('.app-navigation')
+  await sidebar.evaluate(element => element.setAttribute('data-test-original', 'true'))
+  let documentRequests = 0
+  page.on('request', request => { if (request.resourceType() === 'document') documentRequests++ })
+  await page.getByRole('link', { name: 'Monitor', exact: true }).click()
+  await expect(page.getByRole('textbox', { name: 'Search monitor tasks' })).toBeVisible()
+  await expect(sidebar).toHaveAttribute('data-test-original', 'true')
+  await page.getByRole('link', { name: 'Manager', exact: true }).click()
+  await expect(page.getByRole('heading', { name: 'Task Manager', exact: true })).toBeVisible()
+  await expect(sidebar).toHaveAttribute('data-test-original', 'true')
+  expect(documentRequests).toBe(0)
+})
+
+test('runtime reuses the environment editor and inserts a draft variable once', async ({ page }, testInfo) => {
+  await page.goto('/manager?token=pyruns-e2e-access-token')
+  const response = page.waitForResponse(result => new URL(result.url()).pathname === '/api/runtime' && result.request().method() === 'GET')
+  await page.getByRole('button', { name: 'Runtime', exact: true }).click()
+  expect(new URL((await response).url()).searchParams.get('refresh_providers')).toBe('false')
+  const dialog = page.getByRole('dialog', { name: 'Runtime settings' })
+  await expect(dialog.getByRole('tab')).toHaveCount(2)
+  await expect(dialog.getByRole('button', { name: 'Copy Python path' })).toBeVisible()
+  await dialog.getByRole('tab', { name: 'Env', exact: true }).click()
+  const editor = dialog.locator('.cm-editor')
+  await expect(editor).toBeVisible()
+  await editor.evaluate(element => element.setAttribute('data-test-original', 'true'))
+  const examples = dialog.getByRole('combobox', { name: 'Insert environment variable' })
+  await examples.selectOption('OMP_NUM_THREADS')
+  await expect(editor).toContainText('OMP_NUM_THREADS=1')
+  await expect(examples.getByRole('option', { name: 'OMP_NUM_THREADS', exact: true })).toBeDisabled()
+  await dialog.getByRole('tab', { name: 'Python', exact: true }).click()
+  await expect(editor).toBeHidden()
+  await dialog.getByRole('tab', { name: /^Env/ }).click()
+  await expect(editor).toHaveAttribute('data-test-original', 'true')
+  await dialog.screenshot({ path: testInfo.outputPath('runtime-env.png') })
+})
+
 test('runtime GPU preview cancels hidden requests and recovers from timeout', async ({ page }) => {
   await page.clock.install()
   await page.addInitScript(() => {
@@ -880,7 +919,7 @@ test('runtime GPU preview cancels hidden requests and recovers from timeout', as
   } }))
   await page.goto('/manager?token=pyruns-e2e-access-token')
   await page.getByRole('button', { name: 'Runtime', exact: true }).click()
-  const panel = page.getByRole('dialog', { name: 'Runtime settings' })
+  const panel = page.getByRole('dialog', { name: 'GPU scheduling', exact: true })
   // Rule validation may remain visible after the preview request recovers.
   const previewAlert = panel.getByRole('alert').filter({
     has: page.getByRole('button', { name: 'Retry', exact: true }),
@@ -889,11 +928,11 @@ test('runtime GPU preview cancels hidden requests and recovers from timeout', as
     gpuPreviewTest: { requests: number; aborts: number; stall: boolean }
   }).gpuPreviewTest)
   expect((await previewState()).requests).toBe(0)
-  await panel.getByRole('tab', { name: 'GPU', exact: true }).click()
+  await page.getByRole('button', { name: 'GPU scheduling', exact: true }).click()
   await expect.poll(async () => (await previewState()).requests).toBe(1)
-  await panel.getByRole('tab', { name: 'Env', exact: true }).click()
+  await page.getByRole('button', { name: 'Runtime', exact: true }).click()
   await expect.poll(async () => (await previewState()).aborts).toBe(1)
-  await panel.getByRole('tab', { name: 'GPU', exact: true }).click()
+  await page.getByRole('button', { name: 'GPU scheduling', exact: true }).click()
   await expect.poll(async () => (await previewState()).requests).toBe(2)
   await page.clock.fastForward(10_001)
   await expect(previewAlert).toContainText('GPU preview timed out.')
@@ -902,7 +941,7 @@ test('runtime GPU preview cancels hidden requests and recovers from timeout', as
   await expect(previewAlert).toBeHidden()
   await expect(panel.getByRole('button', { name: /GPU 0 · Test GPU/ })).toBeVisible()
   await page.route('**/api/system/metrics**', route => route.fulfill({ status: 503, json: { detail: 'Preview unavailable' } }))
-  await panel.getByRole('button', { name: 'Reload runtime' }).click()
+  await panel.getByRole('button', { name: 'Refresh GPU preview' }).click()
   await expect(previewAlert).toContainText('Showing the last available GPU values.')
   await expect(panel.getByRole('button', { name: /GPU 0 · Test GPU/ })).toBeVisible()
 })
@@ -1029,7 +1068,7 @@ test('monitor terminal search stays responsive with a large scrollback buffer', 
 test('opening the workspace launcher preserves unsaved runtime edits', async ({ page }) => {
   await page.goto('/manager?token=pyruns-e2e-access-token')
   await page.getByRole('button', { name: 'Runtime' }).click()
-  await page.getByRole('button', { name: 'Path' }).click()
+  await page.getByRole('button', { name: 'Path', exact: true }).click()
 
   const pythonPath = page.getByRole('textbox', { name: 'Python executable path' })
   await pythonPath.fill('D:\\tools\\python.exe')
@@ -1061,7 +1100,7 @@ for (const editor of ['runtime', 'launcher'] as const) {
       await page.route('**/api/launcher/validate-path?*', route => route.fulfill(unauthorized), { times: 1 })
     } else {
       await page.getByRole('button', { name: 'Runtime' }).click()
-      await panel.getByRole('button', { name: 'Path' }).click()
+      await panel.getByRole('button', { name: 'Path', exact: true }).click()
       await page.route('**/api/runtime?*', route => route.request().method() === 'PATCH'
         ? route.fulfill(unauthorized)
         : route.continue())
@@ -1115,7 +1154,7 @@ test('reconnect requires explicit discard when the server workspace changed', as
   }
   await page.getByRole('button', { name: 'Runtime' }).click()
   const runtimePanel = page.getByRole('dialog', { name: 'Runtime settings' })
-  await runtimePanel.getByRole('button', { name: 'Path' }).click()
+  await runtimePanel.getByRole('button', { name: 'Path', exact: true }).click()
   const pythonPath = runtimePanel.getByRole('textbox', { name: 'Python executable path' })
   await pythonPath.fill('D:\\drafts\\workspace-change.exe')
 
@@ -1255,7 +1294,7 @@ test('browser navigation cannot discard unsaved task details without confirmatio
   expect(browserErrors).toEqual([])
 })
 
-test('monitor task details stay stable after the full task loads', async ({ page }) => {
+test('monitor task details stay stable after the full task loads', async ({ page }, testInfo) => {
   const browserErrors: string[] = []
   page.on('console', message => {
     if (message.type() === 'error') browserErrors.push(message.text())
@@ -1267,7 +1306,7 @@ test('monitor task details stay stable after the full task loads', async ({ page
     status: 'pending',
     task_kind: 'shell',
     dir: '/tmp/alpha',
-    config_file: '/tmp/alpha/task.sh',
+    config_file: 'config.sh',
     config_text: 'echo alpha',
     preview_text: 'echo alpha',
     created_at: '2026-08-09T00:00:00Z',
@@ -1276,6 +1315,9 @@ test('monitor task details stay stable after the full task loads', async ({ page
     notes: 'keep monitor notes',
     env: { MODE: 'review' },
     run_statuses: ['cancelled'],
+    launch_command: "bash '/tmp/alpha/.pyruns-input-captured.sh'",
+    launch_run_index: 1,
+    launch_workdir: '/tmp',
     pid_create_times: [123.5],
     run_environments: [{ host: 'recorded-host', system: 'Linux', launcher: 'shell',
       cuda_visible_devices: null, assigned_gpu_ids: [], gpu_scope: 'detected', gpu_status: 'ok', gpus: [] }],
@@ -1419,11 +1461,19 @@ test('monitor task details stay stable after the full task loads', async ({ page
   await expect(page.getByRole('textbox', { name: 'Environment variable value' })).toHaveValue('review')
   await page.getByRole('tab', { name: 'Info' }).click()
   await expect(page.getByRole('region', { name: 'Run History', exact: true })).toContainText('cancelled')
-  await expect(page.getByRole('dialog', { name: 'Task details for alpha' }).getByText('recorded-host', { exact: true })).toBeVisible()
+  const detail = page.getByRole('dialog', { name: 'Task details for alpha' })
+  await expect(detail.getByText('recorded-host', { exact: true })).toBeVisible()
+  await expect(detail.getByText('config.sh', { exact: true })).toBeVisible()
+  await expect(detail.getByText(task.launch_command, { exact: true })).toBeHidden()
+  await detail.screenshot({ path: testInfo.outputPath('task-info.png') })
+  await detail.getByText('Launch details', { exact: true }).click()
+  await expect(detail.getByText(task.launch_command, { exact: true })).toBeVisible()
+  await expect(detail.getByText('The runner executed a snapshot of config.sh captured at launch.', { exact: true })).toBeVisible()
+  expect(await detail.evaluate(element => element.scrollWidth <= element.clientWidth)).toBe(true)
   await page.getByRole('region', { name: 'Run History', exact: true }).locator('summary').filter({ hasText: 'Run #1' }).click()
   await expect(page.getByText('2026-08-09T00:01:00Z')).toBeVisible()
   await expect(page.getByText('1234')).toBeVisible()
-  await page.getByRole('tab', { name: 'Script' }).click()
+  await page.getByRole('tab', { name: 'Config' }).click()
   await expect(page.getByText('Payload File', { exact: true })).toHaveCount(0)
   await expect(page.getByRole('button', { name: 'Copy payload path' })).toHaveCount(0)
   await expect(page.getByRole('button', { name: 'Copy script' })).toBeVisible()
@@ -2248,7 +2298,6 @@ test('mobile navigation and runtime controls stay touch friendly without overflo
   const runtimeTargets = [
     page.getByRole('tab', { name: 'Python' }),
     page.getByRole('tab', { name: 'Env' }),
-    page.getByRole('tab', { name: 'GPU' }),
     page.getByRole('button', { name: 'Reload runtime' }),
     page.getByRole('button', { name: 'Close runtime panel' }),
     page.getByRole('button', { name: 'Follow' }),
@@ -2260,14 +2309,15 @@ test('mobile navigation and runtime controls stay touch friendly without overflo
     expect(box?.width).toBeGreaterThanOrEqual(44)
     expect(box?.height).toBeGreaterThanOrEqual(44)
   }
-  await page.getByRole('tab', { name: 'GPU' }).click()
+  await page.getByRole('button', { name: 'Close runtime panel' }).click()
+  await page.getByRole('button', { name: 'GPU scheduling', exact: true }).click()
   const gpuScheduler = page.getByRole('switch', { name: 'GPU scheduling' })
   const gpuSchedulerBox = await gpuScheduler.boundingBox()
   expect(gpuSchedulerBox?.width).toBeGreaterThanOrEqual(44)
   expect(gpuSchedulerBox?.height).toBeGreaterThanOrEqual(44)
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true)
 
-  await page.getByRole('button', { name: 'Close runtime panel' }).click()
+  await page.getByRole('button', { name: 'Close GPU scheduling' }).click()
   await page.getByRole('link', { name: 'Generator' }).click()
   const taskPrefix = page.getByRole('textbox', { name: 'Task Prefix' })
   const editorViewButtons = await page.locator('[aria-label="Editor view"] button').all()
@@ -2313,7 +2363,6 @@ test('mobile navigation and runtime controls stay touch friendly without overflo
   for (const target of [
     page.getByRole('tab', { name: 'Python' }),
     page.getByRole('tab', { name: 'Env' }),
-    page.getByRole('tab', { name: 'GPU' }),
     page.getByRole('button', { name: 'Reload runtime' }),
     page.getByRole('button', { name: 'Close runtime panel' }),
   ]) {
@@ -2366,7 +2415,7 @@ test('authentication failures show a recoverable session screen', async ({ page 
   await page.getByRole('button', { name: 'Retry connection' }).click()
   await expect(page.getByRole('heading', { name: 'Dashboard' })).toBeVisible()
 
-  await page.route('**/api/runtime', route => route.fulfill({
+  await page.route('**/api/runtime?refresh_providers=false', route => route.fulfill({
     status: 401,
     contentType: 'application/json',
     body: JSON.stringify({ detail: 'UI authentication required' }),
@@ -2674,7 +2723,6 @@ test('manager applies and remembers the selected card order', async ({ page }) =
 
   await page.goto('/manager?token=pyruns-e2e-access-token')
   const sortSelect = page.getByRole('combobox', { name: 'Sort task cards' })
-  await page.getByRole('button', { name: 'View options', exact: true }).click()
   await expect.poll(() => sortSelect.evaluate(element => {
     const select = element as HTMLSelectElement
     const style = window.getComputedStyle(select)
@@ -2688,7 +2736,6 @@ test('manager applies and remembers the selected card order', async ({ page }) =
     return widestOption <= availableWidth
   })).toBe(true)
   await sortSelect.selectOption('name_desc')
-  await expect(sortSelect).toHaveAccessibleDescription(/run10 comes before run2/)
   await expect(page.locator('[data-task-card]')).toHaveCount(3)
   await expect.poll(() => page.locator('[data-task-card]').evaluateAll(cards => (
     cards.map(card => card.getAttribute('data-task-card'))
@@ -2696,6 +2743,5 @@ test('manager applies and remembers the selected card order', async ({ page }) =
 
   await page.getByRole('link', { name: 'Generator' }).click()
   await page.getByRole('link', { name: 'Manager' }).click()
-  await page.getByRole('button', { name: 'View options', exact: true }).click()
   await expect(page.getByRole('combobox', { name: 'Sort task cards' })).toHaveValue('name_desc')
 })

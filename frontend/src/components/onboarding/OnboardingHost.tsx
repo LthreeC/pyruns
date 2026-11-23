@@ -36,11 +36,11 @@ export default function OnboardingHost({ enabled }: { enabled: boolean }) {
   useEffect(() => {
     if (!enabled || hasSeen || dirty || panelOpen || phase !== 'idle') return
     const offerGuide = () => {
-      if (document.querySelector('[data-tour="home"]') && !document.querySelector('dialog[open], [role="dialog"]')) {
+      if (document.querySelector('[data-tour="home"]') && !document.querySelector('[data-route-unavailable], dialog[open], [role="dialog"]')) {
         useOnboardingStore.getState().open(document.querySelector<HTMLElement>('[data-tour="preferences"]'))
       }
     }
-    // The route and sidebar can arrive after the initial lazy-loaded screen.
+    // The sidebar can render while the first workspace route is still loading.
     const observer = new MutationObserver(offerGuide)
     observer.observe(document.getElementById('root')!, { childList: true, subtree: true })
     const frame = window.requestAnimationFrame(offerGuide)
