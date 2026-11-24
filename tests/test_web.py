@@ -895,7 +895,7 @@ def test_monitor_log_positions_sample_current_runs_without_refreshing_task_lists
         return response.json()["items"]
 
     try:
-        with client, ThreadPoolExecutor(max_workers=1) as pool:
+        with client, ThreadPoolExecutor(max_workers=2) as pool:
             assert positions() == []  # An unopened Monitor does not load the task registry.
             assert client.get("/api/tasks?summary=true&compact=true&include_logs=true").status_code == 200
             assert not inspected
@@ -903,6 +903,8 @@ def test_monitor_log_positions_sample_current_runs_without_refreshing_task_lists
             try:
                 assert entered.wait(2)
                 assert client.get("/api/tasks?summary=true&compact=true&include_logs=true&refresh=false").status_code == 200
+                # A second tab uses the cache while the first is waiting on disk.
+                assert pool.submit(positions).result(timeout=2) == []
                 assert inspected == [("writer", 2)]
             finally:
                 release.set()
@@ -6206,21 +6208,20 @@ def test_logs_endpoint_can_tail_history_by_lines(tmp_path, total_lines, tail_lin
         workspace,
         "alpha",
         status="running",
-        log_text="".join(f"line {index}\n" for index in range(1, total_lines + 1)),
+        log_text="".join(f"line {index} {'x' * 512}\n" for index in range(1, total_lines + 1)),
     )
     runtime = _build_runtime(workspace)
     client = TestClient(create_app(runtime))
 
-    response = client.get("/api/tasks/alpha/logs", params={
-        "tail_lines": tail_lines, "tail_bytes": 256 * 1024,
-    })
+    response = client.get("/api/tasks/alpha/logs", params={"tail_lines": tail_lines})
 
     assert response.status_code == 200
     payload = response.json()
     assert payload["content"].splitlines() == [
-        f"line {index}" for index in range(total_lines - tail_lines + 1, total_lines + 1)
+        f"line {index} {'x' * 512}" for index in range(total_lines - tail_lines + 1, total_lines + 1)
     ]
     assert payload["tail_truncated"] is True
+    assert payload["tail_byte_limited"] is False
 
 
 def test_logs_endpoint_caps_large_initial_tail_by_server_byte_budget(tmp_path):
@@ -6237,6 +6238,7 @@ def test_logs_endpoint_caps_large_initial_tail_by_server_byte_budget(tmp_path):
     payload = response.json()
     content = payload["content"].replace("\r", "")
     assert payload["tail_truncated"] is True
+    assert payload["tail_byte_limited"] is True
     assert payload["tail_limit_bytes"] == 4 * 1024 * 1024
     assert len(payload["content"].encode("utf-8")) <= payload["tail_limit_bytes"]
     assert content.endswith("\nlast\n")

@@ -61,8 +61,8 @@ describe('monitor log text coordinates', () => {
   })
 
   it('appends repeated text even when trimming leaves an identical full window', () => {
-    const row = 'same line '.padEnd(127, 'x') + '\n'
-    const previous = replaceMonitorLogContent(empty, trimMonitorLogContent(row.repeat(40_000)))
+    const row = 'same line '.padEnd(511, 'x') + '\n'
+    const previous = replaceMonitorLogContent(empty, trimMonitorLogContent(row.repeat(10_500)))
     expect(previous.logContent).toHaveLength(4 * 1024 * 1024)
     const next = appendMonitorLogContent(previous, row)
     expect(next.logContent).toBe(previous.logContent)

@@ -338,6 +338,7 @@ export interface TaskLogs {
   reset?: boolean
   log_identity?: string
   tail_truncated?: boolean
+  tail_byte_limited?: boolean
   tail_limit_bytes?: number
 }
 

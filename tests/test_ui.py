@@ -977,7 +977,7 @@ def test_monitor_surfaces_structured_gpu_wait_and_bounded_log_tail_state():
     assert "logTailTruncated" in store
     assert "tail_truncated?: boolean" in types
     assert "Showing up to {{lines}} recent log lines." in monitor
-    assert "New output continues live." in monitor
+    assert "Showing the end of a large log." in monitor
 
 
 def test_react_runtime_panel_loads_and_saves_conda_runtime_choices():

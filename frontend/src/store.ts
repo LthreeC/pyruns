@@ -18,7 +18,7 @@ import type {
 } from './types'
 import * as api from './api'
 import {
-  MAX_MONITOR_LOG_CHARS, MONITOR_INITIAL_TAIL_BYTES, monitorLogTailLines, monitorPreviewTailLines, resolveMonitorScrollback,
+  MAX_MONITOR_LOG_CHARS, monitorLogTailLines, monitorPreviewTailLines, resolveMonitorScrollback,
 } from './utils/monitorSettings'
 import { configPathId } from './utils/configPaths'
 import { retainTaskSnapshots } from './utils/taskSnapshots'
@@ -279,7 +279,8 @@ function resetWorkspaceScopedState(nextWorkspaceKey: string) {
     availableLogs: [],
     selectedLog: '',
     logTailTruncated: false,
-    logTailLimitBytes: 0,
+    logTailByteLimited: false,
+    logTailExpanded: false,
     loading: false,
     exportIds: new Set(),
   })
@@ -1370,11 +1371,12 @@ interface MonitorState extends MonitorLogText {
   availableLogs: string[]
   selectedLog: string
   logTailTruncated: boolean
-  logTailLimitBytes: number
+  logTailByteLimited: boolean
+  logTailExpanded: boolean
   loading: boolean
   exportIds: Set<string>
   selectTask: (name: string, match?: TaskSearchMatch) => Promise<void>
-  selectLogFile: (name: string, tailBytes?: number) => Promise<void>
+  selectLogFile: (name: string, expanded?: boolean) => Promise<void>
   appendLog: (text: string) => void
   clearLog: () => void
   clearTask: () => void
@@ -1397,7 +1399,8 @@ export const useMonitorStore = create<MonitorState>((set, get) => ({
   availableLogs: [],
   selectedLog: '',
   logTailTruncated: false,
-  logTailLimitBytes: 0,
+  logTailByteLimited: false,
+  logTailExpanded: false,
   loading: false,
   exportIds: new Set(),
   async selectTask(name: string, match?: TaskSearchMatch) {
@@ -1422,7 +1425,8 @@ export const useMonitorStore = create<MonitorState>((set, get) => ({
       availableLogs: [],
       selectedLog: logMatch?.log_file || '',
       logTailTruncated: false,
-      logTailLimitBytes: 0,
+      logTailByteLimited: false,
+      logTailExpanded: false,
       loading: true,
     })
     try {
@@ -1431,7 +1435,7 @@ export const useMonitorStore = create<MonitorState>((set, get) => ({
         logIdentity: logMatch.log_identity,
         offset: logMatch.offset ?? 0,
         chunkSize: 32 * 1024,
-      } : { tailLines: monitorPreviewTailLines(currentMonitorScrollback()), tailBytes: MONITOR_INITIAL_TAIL_BYTES }, controller.signal)
+      } : { tailLines: monitorPreviewTailLines(currentMonitorScrollback()) }, controller.signal)
       if (
         requestId !== monitorRequestSeq
         || get().selectedTaskName !== name
@@ -1451,7 +1455,7 @@ export const useMonitorStore = create<MonitorState>((set, get) => ({
         availableLogs: logs.available_logs,
         selectedLog: logs.selected_log,
         logTailTruncated: Boolean(logs.tail_truncated),
-        logTailLimitBytes: Number(logs.tail_limit_bytes || 0),
+        logTailByteLimited: Boolean(logs.tail_byte_limited),
       })
     } catch (err) {
       if (requestId !== monitorRequestSeq || get().workspaceKey !== workspaceKey) return
@@ -1468,7 +1472,7 @@ export const useMonitorStore = create<MonitorState>((set, get) => ({
       }
     }
   },
-  async selectLogFile(logName: string, tailBytes = MONITOR_INITIAL_TAIL_BYTES) {
+  async selectLogFile(logName: string, expanded = false) {
     const { selectedTaskName } = get()
     if (!selectedTaskName) return
     const requestId = ++monitorRequestSeq
@@ -1489,14 +1493,14 @@ export const useMonitorStore = create<MonitorState>((set, get) => ({
       logOffset: 0,
       logIdentity: '',
       logTailTruncated: false,
-      logTailLimitBytes: 0,
+      logTailByteLimited: false,
+      logTailExpanded: expanded,
       loading: true,
     })
     try {
       const logs = await api.getTaskLogs(selectedTaskName, {
         logFileName: logName,
-        tailLines: monitorPreviewTailLines(currentMonitorScrollback(), tailBytes > MONITOR_INITIAL_TAIL_BYTES),
-        tailBytes,
+        tailLines: monitorPreviewTailLines(currentMonitorScrollback(), expanded),
       }, controller.signal)
       if (
         requestId !== monitorRequestSeq
@@ -1514,7 +1518,7 @@ export const useMonitorStore = create<MonitorState>((set, get) => ({
         availableLogs: logs.available_logs,
         selectedLog: logs.selected_log,
         logTailTruncated: Boolean(logs.tail_truncated),
-        logTailLimitBytes: Number(logs.tail_limit_bytes || 0),
+        logTailByteLimited: Boolean(logs.tail_byte_limited),
       })
     } catch (err) {
       if (requestId !== monitorRequestSeq || get().workspaceKey !== workspaceKey) return
@@ -1535,13 +1539,14 @@ export const useMonitorStore = create<MonitorState>((set, get) => ({
     set(s => appendMonitorLogContent(s, text))
   },
   clearLog() {
-    set({ ...replaceMonitorLogContent(get(), ''), logOffset: 0, logIdentity: '', logTailTruncated: false, logTailLimitBytes: 0 })
+    set({ ...replaceMonitorLogContent(get(), ''), logOffset: 0, logIdentity: '',
+      logTailTruncated: false, logTailByteLimited: false, logTailExpanded: false })
   },
   clearTask() {
     monitorLogController?.abort()
     set({ ...replaceMonitorLogContent(get(), ''), selectedTaskName: null, logMatch: null, logError: '',
       logGeneration: ++monitorRequestSeq, logOffset: 0, logIdentity: '', availableLogs: [], selectedLog: '',
-      logTailTruncated: false, logTailLimitBytes: 0, loading: false })
+      logTailTruncated: false, logTailByteLimited: false, logTailExpanded: false, loading: false })
   },
   toggleExport(name) {
     const ids = new Set(get().exportIds)

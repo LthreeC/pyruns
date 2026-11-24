@@ -14,7 +14,6 @@ import { FitAddon } from '@xterm/addon-fit'
 import { SearchAddon, type ISearchOptions } from '@xterm/addon-search'
 import '@xterm/xterm/css/xterm.css'
 import {
-  AlertTriangle,
   ChevronDown,
   ChevronUp,
   Cpu,
@@ -66,8 +65,8 @@ import * as api from '@/api'
 import {
   DEFAULT_MONITOR_LINE_HEIGHT,
   DEFAULT_MONITOR_SCROLLBACK,
-  MAX_MONITOR_CHUNK_SIZE,
   MAX_MONITOR_LOG_CHARS,
+  MONITOR_INITIAL_TAIL_LINES,
   monitorPreviewTailLines,
   resolveMonitorChunkSize,
   resolveMonitorLineHeight,
@@ -214,7 +213,7 @@ export default function MonitorPage() {
   const pageVisible = usePageVisible()
   const {
     selectedTaskName, logContent, logTextVersion, logTextEnd, logOffset, logIdentity, availableLogs, selectedLog,
-    logTailTruncated, logTailLimitBytes, loading, exportIds, logMatch, logError, logGeneration,
+    logTailTruncated, logTailByteLimited, logTailExpanded, loading, exportIds, logMatch, logError, logGeneration,
     selectTask, selectLogFile, toggleExport, setExportSelected, clearExport,
   } = useMonitorStore()
 
@@ -1222,7 +1221,8 @@ export default function MonitorPage() {
         logOffset: 0,
         logIdentity: '',
         logTailTruncated: false,
-        logTailLimitBytes: 0,
+        logTailByteLimited: false,
+        logTailExpanded: false,
         availableLogs: state.availableLogs.includes(messageLog)
           ? state.availableLogs
           : [messageLog, ...state.availableLogs],
@@ -1256,7 +1256,8 @@ export default function MonitorPage() {
               logOffset: nextOffset,
               logIdentity: nextIdentity,
               logTailTruncated: false,
-              logTailLimitBytes: 0,
+              logTailByteLimited: false,
+              logTailExpanded: false,
             }
           : state
       ))
@@ -1413,7 +1414,8 @@ export default function MonitorPage() {
               availableLogs: logs.available_logs,
               selectedLog: state.selectedLog || logs.selected_log,
               logTailTruncated: shouldReplaceContent ? false : state.logTailTruncated,
-              logTailLimitBytes: shouldReplaceContent ? 0 : state.logTailLimitBytes,
+              logTailByteLimited: shouldReplaceContent ? false : state.logTailByteLimited,
+              logTailExpanded: shouldReplaceContent ? false : state.logTailExpanded,
             }
           : state
       ))
@@ -1563,7 +1565,7 @@ export default function MonitorPage() {
     })
   }
 
-  const handleSelectLogFile = useCallback((logName: string, tailBytes?: number) => {
+  const handleSelectLogFile = useCallback((logName: string, expanded?: boolean) => {
     const taskName = selectedTaskNameRef.current
     const liveLog = liveLogNameRef.current
     const taskStatus = useTaskStore.getState().monitorTasks.find(task => task.name === taskName)?.status
@@ -1576,7 +1578,7 @@ export default function MonitorPage() {
     if (selectingHistory) {
       queuedLiveLogTaskRef.current = { taskName: null, runLogName: '' }
     }
-    void selectLogFile(logName, tailBytes)
+    void selectLogFile(logName, expanded)
       .catch(err => notify({ tone: 'error', title: t("Could not load log file"), detail: errorMessage(err) }))
   }, [notify, selectLogFile, selectedTaskSnapshot?.status])
 
@@ -2028,7 +2030,7 @@ export default function MonitorPage() {
           <div role="alert" className="border-b border-border bg-surface-raised px-3 py-2 text-xs text-rose-600 dark:text-rose-300">
             {logError}
             <button type="button" className="touch-target ml-2 text-accent underline" onClick={() => {
-              if (!logMatch && selectedLog) handleSelectLogFile(selectedLog)
+              if (!logMatch && selectedLog) handleSelectLogFile(selectedLog, logTailExpanded)
               else if (selectedTask) handleSidebarClick(selectedTask, logMatch ?? undefined)
             }}>{t("Retry")}</button>
           </div>
@@ -2041,19 +2043,17 @@ export default function MonitorPage() {
         {logTailTruncated && (
           <div
             role="status"
-            className="flex flex-wrap items-center gap-x-2 gap-y-1 border-b border-amber-500/20 bg-amber-500/10 px-3 py-1.5 text-2xs text-amber-800 dark:text-amber-200"
+            className="flex flex-wrap items-center gap-x-3 gap-y-1 border-b border-border bg-surface-raised px-3 py-1.5 text-xs text-txt-secondary"
           >
-            <AlertTriangle className="h-3.5 w-3.5 flex-none" />
             <span>
-              {t('Showing up to {{lines}} recent log lines.', {
-                lines: monitorPreviewTailLines(monitorScrollback, logTailLimitBytes >= MAX_MONITOR_CHUNK_SIZE).toLocaleString(),
+              {logTailByteLimited ? t('Showing the end of a large log.') : t('Showing up to {{lines}} recent log lines.', {
+                lines: monitorPreviewTailLines(monitorScrollback, logTailExpanded).toLocaleString(),
               })}
             </span>
-            {isLive && <span className="text-amber-700/80 dark:text-amber-300/80">{t("New output continues live.")}</span>}
-            {selectedLog && logTailLimitBytes < MAX_MONITOR_CHUNK_SIZE && (
+            {selectedLog && !logTailByteLimited && !logTailExpanded && monitorScrollback > MONITOR_INITIAL_TAIL_LINES && (
               <button type="button" className="touch-target shrink-0 font-medium text-accent hover:underline"
                 onClick={() => {
-                  handleSelectLogFile(selectedLog, MAX_MONITOR_CHUNK_SIZE)
+                  handleSelectLogFile(selectedLog, true)
                   xtermRef.current?.focus()
                 }}>
                 {t("Load more history")}

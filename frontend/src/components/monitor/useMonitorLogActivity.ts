@@ -4,6 +4,7 @@ import { usePolling } from '@/hooks/usePolling'
 import type { MonitorLogPosition, Task } from '@/types'
 
 const ACTIVITY_POLL_MS = 2000
+const ACTIVITY_REQUEST_TIMEOUT_MS = 8000
 // Training can run for several dozen seconds between progress messages.
 const ACTIVITY_IDLE_MS = 90_000
 const MAX_WATCHED_TASKS = 200
@@ -88,6 +89,7 @@ export function useMonitorLogActivity(
 
   usePolling(async () => {
     const controller = new AbortController()
+    const timeout = window.setTimeout(() => controller.abort(), ACTIVITY_REQUEST_TIMEOUT_MS)
     request.current = controller
     try {
       const priority = new Set<string>()
@@ -122,6 +124,7 @@ export function useMonitorLogActivity(
       }
       if (deadlines.length) record(deadlines)
     } finally {
+      window.clearTimeout(timeout)
       if (request.current === controller) request.current = null
     }
   }, ACTIVITY_POLL_MS, polling)

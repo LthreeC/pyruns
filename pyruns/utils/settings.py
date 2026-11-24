@@ -96,7 +96,7 @@ header_refresh_interval: {SETTINGS_DEFAULTS.get("header_refresh_interval")}
 
 # Monitor
 monitor_chunk_size: {SETTINGS_DEFAULTS.get("monitor_chunk_size")}            # bytes per chunk
-monitor_scrollback: {SETTINGS_DEFAULTS.get("monitor_scrollback")}           # initial tail lines and xterm scrollback rows
+monitor_scrollback: {SETTINGS_DEFAULTS.get("monitor_scrollback")}           # retained terminal rows and expanded history
 monitor_line_height: {SETTINGS_DEFAULTS.get("monitor_line_height")}         # terminal row height multiplier (1.0 = normal)
 monitor_sidebar_width_pct: {SETTINGS_DEFAULTS.get("monitor_sidebar_width_pct")}     # monitor sidebar width (% of page)
 

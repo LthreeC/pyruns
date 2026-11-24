@@ -274,6 +274,26 @@ test('returning to Monitor restores recent activity before reading logs again', 
   await expect(row).not.toHaveAttribute(active)
 })
 
+test('activity sampling recovers after a stalled request', async ({ page }) => {
+  const shared = { name: 'shared-writer', status: 'running', run_index: 1, task_kind: 'shell' }
+  let polls = 0
+  const now = Date.now()
+  await page.route('**/api/monitor/log-positions', route => {
+    if (++polls === 1) return
+    return route.fulfill({ json: {
+      sampled_at_ms: now,
+      items: [{ name: shared.name, run_index: 1, identity: 'shared', size: 10, modified_at_ms: now }],
+    } })
+  })
+  await prepareMonitor(page, [shared])
+  await expect.poll(() => polls).toBe(1)
+  const row = page.locator('[data-monitor-page-task="shared-writer"]')
+  await expect(row).not.toHaveAttribute('data-log-activity')
+  await page.clock.runFor(8_100)
+  await page.clock.runFor(2_100)
+  await expect(row).toHaveAttribute('data-log-activity', 'true')
+})
+
 for (const reportsSize of [true, false]) test(
   reportsSize ? 'HTTP fallback animates after catching up to the initial log size' : 'HTTP fallback from older servers keeps the activity strip quiet',
   async ({ page }) => {

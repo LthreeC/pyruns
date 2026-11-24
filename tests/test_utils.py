@@ -770,8 +770,6 @@ def test_decode_log_bytes_uses_utf8_replace_when_no_fallback_candidate(monkeypat
 
 
 def test_log_io_error_and_empty_read_edges(tmp_path, monkeypatch):
-    assert log_io._split_lf_lines_keepends(b"") == []
-
     empty_log = tmp_path / "empty.log"
     empty_log.write_bytes(b"")
     assert read_last_lines(str(empty_log), max_lines=5) == ("", 0)

@@ -156,80 +156,71 @@ def read_last_bytes(log_path: str, n_bytes: int = 10000, *, strict: bool = False
         return "", 0
 
 
-def _split_lf_lines_keepends(data: bytes) -> list[bytes]:
-    """Split bytes into LF-delimited records without treating CR as a line break."""
-
-    if not data:
-        return []
-
-    lines: list[bytes] = []
-    start = 0
-    while True:
-        index = data.find(b"\n", start)
-        if index < 0:
-            if start < len(data):
-                lines.append(data[start:])
-            break
-        lines.append(data[start:index + 1])
-        start = index + 1
-    return lines
-
-
 def read_last_lines(
     log_path: str, max_lines: int = 10000, max_bytes: int | None = None, *, strict: bool = False,
 ) -> Tuple[str, int]:
     """Read up to the last ``max_lines`` LF-delimited log lines."""
-    content, offset, _ = read_log_tail(log_path, max_lines, max_bytes, strict=strict)
+    content, offset, _, _ = read_log_tail(log_path, max_lines, max_bytes, strict=strict)
     return content, offset
 
 
 def read_log_tail(
     log_path: str, max_lines: int, max_bytes: int | None, *, strict: bool = False,
-) -> tuple[str, int, bool]:
-    """Return a line-limited tail, raw end offset and whether older bytes were omitted."""
+) -> tuple[str, int, bool, bool]:
+    """Return text, its end offset, and flags for omitted history and the byte cap."""
 
     try:
         max_lines = max(0, int(max_lines))
         byte_limit = None if max_bytes is None else max(1, int(max_bytes))
         block_size = 64 * 1024
         chunks: list[bytes] = []
-        line_break_count = 0
+        remaining_breaks = max_lines
         bytes_read = 0
 
         with open(log_path, "rb") as handle:
             size = os.fstat(handle.fileno()).st_size
             if size <= 0 or max_lines == 0:
-                return "", size, False
+                return "", size, False, False
             position = size
-            while position > 0 and line_break_count <= max_lines and (
-                byte_limit is None or bytes_read < byte_limit
-            ):
+            while position > 0 and (byte_limit is None or bytes_read < byte_limit):
                 read_size = min(block_size, position)
                 if byte_limit is not None:
                     read_size = min(read_size, byte_limit - bytes_read)
                 position -= read_size
                 handle.seek(position)
                 chunk = handle.read(read_size)
-                if len(chunk) < read_size:
+                shortened = len(chunk) < read_size
+                if shortened:
                     # A concurrent truncation invalidates the later blocks
                     # already read. Keep a bounded cursor for the next chunk.
                     size = min(position + len(chunk), os.fstat(handle.fileno()).st_size) if chunk else 0
-                    chunks = [chunk]
+                    chunks.clear()
+                    remaining_breaks = max_lines
+                if not chunks and chunk.endswith(b"\n"):
+                    remaining_breaks += 1
+                breaks = chunk.count(b"\n")
+                if breaks >= remaining_breaks:
+                    start = len(chunk.rsplit(b"\n", remaining_breaks)[0]) + 1
+                    chunks.append(chunk[start:])
                     break
                 chunks.append(chunk)
+                if shortened:
+                    break
                 bytes_read += len(chunk)
-                line_break_count += chunk.count(b"\n")
+                remaining_breaks -= breaks
+                # Estimate the next read from actual line density. A long line
+                # with no delimiters grows the block without a syscall per 64 KiB.
+                estimate = remaining_breaks * len(chunk) // breaks + 1 if breaks else block_size * 2
+                block_size = min(512 * 1024, max(64 * 1024, estimate))
 
         data = b"".join(reversed(chunks))
-        lines = _split_lf_lines_keepends(data)
-        if len(lines) > max_lines:
-            data = b"".join(lines[-max_lines:])
-
-        return normalize_log_newlines(decode_log_bytes(data)), size, size > len(data)
+        omitted = size > len(data)
+        byte_limited = omitted and byte_limit is not None and len(data) >= byte_limit
+        return normalize_log_newlines(decode_log_bytes(data)), size, omitted, byte_limited
     except Exception:
         if strict:
             raise
-        return "", 0, False
+        return "", 0, False, False
 
 
 def _complete_log_character(handle, chunk: bytes, remaining: int) -> bytes:

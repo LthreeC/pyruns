@@ -2113,10 +2113,12 @@ class PyrunsRuntime:
                 "reset": bool(offset is not None and log_identity),
                 "log_identity": "",
                 "tail_truncated": False,
+                "tail_byte_limited": False,
                 "tail_limit_bytes": MAX_MONITOR_LOG_TAIL_BYTES,
             }
 
         tail_truncated = False
+        tail_byte_limited = False
         tail_limit_bytes = MAX_MONITOR_LOG_TAIL_BYTES
         selected_identity = log_file_identity(selected_path, **({"strict": True} if strict else {}))
         reset = False
@@ -2129,7 +2131,7 @@ class PyrunsRuntime:
                     else max(1, int(tail_bytes))
                 )
                 tail_limit_bytes = min(MAX_MONITOR_LOG_TAIL_BYTES, requested_tail_bytes)
-                content, new_offset, tail_truncated = read_log_tail(
+                content, new_offset, tail_truncated, tail_byte_limited = read_log_tail(
                     selected_path,
                     max_lines=max(0, tail_lines),
                     max_bytes=tail_limit_bytes,
@@ -2151,6 +2153,7 @@ class PyrunsRuntime:
                     tail_truncated = os.path.getsize(selected_path) > tail_limit_bytes
                 except OSError:
                     tail_truncated = False
+                tail_byte_limited = tail_truncated
         else:
             byte_limit = chunk_size
             if byte_limit is None:
@@ -2188,6 +2191,7 @@ class PyrunsRuntime:
             "reset": reset,
             "log_identity": selected_identity,
             "tail_truncated": tail_truncated,
+            "tail_byte_limited": tail_byte_limited,
             "tail_limit_bytes": tail_limit_bytes,
             **({"file_size": file_size} if file_size is not None else {}),
         }

@@ -254,30 +254,30 @@ class _MonitorLogPositions:
     async def read(self, sources: dict[str, tuple[str, int]]) -> list[dict[str, Any]]:
         if not sources:
             return []
-        async with self._sample_lock:
-            cutoff = time.monotonic() - MONITOR_LOG_SAMPLE_TTL_SEC
-            # Rotate large pages through the oldest samples. Concurrent tabs
-            # reuse recent results, including missing logs.
-            source_keys = list(dict.fromkeys(sources.values()))
-            priority = set(source_keys[:MONITOR_LOG_PRIORITY_SIZE])
-            due = [key for key in source_keys if self._sample_time(key) <= cutoff]
-            # The client lists on-screen rows first. Retain slots for off-screen rows.
-            keys = sorted(due, key=lambda key: (key not in priority, self._sample_time(key)))[:MONITOR_LOG_SAMPLE_SIZE]
-            if keys:
-                # The worker holds no workspace or task-manager lock.
-                positions = await run_in_threadpool(lambda: map_disk_reads(keys, _monitor_log_position, max_workers=4))
-                sampled_at = time.monotonic()
-                for key, position in zip(keys, positions, strict=True):
-                    self._cache.pop(key, None)
-                    self._cache[key] = (sampled_at, position)
-                while len(self._cache) > MONITOR_LOG_CACHE_SIZE:
-                    self._cache.pop(next(iter(self._cache)))
-            return [
-                {"name": name, "run_index": key[1], **position}
-                for name, key in sources.items()
-                if (sample := self._cache.get(key)) is not None
-                and (position := sample[1]) is not None
-            ]
+        # Concurrent tabs can reuse the cache while a disk request is in flight.
+        if not self._sample_lock.locked():
+            async with self._sample_lock:
+                cutoff = time.monotonic() - MONITOR_LOG_SAMPLE_TTL_SEC
+                source_keys = list(dict.fromkeys(sources.values()))
+                priority = set(source_keys[:MONITOR_LOG_PRIORITY_SIZE])
+                due = [key for key in source_keys if self._sample_time(key) <= cutoff]
+                # The client lists on-screen rows first. Retain slots for off-screen rows.
+                keys = sorted(due, key=lambda key: (key not in priority, self._sample_time(key)))[:MONITOR_LOG_SAMPLE_SIZE]
+                if keys:
+                    # The worker holds no workspace or task-manager lock.
+                    positions = await run_in_threadpool(lambda: map_disk_reads(keys, _monitor_log_position, max_workers=4))
+                    sampled_at = time.monotonic()
+                    for key, position in zip(keys, positions, strict=True):
+                        self._cache.pop(key, None)
+                        self._cache[key] = (sampled_at, position)
+                    while len(self._cache) > MONITOR_LOG_CACHE_SIZE:
+                        self._cache.pop(next(iter(self._cache)))
+        return [
+            {"name": name, "run_index": key[1], **position}
+            for name, key in sources.items()
+            if (sample := self._cache.get(key)) is not None
+            and (position := sample[1]) is not None
+        ]
 
 
 def _authority_parts(
