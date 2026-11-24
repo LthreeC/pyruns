@@ -425,7 +425,7 @@ export const renameTask = (name: string, newName: string) =>
   })
 
 export const getMonitorLogPositions = (taskNames: string[], signal: AbortSignal) =>
-  request<{ items: MonitorLogPosition[] }>('/api/monitor/log-positions', {
+  request<{ items: MonitorLogPosition[]; sampled_at_ms?: number }>('/api/monitor/log-positions', {
     method: 'POST', body: JSON.stringify({ task_names: taskNames }), signal,
   })
 

@@ -781,14 +781,13 @@ def test_react_secondary_mobile_controls_keep_usable_touch_targets():
 def test_react_monitor_caps_live_log_state_by_scrollback_rows_for_long_tasks():
     store = FRONTEND_STORE.read_text(encoding="utf-8")
     monitor = FRONTEND_MONITOR.read_text(encoding="utf-8")
+    settings = (FRONTEND_COMPONENTS_DIR.parent / "utils" / "monitorSettings.ts").read_text(encoding="utf-8")
 
     assert "export function trimMonitorLogContent(content: string, maxLines = currentMonitorScrollback())" in store
-    assert "content.charCodeAt(index) !== 10" in store
-    assert "if (keptLines > lineLimit)" in store
-    assert "const MAX_MONITOR_LOG_CHARS = 4 * 1024 * 1024" in store
-    assert "lineTrimmed.slice(-MAX_MONITOR_LOG_CHARS)" in store
+    assert r"tail.lastIndexOf('\n', end)" in store
+    assert "monitorLogTailLines" in store
+    assert "const MAX_MONITOR_LOG_CHARS = 4 * 1024 * 1024" in settings
     assert "content.slice(-MAX_MONITOR_LOG_CHARS)" in store
-    assert "charCodeAt(index) !== 13" not in store
     assert "function isPyrunsLifecycleChunk" in store
     assert "function comparableLogText" in store
     assert "export function appendMonitorLogContent" in store
@@ -903,7 +902,8 @@ def test_react_monitor_writes_terminal_deltas_without_full_screen_repaint():
 
     assert "renderedLogRef" in source
     assert "monitorLogAppendDelta(previous, { logContent, logTextVersion, logTextEnd })" in source
-    assert "writeTerminalLog(term, nextChunk)" in source
+    assert "writer.append(nextChunk)" in source
+    assert "writer.queuedChars + nextChunk.length <= MAX_MONITOR_LOG_CHARS" in source
     assert "normalize_log_newlines" not in source
 
 
@@ -976,7 +976,7 @@ def test_monitor_surfaces_structured_gpu_wait_and_bounded_log_tail_state():
     assert "Why each GPU is waiting" in monitor
     assert "logTailTruncated" in store
     assert "tail_truncated?: boolean" in types
-    assert "Showing the latest" in monitor
+    assert "Showing up to {{lines}} recent log lines." in monitor
     assert "New output continues live." in monitor
 
 

@@ -95,6 +95,7 @@ MAX_TASK_BATCH_ITEMS = 10_000
 MAX_TASK_PAGE_SIZE = 10_000
 MAX_MONITOR_LOG_POSITIONS = 200
 MONITOR_LOG_SAMPLE_SIZE = 32
+MONITOR_LOG_PRIORITY_SIZE = 24
 MONITOR_LOG_SAMPLE_TTL_SEC = 1.5
 MONITOR_LOG_CACHE_SIZE = 800
 MAX_TASK_NOTES_CHARS = 1_000_000
@@ -230,9 +231,13 @@ def _compact_monitor_task(task: dict[str, Any]) -> dict[str, Any]:
 
 def _monitor_log_position(key: tuple[str, int]) -> dict[str, Any] | None:
     info = stat_task_run_log(*key)
-    if info is None or not info.st_ino:
+    if info is None:
         return None
-    return {"identity": f"{info.st_dev:x}:{info.st_ino:x}", "size": info.st_size}
+    return {
+        "identity": f"{info.st_dev:x}:{info.st_ino:x}" if info.st_ino else "",
+        "size": info.st_size,
+        "modified_at_ms": info.st_mtime_ns // 1_000_000,
+    }
 
 
 class _MonitorLogPositions:
@@ -253,8 +258,11 @@ class _MonitorLogPositions:
             cutoff = time.monotonic() - MONITOR_LOG_SAMPLE_TTL_SEC
             # Rotate large pages through the oldest samples. Concurrent tabs
             # reuse recent results, including missing logs.
-            due = [key for key in dict.fromkeys(sources.values()) if self._sample_time(key) <= cutoff]
-            keys = sorted(due, key=self._sample_time)[:MONITOR_LOG_SAMPLE_SIZE]
+            source_keys = list(dict.fromkeys(sources.values()))
+            priority = set(source_keys[:MONITOR_LOG_PRIORITY_SIZE])
+            due = [key for key in source_keys if self._sample_time(key) <= cutoff]
+            # The client lists on-screen rows first. Retain slots for off-screen rows.
+            keys = sorted(due, key=lambda key: (key not in priority, self._sample_time(key)))[:MONITOR_LOG_SAMPLE_SIZE]
             if keys:
                 # The worker holds no workspace or task-manager lock.
                 positions = await run_in_threadpool(lambda: map_disk_reads(keys, _monitor_log_position, max_workers=4))
@@ -267,7 +275,7 @@ class _MonitorLogPositions:
             return [
                 {"name": name, "run_index": key[1], **position}
                 for name, key in sources.items()
-                if (sample := self._cache.get(key)) is not None and sample[0] >= cutoff
+                if (sample := self._cache.get(key)) is not None
                 and (position := sample[1]) is not None
             ]
 
@@ -1189,7 +1197,8 @@ def create_app(
         if len(payload.task_names) > MAX_MONITOR_LOG_POSITIONS:
             raise HTTPException(status_code=400, detail=f"At most {MAX_MONITOR_LOG_POSITIONS} tasks can be sampled")
         sources = await run_in_threadpool(get_runtime().get_running_log_sources, payload.task_names)
-        return {"items": await monitor_log_positions.read(sources)}
+        items = await monitor_log_positions.read(sources)
+        return {"items": items, "sampled_at_ms": time.time_ns() // 1_000_000}
 
     @app.post("/api/tasks/reorder")
     def reorder_tasks(

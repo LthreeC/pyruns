@@ -79,7 +79,7 @@ from pyruns.utils.info_io import (
     validate_tasks_root,
     validate_workspace_directory,
 )
-from pyruns.utils.log_io import log_file_identity, read_last_bytes, read_last_lines, safe_read_log
+from pyruns.utils.log_io import log_file_identity, read_last_bytes, read_log_tail, safe_read_log
 from pyruns.utils.file_io import map_disk_reads, read_bounded_bytes, regular_file_opener
 from pyruns.utils.log_search import LogSearch, LogSearchResult
 from pyruns.utils.process_utils import hidden_subprocess_kwargs
@@ -1806,7 +1806,7 @@ class PyrunsRuntime:
             task_identities={name: identities[name] for name in names} if identities is not None else None,
         )
         if result.status == "unresolved":
-            raise ValueError("Pyruns could not confirm the runner's claims. Refresh task status before trying again.")
+            raise ValueError("Start could not be confirmed. The runner may still be starting or running. Refresh task status before retrying.")
         return list(result.claimed) if result.status in {"accepted", "accepted_partial"} else []
 
     @_with_stable_workspace
@@ -2129,17 +2129,12 @@ class PyrunsRuntime:
                     else max(1, int(tail_bytes))
                 )
                 tail_limit_bytes = min(MAX_MONITOR_LOG_TAIL_BYTES, requested_tail_bytes)
-                content, new_offset = read_last_lines(
+                content, new_offset, tail_truncated = read_log_tail(
                     selected_path,
                     max_lines=max(0, tail_lines),
                     max_bytes=tail_limit_bytes,
                     **({"strict": True} if strict else {}),
                 )
-                if tail_lines > 0:
-                    try:
-                        tail_truncated = os.path.getsize(selected_path) > tail_limit_bytes
-                    except OSError:
-                        tail_truncated = False
             else:
                 byte_limit = tail_bytes
                 if byte_limit is None:

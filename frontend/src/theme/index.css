@@ -866,13 +866,13 @@ dialog::backdrop {
 }
 .dark .monitor-log-activity { --monitor-log-color: #fbbf24; }
 @media (prefers-reduced-motion: no-preference) {
-  .monitor-log-activity { background: color-mix(in srgb, var(--monitor-log-color) 24%, transparent); }
+  .monitor-log-activity { background: color-mix(in srgb, var(--monitor-log-color) 45%, transparent); }
   .monitor-log-activity::after {
     content: '';
     position: absolute;
     inset: 0;
     background: linear-gradient(90deg, transparent 17%, var(--monitor-log-color) 45% 55%, transparent 83%);
-    animation: monitor-log-sweep 2.4s steps(60, jump-none) infinite;
+    animation: monitor-log-sweep 2s linear infinite;
   }
 }
 @keyframes monitor-log-sweep {

@@ -325,6 +325,7 @@ export interface MonitorLogPosition {
   run_index: number
   identity: string
   size: number
+  modified_at_ms?: number
 }
 
 export interface TaskLogs {

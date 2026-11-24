@@ -17,7 +17,9 @@ import type {
   WorkspaceInfo,
 } from './types'
 import * as api from './api'
-import { MONITOR_INITIAL_TAIL_BYTES, monitorLogTailLines, resolveMonitorScrollback } from './utils/monitorSettings'
+import {
+  MAX_MONITOR_LOG_CHARS, MONITOR_INITIAL_TAIL_BYTES, monitorLogTailLines, monitorPreviewTailLines, resolveMonitorScrollback,
+} from './utils/monitorSettings'
 import { configPathId } from './utils/configPaths'
 import { retainTaskSnapshots } from './utils/taskSnapshots'
 import { t as translate } from './i18n'
@@ -55,7 +57,6 @@ export const MANAGER_TASK_PAGE_SIZE = 50
 export const MONITOR_TASK_PAGE_SIZE = 200
 const DEFAULT_SEARCH_OPTIONS: TaskSearchOptions = { matchCase: false, wholeWord: false, useRegex: false }
 const DEFAULT_SOURCES = [{ id: 'shared', host: '' }, { id: 'local', host: '' }]
-const MAX_MONITOR_LOG_CHARS = 4 * 1024 * 1024
 const TASK_SORT_MODES = new Set<TaskSortMode>([
   'priority',
   'manual',
@@ -351,27 +352,15 @@ function readStoredStringArray(key: string) {
 
 export function trimMonitorLogContent(content: string, maxLines = currentMonitorScrollback()) {
   const lineLimit = monitorLogTailLines(Math.max(0, Math.trunc(maxLines)))
-  if (!content) {
-    return ''
+  const tail = content.slice(-MAX_MONITOR_LOG_CHARS)
+  let end = tail.length - (tail.endsWith('\n') ? 2 : 1)
+  for (let lines = lineLimit; lines > 0 && end >= 0; lines -= 1) {
+    const newline = tail.lastIndexOf('\n', end)
+    if (newline < 0) break
+    if (lines === 1) return tail.slice(newline + 1)
+    end = newline - 1
   }
-
-  let keptLines = content.endsWith('\n') ? 0 : 1
-  for (let index = content.length - 1; index >= 0; index -= 1) {
-    if (content.charCodeAt(index) !== 10) {
-      continue
-    }
-    keptLines += 1
-    if (keptLines > lineLimit) {
-      const lineTrimmed = content.slice(index + 1)
-      return lineTrimmed.length > MAX_MONITOR_LOG_CHARS
-        ? lineTrimmed.slice(-MAX_MONITOR_LOG_CHARS)
-        : lineTrimmed
-    }
-  }
-
-  return content.length > MAX_MONITOR_LOG_CHARS
-    ? content.slice(-MAX_MONITOR_LOG_CHARS)
-    : content
+  return tail
 }
 
 function comparableLogText(text: string) {
@@ -1442,7 +1431,7 @@ export const useMonitorStore = create<MonitorState>((set, get) => ({
         logIdentity: logMatch.log_identity,
         offset: logMatch.offset ?? 0,
         chunkSize: 32 * 1024,
-      } : { tailLines: currentMonitorScrollback(), tailBytes: MONITOR_INITIAL_TAIL_BYTES }, controller.signal)
+      } : { tailLines: monitorPreviewTailLines(currentMonitorScrollback()), tailBytes: MONITOR_INITIAL_TAIL_BYTES }, controller.signal)
       if (
         requestId !== monitorRequestSeq
         || get().selectedTaskName !== name
@@ -1506,7 +1495,7 @@ export const useMonitorStore = create<MonitorState>((set, get) => ({
     try {
       const logs = await api.getTaskLogs(selectedTaskName, {
         logFileName: logName,
-        tailLines: currentMonitorScrollback(),
+        tailLines: monitorPreviewTailLines(currentMonitorScrollback(), tailBytes > MONITOR_INITIAL_TAIL_BYTES),
         tailBytes,
       }, controller.signal)
       if (

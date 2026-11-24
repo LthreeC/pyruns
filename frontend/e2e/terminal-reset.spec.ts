@@ -37,15 +37,16 @@ test('monitor loads a bounded tail and expands history for the selected log', as
   }))
   const previewBytes = 256 * 1024
   const expandedBytes = 4 * 1024 * 1024
-  const requested: number[] = []
+  const requested: { bytes: number; lines: number }[] = []
   await page.route('**/api/tasks?*', route => route.fulfill({ json: {
     items: tasks, total: tasks.length, offset: 0, limit: 200, has_more: false,
   } }))
   for (const task of tasks) {
     await page.route(`**/api/tasks/${task.name}/logs?*`, route => {
-      const limit = Number(new URL(route.request().url()).searchParams.get('tail_bytes'))
+      const params = new URL(route.request().url()).searchParams
+      const limit = Number(params.get('tail_bytes'))
       const long = task.name === 'long-history'
-      if (long) requested.push(limit)
+      if (long) requested.push({ bytes: limit, lines: Number(params.get('tail_lines')) })
       return route.fulfill({ json: {
         selected_log: 'run1.log', available_logs: ['run1.log'],
         content: !long ? 'Short log\n' : limit === expandedBytes ? 'Older lines\nLatest lines\n' : 'Latest lines\n',
@@ -59,16 +60,49 @@ test('monitor loads a bounded tail and expands history for the selected log', as
   const rows = page.locator('.xterm-rows')
   const expand = page.getByRole('button', { name: 'Load more history' })
   await expect(rows).toContainText('Latest lines')
+  await expect(page.getByText('Showing up to 1,000 recent log lines.')).toBeVisible()
   await expect(rows).not.toContainText('Older lines')
   await expand.click()
   await expect(rows).toContainText('Older lines')
   await expect(expand).toBeHidden()
-  expect(requested).toEqual([previewBytes, expandedBytes])
+  expect(requested).toEqual([
+    { bytes: previewBytes, lines: 1_000 },
+    { bytes: expandedBytes, lines: 100_000 },
+  ])
 
   await page.getByRole('button', { name: 'View short-history, completed', exact: true }).click()
   await expect(rows).toContainText('Short log')
   await expect(rows).not.toContainText('Older lines')
   await expect(expand).toBeHidden()
+})
+
+test('monitor shows the latest progress redraw and keeps the original log available to copy', async ({ page }) => {
+  const task = { name: 'progress-task', status: 'completed', run_index: 1, task_kind: 'shell' }
+  const frames = Array.from({ length: 80 }, (_, index) => (
+    ('Progress stage ' + String(index).padStart(4, '0')).padEnd(159, '█')
+  ))
+  const content = 'Started\r\n\r' + frames.join('\r') + '\r\nFinished\r\n'
+  let copiedLog = ''
+  await page.exposeFunction('captureCopiedLog', (value: string) => { copiedLog = value })
+  await page.addInitScript(() => {
+    Object.defineProperty(navigator, 'clipboard', { value: {
+      writeText: (text: string) => (window as Window & { captureCopiedLog: (value: string) => Promise<void> }).captureCopiedLog(text),
+    } })
+  })
+  await page.route('**/api/tasks?*', route => route.fulfill({ json: {
+    items: [task], total: 1, offset: 0, limit: 200, has_more: false,
+  } }))
+  await page.route('**/api/tasks/progress-task/logs?*', route => route.fulfill({ json: {
+    selected_log: 'run1.log', available_logs: ['run1.log'], content, offset: 34_000, log_identity: 'progress',
+  } }))
+
+  await page.goto('/monitor?task=progress-task&token=pyruns-e2e-access-token')
+  const rows = page.locator('.xterm-rows')
+  await expect(rows).toContainText('Finished')
+  await expect(rows).toContainText('Progress stage 0079')
+  await expect(rows).not.toContainText('Progress stage 0078')
+  await page.getByRole('button', { name: 'Copy current log', exact: true }).click()
+  await expect.poll(() => copiedLog).toBe(content)
 })
 
 for (const emptyLog of [false, true]) {

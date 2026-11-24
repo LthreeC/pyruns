@@ -67,11 +67,14 @@ import {
   DEFAULT_MONITOR_LINE_HEIGHT,
   DEFAULT_MONITOR_SCROLLBACK,
   MAX_MONITOR_CHUNK_SIZE,
+  MAX_MONITOR_LOG_CHARS,
+  monitorPreviewTailLines,
   resolveMonitorChunkSize,
   resolveMonitorLineHeight,
   resolveMonitorScrollback,
 } from '@/utils/monitorSettings'
 import { configureReadOnlyTerminalInput } from '@/utils/monitorAccessibility'
+import { compactTerminalHistory, createTerminalLogWriter } from '@/utils/monitorTerminal'
 import {
   shouldDecorateTerminalSearch,
   TERMINAL_SEARCH_DEBOUNCE_MS,
@@ -98,19 +101,6 @@ const RUN_LOG_PATTERN = /^run\d+\.log$/
 const LOG_STREAM_FLUSH_MS = 50
 const LIVE_LOG_REQUEST_TIMEOUT_MS = 10_000
 const TASK_DETAIL_REQUEST_TIMEOUT_MS = 10_000
-// Cancel any incomplete escape sequence, then reset in xterm's write queue.
-// A synchronous reset can be overtaken by pending writes from the previous log.
-const TERMINAL_RESET_SEQUENCE = '\x18\x1bc'
-const TERMINAL_WRITE_CHARS = 32 * 1024
-
-function writeTerminalLog(term: XTerminal, text: string) {
-  // xterm yields between writes. A single multi-megabyte write can block input
-  // even when the request and response have already completed.
-  for (let offset = 0; offset < text.length; offset += TERMINAL_WRITE_CHARS) {
-    term.write(text.slice(offset, offset + TERMINAL_WRITE_CHARS))
-  }
-}
-
 // Keep this aligned with the fields blanked by the server's compact Monitor payload.
 const COMPACT_MONITOR_DETAIL_FIELDS = new Set([
   'config',
@@ -247,6 +237,7 @@ export default function MonitorPage() {
   const sidebarListRef = useRef<HTMLDivElement>(null)
   const termContainerRef = useRef<HTMLDivElement>(null)
   const xtermRef = useRef<XTerminal | null>(null)
+  const terminalWriterRef = useRef<ReturnType<typeof createTerminalLogWriter> | null>(null)
   const fitAddonRef = useRef<FitAddon | null>(null)
   const searchAddonRef = useRef<SearchAddon | null>(null)
   const observerRef = useRef<ResizeObserver | null>(null)
@@ -316,7 +307,7 @@ export default function MonitorPage() {
     )
   ))
   const { markLogActivity, hasLogActivity } = useMonitorLogActivity(
-    monitorTasks, workspaceKey, pageVisible, isLive ? selectedTaskName : null,
+    monitorTasks, workspaceKey, pageVisible, selectedTaskName, sidebarListRef,
   )
   const activeLogRows = useMemo(
     () => new Set(monitorTasks.filter(hasLogActivity).map(task => task.name)), [hasLogActivity, monitorTasks],
@@ -558,8 +549,7 @@ export default function MonitorPage() {
     }
     pendingLiveLogChunkRef.current = { key: '', chunks: [] }
     renderedLogRef.current = null
-    xtermRef.current?.clear()
-    xtermRef.current?.reset()
+    terminalWriterRef.current?.replace('')
     setSidebarQuery('')
     setCompactSearchFocused(false)
     setExportMode(false)
@@ -825,6 +815,8 @@ export default function MonitorPage() {
     term.loadAddon(fitAddon)
     term.loadAddon(searchAddon)
 
+    const writer = createTerminalLogWriter((text, done) => term.write(text, done))
+    terminalWriterRef.current = writer
     xtermRef.current = term
     fitAddonRef.current = fitAddon
     searchAddonRef.current = searchAddon
@@ -832,7 +824,9 @@ export default function MonitorPage() {
     return () => {
       observerRef.current?.disconnect()
       searchResultsDisposable.dispose()
+      writer.dispose()
       term.dispose()
+      terminalWriterRef.current = null
       xtermRef.current = null
       fitAddonRef.current = null
       searchAddonRef.current = null
@@ -903,53 +897,41 @@ export default function MonitorPage() {
   const shouldShowNoLogPlaceholder = !loading && availableLogs.length === 0 && !selectedLog
 
   useEffect(() => {
-    const term = xtermRef.current
-    if (!term) return
+    const writer = terminalWriterRef.current
+    if (!writer) return
 
     if (!selectedTaskName) {
-      term.write(TERMINAL_RESET_SEQUENCE)
+      writer.replace('')
       renderedLogRef.current = null
       return
     }
 
     const previous = renderedLogRef.current
-    const needsFreshRender = !previous || previous.key !== renderKey
-
-    if (needsFreshRender) {
-      writeTerminalLog(term, TERMINAL_RESET_SEQUENCE + (logContent || (
-        shouldShowNoLogPlaceholder ? '\x1b[2m  < NO LOG >\x1b[0m\r\n' : ''
-      )))
-      renderedLogRef.current = { key: renderKey, logTextVersion, logTextEnd }
-      return
-    }
-
-    const nextChunk = monitorLogAppendDelta(previous, { logContent, logTextVersion, logTextEnd })
-    if (nextChunk !== null) {
-      if (nextChunk) {
-        writeTerminalLog(term, nextChunk)
-      }
+    const nextChunk = previous?.key === renderKey
+      ? monitorLogAppendDelta(previous, { logContent, logTextVersion, logTextEnd })
+      : null
+    if (nextChunk !== null && writer.queuedChars + nextChunk.length <= MAX_MONITOR_LOG_CHARS) {
+      writer.append(nextChunk)
     } else {
-      writeTerminalLog(term, TERMINAL_RESET_SEQUENCE + (logContent || (
+      const preview = logMatch ? logContent : compactTerminalHistory(logContent)
+      writer.replace(preview || (
         shouldShowNoLogPlaceholder ? '\x1b[2m  < NO LOG >\x1b[0m\r\n' : ''
-      )))
+      ))
     }
 
     renderedLogRef.current = { key: renderKey, logTextVersion, logTextEnd }
-  }, [renderKey, selectedTaskName, logContent, logTextVersion, logTextEnd, shouldShowNoLogPlaceholder])
+  }, [renderKey, selectedTaskName, logContent, logTextVersion, logTextEnd, shouldShowNoLogPlaceholder, logMatch])
 
   useEffect(() => {
     const term = xtermRef.current
-    if (!term || !logMatch || loading || logError) return
-    let cancelled = false
-    // Wait for xterm's write queue, without adding a timer or scanning the full file.
-    term.write('', () => {
-      if (cancelled) return
+    const writer = terminalWriterRef.current
+    if (!term || !writer || !logMatch || loading || logError) return
+    return writer.whenIdle(() => {
       term.clearSelection()
       term.scrollToTop()
       const [, query] = splitTaskSearchSnippet(logMatch.snippet, logMatch.match_start, logMatch.match_end)
       runTerminalSearch(query, 'next', true)
     })
-    return () => { cancelled = true }
   }, [logMatch, logContent, loading, logError, logGeneration, runTerminalSearch])
 
   useEffect(() => {
@@ -2063,7 +2045,9 @@ export default function MonitorPage() {
           >
             <AlertTriangle className="h-3.5 w-3.5 flex-none" />
             <span>
-              {t('Showing the latest {{size}} of this log to keep the monitor responsive.', { size: formatBytes(logTailLimitBytes) })}
+              {t('Showing up to {{lines}} recent log lines.', {
+                lines: monitorPreviewTailLines(monitorScrollback, logTailLimitBytes >= MAX_MONITOR_CHUNK_SIZE).toLocaleString(),
+              })}
             </span>
             {isLive && <span className="text-amber-700/80 dark:text-amber-300/80">{t("New output continues live.")}</span>}
             {selectedLog && logTailLimitBytes < MAX_MONITOR_CHUNK_SIZE && (
@@ -2334,17 +2318,6 @@ function formatGPUDeviceMetrics(device: NonNullable<GPUWaitStatus['devices']>[nu
     parts.push(t('{{value}}% compute', { value: Math.round(Number(device.compute_util_pct)) }))
   }
   return parts.join(' · ') || t("Metrics unavailable")
-}
-
-function formatBytes(bytes: number) {
-  const value = Math.max(0, Number(bytes || 0))
-  if (value <= 0) {
-    return t("bounded tail")
-  }
-  if (value >= 1024 * 1024) {
-    return `${(value / (1024 * 1024)).toFixed(value % (1024 * 1024) === 0 ? 0 : 1)} MB`
-  }
-  return `${Math.max(1, Math.round(value / 1024))} KB`
 }
 
 const SidebarItem = memo(function SidebarItem({

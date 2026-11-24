@@ -2,6 +2,8 @@ export const DEFAULT_MONITOR_CHUNK_SIZE = 50000
 export const DEFAULT_MONITOR_SCROLLBACK = 100000
 export const DEFAULT_MONITOR_LINE_HEIGHT = 1
 export const MAX_MONITOR_CHUNK_SIZE = 4 * 1024 * 1024
+export const MAX_MONITOR_LOG_CHARS = 4 * 1024 * 1024
+export const MONITOR_INITIAL_TAIL_LINES = 1_000
 export const MONITOR_INITIAL_TAIL_BYTES = 256 * 1024
 export const MAX_MONITOR_SCROLLBACK = 1_000_000
 export const MAX_MONITOR_LINE_HEIGHT = 2.5
@@ -10,6 +12,11 @@ export const MIN_MONITOR_VISIBLE_LINES = 100
 
 export function monitorLogTailLines(scrollback: number) {
   return scrollback === 0 ? MIN_MONITOR_VISIBLE_LINES : scrollback
+}
+
+export function monitorPreviewTailLines(scrollback: number, expanded = false) {
+  const limit = monitorLogTailLines(scrollback)
+  return expanded ? limit : Math.min(limit, MONITOR_INITIAL_TAIL_LINES)
 }
 
 function resolveIntegerSetting(

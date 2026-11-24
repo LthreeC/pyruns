@@ -22,6 +22,7 @@ from pyruns.cli.submission_protocol import (
     write_abort_request,
     write_submission_payload,
 )
+from pyruns.utils import get_logger
 from pyruns.utils.process_utils import get_process_create_time, kill_process
 from pyruns.utils.shell_runtime import get_follow_shell_runtime
 from pyruns.update_release import current_release_root, module_command
@@ -41,6 +42,7 @@ _POLL_INTERVAL_SEC = 0.05
 _MAX_POLL_INTERVAL_SEC = 1.0
 _MAX_STARTUP_POLL_INTERVAL_SEC = 0.25
 _EXITED_LAUNCHER_GRACE_SEC = 1.0
+logger = get_logger(__name__)
 
 
 @dataclass(frozen=True)
@@ -428,6 +430,7 @@ def submit_cli_tasks(
         previous_receipt: SubmissionReceipt | None = None
         previous_process_exited = False
         while True:
+            abort_reason = None
             receipt = _read_receipt(
                 receipt_file,
                 token=submission_token,
@@ -438,59 +441,38 @@ def submit_cli_tasks(
                 if observed_runner_pid is None:
                     observed_runner_pid = receipt.runner_pid
                 elif receipt.runner_pid != observed_runner_pid:
-                    aborted = _abort_submission(
-                        process,
-                        process_create_time=process_create_time,
-                        receipt_file=receipt_file,
-                        abort_file=abort_file,
-                        token=submission_token,
-                        names=names,
-                        run_indices=run_indices,
-                        reason="runner_identity_changed",
-                        expected_runner_pid=observed_runner_pid,
-                    )
-                    outcome = aborted.result
-                    outcome_runner_pid = aborted.runner_pid or observed_runner_pid
-                    interrupted = aborted.interrupted
-                    break
+                    abort_reason = "runner_identity_changed"
 
-            terminal_result = _terminal_result_from_receipt(
-                receipt,
-                token=submission_token,
-            )
-            if terminal_result is not None and receipt is not None:
-                outcome_runner_pid = receipt.runner_pid
-                outcome = terminal_result
-                break
+            if abort_reason is None:
+                terminal_result = _terminal_result_from_receipt(receipt, token=submission_token)
+                if terminal_result is not None and receipt is not None:
+                    outcome_runner_pid = receipt.runner_pid
+                    outcome = terminal_result
+                    break
 
             now = time.monotonic()
             process_exited = process.poll() is not None
-            if process_exited:
+            if abort_reason is None and process_exited:
                 if process_exit_deadline is None:
                     process_exit_deadline = now + _EXITED_LAUNCHER_GRACE_SEC
                 elif now >= process_exit_deadline:
-                    runner_was_observed = observed_runner_pid is not None
-                    aborted = _abort_submission(
-                        process,
-                        process_create_time=process_create_time,
-                        receipt_file=receipt_file,
-                        abort_file=abort_file,
-                        token=submission_token,
-                        names=names,
-                        run_indices=run_indices,
-                        reason=(
-                            "runner_exited_before_receipt"
-                            if runner_was_observed
-                            else "launcher_exited_before_receipt"
-                        ),
-                        expected_runner_pid=observed_runner_pid,
+                    abort_reason = (
+                        "runner_exited_before_receipt"
+                        if observed_runner_pid is not None else "launcher_exited_before_receipt"
                     )
-                    outcome = aborted.result
-                    outcome_runner_pid = aborted.runner_pid or process.pid
-                    interrupted = aborted.interrupted
+            if abort_reason is None and now >= deadline:
+                abort_reason = "startup_timeout"
+            if abort_reason is not None:
+                if web_batch:
+                    # The HTTP wait and the detached experiment have independent
+                    # lifetimes. An unreadable receipt does not authorize a stop.
+                    logger.warning("Could not confirm web task start for runner %s (%s)",
+                                   observed_runner_pid or process.pid, abort_reason)
+                    known_receipt = receipt if receipt and receipt.runner_pid == observed_runner_pid else previous_receipt
+                    outcome = _submission_result(
+                        names, status="unresolved", claimed=known_receipt.claimed if known_receipt else (),
+                    )
                     break
-
-            if now >= deadline:
                 aborted = _abort_submission(
                     process,
                     process_create_time=process_create_time,
@@ -499,7 +481,7 @@ def submit_cli_tasks(
                     token=submission_token,
                     names=names,
                     run_indices=run_indices,
-                    reason="startup_timeout",
+                    reason=abort_reason,
                     expected_runner_pid=observed_runner_pid,
                 )
                 outcome = aborted.result

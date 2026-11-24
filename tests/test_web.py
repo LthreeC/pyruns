@@ -907,7 +907,10 @@ def test_monitor_log_positions_sample_current_runs_without_refreshing_task_lists
             finally:
                 release.set()
             first, = future.result(timeout=4)
-            assert first == {"name": "writer", "run_index": 2, "identity": first["identity"], "size": len(b"saved output")}
+            assert first == {
+                "name": "writer", "run_index": 2, "identity": first["identity"], "size": len(b"saved output"),
+                "modified_at_ms": log.stat().st_mtime_ns // 1_000_000,
+            }
             assert first["identity"]
             assert positions() == [first]
             assert inspected == [("writer", 2)]
@@ -915,12 +918,44 @@ def test_monitor_log_positions_sample_current_runs_without_refreshing_task_lists
             monkeypatch.setattr(web_app, "MONITOR_LOG_SAMPLE_TTL_SEC", 0)
             with log.open("ab") as handle:
                 handle.write(b" appended")
-            assert positions() == [{**first, "size": len(b"saved output appended")}]
+            assert positions() == [{
+                **first, "size": len(b"saved output appended"), "modified_at_ms": log.stat().st_mtime_ns // 1_000_000,
+            }]
             assert inspected == [("writer", 2), ("writer", 2)]
             too_many = {"task_names": ["writer"] * (web_app.MAX_MONITOR_LOG_POSITIONS + 1)}
             assert client.post("/api/monitor/log-positions", json=too_many).status_code == 400
     finally:
         runtime.shutdown()
+
+
+def test_monitor_log_positions_prioritizes_visible_rows_and_rotates_others(monkeypatch):
+    import asyncio
+
+    from pyruns.web import app as web_app
+
+    sources = {str(index): (str(index), 1) for index in range(6)}
+    inspected = []
+
+    def position(key):
+        inspected.append(key[0])
+        return {"identity": key[0], "size": 10, "modified_at_ms": 1}
+
+    monkeypatch.setattr(web_app, "_monitor_log_position", position)
+    monkeypatch.setattr(web_app, "MONITOR_LOG_SAMPLE_SIZE", 4)
+    monkeypatch.setattr(web_app, "MONITOR_LOG_PRIORITY_SIZE", 2)
+    monkeypatch.setattr(web_app, "MONITOR_LOG_SAMPLE_TTL_SEC", 0)
+
+    async def sample():
+        sampler = web_app._MonitorLogPositions()
+        first = await sampler.read(sources)
+        assert {item["name"] for item in first} == {"0", "1", "2", "3"}
+        assert sorted(inspected) == ["0", "1", "2", "3"]
+        inspected.clear()
+        second = await sampler.read(sources)
+        assert {item["name"] for item in second} == set(sources)
+        assert sorted(inspected) == ["0", "1", "4", "5"]
+
+    asyncio.run(sample())
 
 
 def test_local_server_rejects_cross_origin_and_dns_rebinding_requests():
@@ -6161,7 +6196,8 @@ def test_logs_endpoint_prefers_active_run_log_even_before_file_exists(tmp_path):
     assert "run1.log" in payload["available_logs"]
 
 
-def test_logs_endpoint_can_tail_history_by_lines(tmp_path):
+@pytest.mark.parametrize(("total_lines", "tail_lines"), [(5, 2), (1_250, 1_000)])
+def test_logs_endpoint_can_tail_history_by_lines(tmp_path, total_lines, tail_lines):
     workspace = _make_workspace(
         tmp_path,
         "main",
@@ -6170,18 +6206,21 @@ def test_logs_endpoint_can_tail_history_by_lines(tmp_path):
         workspace,
         "alpha",
         status="running",
-        log_text="".join(f"line {index}\n" for index in range(1, 6)),
+        log_text="".join(f"line {index}\n" for index in range(1, total_lines + 1)),
     )
     runtime = _build_runtime(workspace)
     client = TestClient(create_app(runtime))
 
-    response = client.get("/api/tasks/alpha/logs", params={"tail_lines": 2})
+    response = client.get("/api/tasks/alpha/logs", params={
+        "tail_lines": tail_lines, "tail_bytes": 256 * 1024,
+    })
 
     assert response.status_code == 200
-    content = response.json()["content"]
-    assert "line 4" in content
-    assert "line 5" in content
-    assert "line 3" not in content
+    payload = response.json()
+    assert payload["content"].splitlines() == [
+        f"line {index}" for index in range(total_lines - tail_lines + 1, total_lines + 1)
+    ]
+    assert payload["tail_truncated"] is True
 
 
 def test_logs_endpoint_caps_large_initial_tail_by_server_byte_budget(tmp_path):

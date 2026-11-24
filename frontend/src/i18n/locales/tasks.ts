@@ -381,7 +381,7 @@ export default {
   ' · Search match · Up to 32 KB': ' · 搜索匹配 · 最多 32 KB',
   'Back to latest log': '返回最新日志',
   'Close this search match and return to the latest log': '关闭此搜索匹配并返回最新日志',
-  'Showing the latest {{size}} of this log to keep the monitor responsive.': '仅显示日志最后 {{size}}，以保持监控响应速度。',
+  'Showing up to {{lines}} recent log lines.': '显示最近最多 {{lines}} 行日志。',
   'New output continues live.': '新输出继续实时更新。',
   'Load more history': '加载更多历史日志',
   'Read-only logs for {{name}}': '{{name}} 的只读日志',
@@ -408,6 +408,5 @@ export default {
   '{{value}}% memory': '{{value}}% 显存',
   '{{value}}% compute': '{{value}}% 计算利用率',
   'Metrics unavailable': '指标不可用',
-  'bounded tail': '受限末尾片段',
   '{{action}} {{name}}, {{status}}': '{{action}} {{name}}，{{status}}',
 } satisfies Record<string, string>

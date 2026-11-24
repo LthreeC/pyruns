@@ -2904,6 +2904,7 @@ class TaskManager:
         expected_runner_id: str | None = None,
         expected_run_index: int | None = None,
         expected_attempt_id: str | None = None,
+        reason: Literal["submission_rollback"] | None = None,
     ) -> bool:
         """Request cancellation or safely reconcile work whose runner disappeared."""
         with self._lock:
@@ -2942,6 +2943,8 @@ class TaskManager:
                     )
             if not info.get("cancel_requested_at"):
                 info["cancel_requested_at"] = requested_at
+                if reason:
+                    info["_cancel_request_reason"] = reason
             request_context["original_status"] = status
             request_context["run_index"] = current_run_index
             request_context["runner_id"] = str(info.get("runner_id", "") or "")
@@ -3186,6 +3189,10 @@ class TaskManager:
 
         previous_status = disk_status
         was_running = disk_status == "running"
+        reason = (
+            "submission_rollback" if disk_info.get("_cancel_request_reason") == "submission_rollback"
+            else "cancelled_by_user"
+        )
         action_task = dict(target_ref)
         action_task["status"] = disk_status
         action_task["run_index"] = disk_run_index
@@ -3196,7 +3203,7 @@ class TaskManager:
                 self._persist_pending_stop_summary(
                     action_task,
                     event="stopped",
-                    reason="cancelled_by_user",
+                    reason=reason,
                     detail_lines=[f"previous_status={previous_status}"],
                     lock_timeout_sec=_STOP_TASK_INFO_LOCK_TIMEOUT_SEC,
                     expected_statuses={"running"},
@@ -3274,7 +3281,7 @@ class TaskManager:
                 self._mark_failed_on_disk(
                     action_task,
                     event="stopped",
-                    reason="cancelled_by_user",
+                    reason=reason,
                     detail_lines=[f"previous_status={previous_status}"],
                     lock_timeout_sec=_STOP_TASK_INFO_LOCK_TIMEOUT_SEC,
                     expected_statuses={"queued"},
@@ -4838,6 +4845,7 @@ class TaskManager:
                 # current request when dispatching an already queued run.
                 task_info.pop("cancel_requested_at", None)
                 task_info.pop("_pending_stop_summary", None)
+                task_info.pop("_cancel_request_reason", None)
                 task_info["_attempt_id"] = attempt_id or uuid.uuid4().hex
             task_info["status"] = next_status
             # CLI overrides belong to this attempt, never to future reruns.
@@ -5613,6 +5621,7 @@ class TaskManager:
                 if summary_run == int(run_index):
                     info.pop("_pending_stop_summary", None)
             info.pop("cancel_requested_at", None)
+            info.pop("_cancel_request_reason", None)
 
         try:
             update_task_metadata(

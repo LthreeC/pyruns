@@ -1057,6 +1057,160 @@ def test_detached_runner_preserves_live_child_when_metadata_is_unreliable(tmp_pa
     assert not error_log.exists() or "reason=system_shutdown" not in error_log.read_text(encoding="utf-8")
 
 
+def test_web_start_timeout_preserves_a_running_task_when_its_receipt_is_delayed(tmp_path, monkeypatch):
+    from pyruns._config import ENV_KEY_ROOT
+    from pyruns.cli import runner
+    from pyruns.core.task_manager import TaskManager
+    from pyruns.utils.info_io import load_task_metadata
+    from pyruns.utils.process_utils import process_identity_matches
+
+    workspace = Path(bootstrap_shell_workspace(str(tmp_path / "_pyruns_")))
+    monkeypatch.setenv(ENV_KEY_ROOT, str(workspace))
+    script = tmp_path / "workload.py"
+    script.write_text(
+        "from pathlib import Path\n"
+        "import time\n"
+        "deadline = time.monotonic() + 25\n"
+        "Path('child-ready').touch()\n"
+        "while not Path('child-release').exists():\n"
+        "    if time.monotonic() >= deadline:\n"
+        "        raise SystemExit(99)\n"
+        "    time.sleep(0.02)\n"
+        "print('workload finished', flush=True)\n",
+        encoding="utf-8",
+    )
+    tasks_dir = str(workspace / TASKS_DIR)
+    name = "web-start-timeout"
+    task = TaskGenerator(root_dir=tasks_dir).create_shell_task(
+        name, _render_argument_command([sys.executable, str(script)], str(workspace)),
+        exact_name=True, workdir=str(tmp_path),
+    )
+    manager = TaskManager(tasks_dir=tasks_dir, lazy_scan=False, owns_task_lifecycle=False)
+    delay_receipt = False
+    read_receipt = runner._read_receipt
+
+    def read_when_visible(*args, **kwargs):
+        nonlocal delay_receipt
+        receipt = read_receipt(*args, **kwargs)
+        if receipt is None or receipt.status != "accepted":
+            return receipt
+        if not delay_receipt:
+            deadline = time.monotonic() + 12
+            while time.monotonic() < deadline:
+                info = load_task_metadata(task["dir"])
+                pid = (info.get("pids") or [None])[-1]
+                created_at = (info.get("pid_create_times") or [None])[-1]
+                if (tmp_path / "child-ready").is_file() and pid and created_at:
+                    assert process_identity_matches(pid, created_at)
+                    delay_receipt = True
+                    break
+                time.sleep(0.02)
+            assert delay_receipt, "the experiment must be running when the receipt is delayed"
+        return None
+
+    monkeypatch.setattr(runner, "_read_receipt", read_when_visible)
+    monkeypatch.setattr(runner, "time", SimpleNamespace(
+        monotonic=lambda: time.monotonic() + (120 if delay_receipt else 0),
+        sleep=time.sleep,
+    ))
+    try:
+        result = runner.submit_cli_tasks(manager, [name], expected_runs={name: 1}, startup_timeout=40, web_batch=True)
+        assert delay_receipt
+        observed = load_task_metadata(task["dir"])
+        assert observed["status"] == "running", observed.get("exit_codes")
+        assert result.status == "unresolved"
+    finally:
+        (tmp_path / "child-release").touch()
+        manager.shutdown()
+
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline:
+        info = load_task_metadata(task["dir"])
+        if info.get("status") in {"completed", "cancelled", "failed"}:
+            break
+        time.sleep(0.02)
+    assert info["status"] == "completed"
+    assert info["exit_codes"] == [0]
+    assert "workload finished" in (Path(task["dir"]) / "run_logs/run1.log").read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize("partially_accepted", [False, True])
+def test_web_receipt_write_failure_preserves_a_running_task(tmp_path, monkeypatch, partially_accepted):
+    from pyruns._config import ENV_KEY_ROOT
+    from pyruns.cli import detached_runner, submission_protocol
+    from pyruns.utils.info_io import load_task_metadata
+    from pyruns.utils.process_utils import process_identity_matches
+
+    workspace = Path(bootstrap_shell_workspace(str(tmp_path / "_pyruns_")))
+    monkeypatch.setenv(ENV_KEY_ROOT, str(workspace))
+    ready = tmp_path / "child-ready"
+    release = tmp_path / "child-release"
+    script = tmp_path / "workload.py"
+    script.write_text(
+        "from pathlib import Path\n"
+        "import time\n"
+        "deadline = time.monotonic() + 25\n"
+        "Path('child-ready').touch()\n"
+        "while not Path('child-release').exists():\n"
+        "    if time.monotonic() >= deadline:\n"
+        "        raise SystemExit(99)\n"
+        "    time.sleep(0.02)\n"
+        "print('workload finished', flush=True)\n",
+        encoding="utf-8",
+    )
+    name = "web-receipt-write-failure"
+    task = TaskGenerator(root_dir=str(workspace / TASKS_DIR)).create_shell_task(
+        name, _render_argument_command([sys.executable, str(script)], str(workspace)),
+        exact_name=True, workdir=str(tmp_path),
+    )
+    names = [name, "missing-task"] if partially_accepted else [name]
+    token = "b" * 32
+    _write_test_submission(workspace, token, names, [1] * len(names))
+    monkeypatch.setattr(detached_runner, "_parse_args", lambda: SimpleNamespace(
+        workspace=str(workspace), jobs=1, submission_token=token, web_batch=True,
+    ))
+    accepted_status = "accepted_partial" if partially_accepted else "accepted"
+    original_write = submission_protocol.atomic_write_json
+    submitted_run_status = detached_runner._submitted_run_status
+    running_process = None
+
+    def write_receipt(path, payload):
+        nonlocal running_process
+        if payload.get("status") != accepted_status:
+            return original_write(path, payload)
+        assert payload["claimed"] == [name]
+        deadline = time.monotonic() + 12
+        while time.monotonic() < deadline:
+            info = load_task_metadata(task["dir"])
+            pid = (info.get("pids") or [None])[-1]
+            created_at = (info.get("pid_create_times") or [None])[-1]
+            if ready.is_file() and info.get("status") == "running" and pid and created_at:
+                assert process_identity_matches(pid, created_at)
+                running_process = (pid, created_at)
+                raise OSError("temporarily unable to publish the startup receipt")
+            time.sleep(0.02)
+        pytest.fail("the workload never started before the receipt write")
+
+    def release_when_supervised(*args, **kwargs):
+        if not release.exists():
+            assert running_process is not None and process_identity_matches(*running_process)
+            release.touch()
+        return submitted_run_status(*args, **kwargs)
+
+    monkeypatch.setattr(submission_protocol, "atomic_write_json", write_receipt)
+    monkeypatch.setattr(detached_runner, "_submitted_run_status", release_when_supervised)
+    try:
+        result = detached_runner.main()
+    finally:
+        release.touch(exist_ok=True)
+
+    info = load_task_metadata(task["dir"])
+    assert running_process is not None
+    assert (result, info["status"], info["exit_codes"]) == (0, "completed", [0])
+    output = (Path(task["dir"]) / "run_logs/run1.log").read_text(encoding="utf-8")
+    assert output.count("workload finished") == 1
+
+
 def test_detached_runner_exits_when_claimed_task_state_disappears(tmp_path, monkeypatch):
     from pyruns.cli import detached_runner
 
@@ -2245,7 +2399,9 @@ def test_detached_runner_cancels_claimed_tasks_before_reporting_partial(tmp_path
             expected_runner_id=None,
             expected_run_index=None,
             expected_attempt_id=None,
+            reason=None,
         ):
+            assert reason == "submission_rollback"
             assert expected_runner_id == self.runner_id
             assert expected_run_index == 1
             events.append(f"cancel:{name}")

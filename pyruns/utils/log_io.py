@@ -179,6 +179,14 @@ def read_last_lines(
     log_path: str, max_lines: int = 10000, max_bytes: int | None = None, *, strict: bool = False,
 ) -> Tuple[str, int]:
     """Read up to the last ``max_lines`` LF-delimited log lines."""
+    content, offset, _ = read_log_tail(log_path, max_lines, max_bytes, strict=strict)
+    return content, offset
+
+
+def read_log_tail(
+    log_path: str, max_lines: int, max_bytes: int | None, *, strict: bool = False,
+) -> tuple[str, int, bool]:
+    """Return a line-limited tail, raw end offset and whether older bytes were omitted."""
 
     try:
         max_lines = max(0, int(max_lines))
@@ -191,7 +199,7 @@ def read_last_lines(
         with open(log_path, "rb") as handle:
             size = os.fstat(handle.fileno()).st_size
             if size <= 0 or max_lines == 0:
-                return "", size
+                return "", size, False
             position = size
             while position > 0 and line_break_count <= max_lines and (
                 byte_limit is None or bytes_read < byte_limit
@@ -217,11 +225,11 @@ def read_last_lines(
         if len(lines) > max_lines:
             data = b"".join(lines[-max_lines:])
 
-        return normalize_log_newlines(decode_log_bytes(data)), size
+        return normalize_log_newlines(decode_log_bytes(data)), size, size > len(data)
     except Exception:
         if strict:
             raise
-        return "", 0
+        return "", 0, False
 
 
 def _complete_log_character(handle, chunk: bytes, remaining: int) -> bytes:

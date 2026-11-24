@@ -160,7 +160,7 @@ test('Monitor observes new log output after switching to a finished task without
   await expect(row('live-task')).toHaveAttribute(active, 'true')
   const listBaseline = lists
   await page.clock.runFor(2000)
-  await expect.poll(() => polls.at(-1)).toEqual(['shared-writer'])
+  await expect.poll(() => polls.at(-1)).toEqual(['live-task', 'shared-writer', 'git-snapshot'])
   await expect(row(shared.name)).not.toHaveAttribute(active)
 
   const historyLoaded = page.waitForResponse(response => new URL(response.url()).pathname === '/api/tasks/finished-task/logs')
@@ -171,7 +171,7 @@ test('Monitor observes new log output after switching to a finished task without
   sharedPosition.size = 20
   livePosition.size = end + byteLength(second)
   await page.clock.runFor(2000)
-  await expect.poll(() => polls.at(-1)).toEqual(['live-task', 'shared-writer'])
+  await expect.poll(() => polls.at(-1)).toEqual(['live-task', 'shared-writer', 'git-snapshot'])
   await expect(row('live-task')).toHaveAttribute(active, 'true')
   await expect(row(shared.name)).toHaveAttribute(active, 'true')
   await expect(row(copied.name)).not.toHaveAttribute(active)
@@ -199,6 +199,44 @@ test('Monitor observes new log output after switching to a finished task without
   const count = polls.length
   await page.clock.runFor(8000)
   expect(polls).toHaveLength(count)
+})
+
+test('shared logs use their last change on the first sample and detect writes of the same size', async ({ page }) => {
+  const shared = { name: 'remote-writer', status: 'running', run_index: 1, task_kind: 'shell',
+    task_storage: 'shared', runner_location: 'remote', runner_lease_expired: true }
+  const stale = { ...shared, name: 'old-copy' }
+  let sampledAt = 1_800_000_000_000
+  const sharedPosition = { name: shared.name, run_index: 1, identity: 'shared-log', size: 300,
+    modified_at_ms: sampledAt - 20_000 }
+  const stalePosition = { ...sharedPosition, name: stale.name, identity: 'old-log',
+    modified_at_ms: sampledAt - 120_000 }
+  await page.route('**/api/monitor/log-positions', route => {
+    const names: string[] = route.request().postDataJSON().task_names
+    return route.fulfill({ json: {
+      sampled_at_ms: sampledAt, items: [sharedPosition, stalePosition].filter(item => names.includes(item.name)),
+    } })
+  })
+  await prepareMonitor(page, [shared, stale])
+  const row = page.locator('[data-monitor-page-task="remote-writer"]')
+  const oldRow = page.locator('[data-monitor-page-task="old-copy"]')
+  await expect(row).toHaveAttribute('data-log-activity', 'true')
+  await expect(oldRow).not.toHaveAttribute('data-log-activity')
+  const strip = row.locator('.monitor-log-activity')
+  const initialStrip = await strip.elementHandle()
+
+  await page.clock.fastForward(58_000)
+  await expect(strip).toBeVisible()
+  sampledAt += 58_000
+  sharedPosition.modified_at_ms = sampledAt
+  const updated = page.waitForResponse(response => new URL(response.url()).pathname === '/api/monitor/log-positions')
+  await page.clock.runFor(2100)
+  await updated
+  await page.clock.fastForward(75_000)
+  await expect(strip).toBeVisible()
+  expect(await strip.evaluate((el, initial) => el === initial, initialStrip)).toBe(true)
+  await page.clock.fastForward(16_000)
+  await expect(strip).toHaveCount(0)
+  await expect(oldRow).not.toHaveAttribute('data-log-activity')
 })
 
 test('returning to Monitor restores recent activity before reading logs again', async ({ page }) => {

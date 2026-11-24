@@ -19,6 +19,7 @@ from pyruns.cli.submission_protocol import (
     write_submission_receipt,
 )
 from pyruns.core.task_manager import TaskManager, active_task_run_index
+from pyruns.utils import get_logger
 from pyruns.utils.info_io import load_task_metadata, read_run_attempt_id, task_attempt_matches
 from pyruns.utils.settings import ensure_settings_file, load_settings
 from pyruns.update_coordination import EnvironmentActivityLease
@@ -29,6 +30,7 @@ _ACTIVE_STATUSES = {"queued", "running"}
 _CLEANUP_TIMEOUT_SEC = RUNNER_CLEANUP_TIMEOUT_SEC
 _POLL_INTERVAL_SEC = 0.05
 _MAX_POLL_INTERVAL_SEC = 1.0
+logger = get_logger(__name__)
 
 
 def _parse_args() -> argparse.Namespace:
@@ -144,6 +146,7 @@ def _claimed_tasks_stopped(
                         expected_runner_id=expected_runner_id,
                         expected_run_index=expected_run_index,
                         expected_attempt_id=attempt_id,
+                        reason="submission_rollback",
                     ):
                         requested.add(name)
                 except Exception:
@@ -214,7 +217,7 @@ def main() -> int:
     receipt_file = ""
     payload_file = ""
     token = ""
-    accepted_reported = False
+    admission_complete = False
     activity = EnvironmentActivityLease("cli-runner")
     try:
         token = validate_submission_token(args.submission_token)
@@ -365,15 +368,21 @@ def main() -> int:
                 detail="submission aborted after claiming tasks",
             )
 
-        _report(
-            receipt_file,
-            token=token,
-            names=names,
-            run_indices=run_indices,
-            status="accepted" if len(claimed) == len(names) else "accepted_partial",
-            claimed=claimed,
-        )
-        accepted_reported = True
+        try:
+            _report(
+                receipt_file,
+                token=token,
+                names=names,
+                run_indices=run_indices,
+                status="accepted" if len(claimed) == len(names) else "accepted_partial",
+                claimed=claimed,
+            )
+        except OSError as exc:
+            if not web_batch:
+                raise
+            # The Web request can time out independently of the claimed runs.
+            logger.warning("Could not publish web startup receipt for %s: %s", token, exc)
+        admission_complete = True
         settled: dict[str, str | None] = {name: "skipped" for name in names if name not in claimed}
         expected_runner_id = str(getattr(tm, "runner_id", "") or "") or None
         poll_interval = _POLL_INTERVAL_SEC
@@ -430,7 +439,7 @@ def main() -> int:
                 else min(_MAX_POLL_INTERVAL_SEC, poll_interval * 1.5)
             )
     except Exception as exc:
-        if receipt_file and not accepted_reported:
+        if receipt_file and not admission_complete:
             try:
                 status = "partial" if claimed and len(claimed) < len(names) else "aborted"
                 if not claimed:

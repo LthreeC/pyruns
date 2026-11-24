@@ -6,12 +6,20 @@ import {
   MAX_MONITOR_CHUNK_SIZE,
   MAX_MONITOR_LINE_HEIGHT,
   MAX_MONITOR_SCROLLBACK,
+  monitorPreviewTailLines,
   resolveMonitorChunkSize,
   resolveMonitorLineHeight,
   resolveMonitorScrollback,
 } from './monitorSettings'
 
 describe('monitor settings', () => {
+  it('limits the first preview by rows and honors smaller scrollback settings', () => {
+    expect(monitorPreviewTailLines(DEFAULT_MONITOR_SCROLLBACK)).toBe(1_000)
+    expect(monitorPreviewTailLines(DEFAULT_MONITOR_SCROLLBACK, true)).toBe(DEFAULT_MONITOR_SCROLLBACK)
+    expect(monitorPreviewTailLines(50)).toBe(50)
+    expect(monitorPreviewTailLines(0)).toBe(100)
+  })
+
   it('uses safe defaults for absent and non-finite values', () => {
     expect(resolveMonitorChunkSize(undefined)).toBe(DEFAULT_MONITOR_CHUNK_SIZE)
     expect(resolveMonitorScrollback({ monitor_scrollback: Number.NaN })).toBe(DEFAULT_MONITOR_SCROLLBACK)
