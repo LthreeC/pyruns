@@ -16,6 +16,8 @@ interface UseLogStreamOptions {
   logFileName?: string
   offset?: number
   logIdentity?: string
+  logRevision?: string
+  tailLines?: number
   generationKey?: string
 }
 
@@ -173,6 +175,8 @@ export function useLogStream({
   logFileName,
   offset,
   logIdentity,
+  logRevision,
+  tailLines,
   generationKey = '',
 }: UseLogStreamOptions) {
   const pageVisible = usePageVisible()
@@ -183,6 +187,7 @@ export function useLogStream({
   const onErrorRef = useRef(onError)
   const offsetRef = useRef(offset)
   const logIdentityRef = useRef(logIdentity)
+  const logRevisionRef = useRef(logRevision)
   const generationKeyRef = useRef(generationKey)
   onChunkRef.current = onChunk
   onDisconnectRef.current = onDisconnect
@@ -190,6 +195,7 @@ export function useLogStream({
   onErrorRef.current = onError
   offsetRef.current = offset
   logIdentityRef.current = logIdentity
+  logRevisionRef.current = logRevision
   generationKeyRef.current = generationKey
 
   const disconnect = useCallback(() => {
@@ -230,6 +236,8 @@ export function useLogStream({
         logFileName,
         offset: offsetRef.current,
         logIdentity: logIdentityRef.current,
+        logRevision: logRevisionRef.current,
+        tailLines,
       })
       wsRef.current = ws
       let unhealthy = false
@@ -346,7 +354,7 @@ export function useLogStream({
         ws.close()
       }
     }
-  }, [taskName, enabled, disconnect, generationKey, logFileName, pageVisible])
+  }, [taskName, enabled, disconnect, generationKey, logFileName, pageVisible, tailLines])
 
   return { disconnect }
 }

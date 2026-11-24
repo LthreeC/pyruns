@@ -437,6 +437,7 @@ export const getTaskLogs = async (name: string, options: {
   logFileName?: string
   offset?: number
   logIdentity?: string
+  logRevision?: string
   tailBytes?: number
   tailLines?: number
   chunkSize?: number
@@ -445,6 +446,7 @@ export const getTaskLogs = async (name: string, options: {
   if (options.logFileName) sp.set('log_file_name', options.logFileName)
   if (options.offset != null) sp.set('offset', String(options.offset))
   if (options.logIdentity) sp.set('log_identity', options.logIdentity)
+  if (options.logRevision) sp.set('log_revision', options.logRevision)
   if (options.tailBytes != null) sp.set('tail_bytes', String(options.tailBytes))
   if (options.tailLines != null) sp.set('tail_lines', String(options.tailLines))
   if (options.chunkSize != null) sp.set('chunk_size', String(options.chunkSize))
@@ -476,11 +478,15 @@ export function createLogStream(taskName: string, options: {
   logFileName?: string
   offset?: number
   logIdentity?: string
+  logRevision?: string
+  tailLines?: number
 } = {}): WebSocket {
   const sp = new URLSearchParams()
   if (options.logFileName) sp.set('log_file_name', options.logFileName)
   if (options.offset != null) sp.set('offset', String(options.offset))
   if (options.logIdentity) sp.set('log_identity', options.logIdentity)
+  if (options.logRevision) sp.set('log_revision', options.logRevision)
+  if (options.tailLines != null) sp.set('tail_lines', String(options.tailLines))
   return createWorkspaceStream(`/api/tasks/${encodeURIComponent(taskName)}/logs/stream`, sp)
 }
 

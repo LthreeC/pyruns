@@ -911,18 +911,21 @@ def test_monitor_log_positions_sample_current_runs_without_refreshing_task_lists
             first, = future.result(timeout=4)
             assert first == {
                 "name": "writer", "run_index": 2, "identity": first["identity"], "size": len(b"saved output"),
+                "revision": first["revision"],
                 "modified_at_ms": log.stat().st_mtime_ns // 1_000_000,
             }
             assert first["identity"]
+            assert first["revision"]
             assert positions() == [first]
             assert inspected == [("writer", 2)]
 
             monkeypatch.setattr(web_app, "MONITOR_LOG_SAMPLE_TTL_SEC", 0)
             with log.open("ab") as handle:
                 handle.write(b" appended")
-            assert positions() == [{
-                **first, "size": len(b"saved output appended"), "modified_at_ms": log.stat().st_mtime_ns // 1_000_000,
-            }]
+            appended, = positions()
+            assert appended["revision"] != first["revision"]
+            assert appended == {**first, "size": len(b"saved output appended"), "revision": appended["revision"],
+                                "modified_at_ms": log.stat().st_mtime_ns // 1_000_000}
             assert inspected == [("writer", 2), ("writer", 2)]
             too_many = {"task_names": ["writer"] * (web_app.MAX_MONITOR_LOG_POSITIONS + 1)}
             assert client.post("/api/monitor/log-positions", json=too_many).status_code == 400
@@ -7730,7 +7733,7 @@ def test_logs_websocket_replay_preserves_order_when_emitter_fires(tmp_path):
 
 
 def test_logs_websocket_keeps_emitter_chunk_during_initial_selection(tmp_path):
-    from pyruns.utils.log_io import log_file_identity
+    from pyruns.utils.log_io import stat_log_file
 
     workspace = _make_workspace(tmp_path, "main")
     _add_task(workspace, "alpha", status="running")
@@ -7756,17 +7759,17 @@ def test_logs_websocket_keeps_emitter_chunk_during_initial_selection(tmp_path):
             stale_read.set()
         return payload
 
-    def track_identity(path, **kwargs):
+    def track_stat(path, **kwargs):
         nonlocal poll_count
         poll_count += 1
         if poll_count >= 3:
             polled.set()
-        return log_file_identity(path, **kwargs)
+        return stat_log_file(path, **kwargs)
 
     with (
         patch.object(runtime, "get_task_logs", side_effect=pause_initial_read),
         patch.object(log_emitter, "subscribe", wraps=log_emitter.subscribe) as subscribe,
-        patch("pyruns.web.app.log_file_identity", side_effect=track_identity),
+        patch("pyruns.web.app.stat_log_file", side_effect=track_stat),
         patch("pyruns.web.app.LOG_STREAM_TAIL_INTERVAL_SEC", 0.01),
         patch("pyruns.web.app.LOG_STREAM_EMITTER_QUIET_SEC", 0),
     ):
@@ -7977,10 +7980,9 @@ def test_logs_websocket_initial_lookup_does_not_block_http(tmp_path, monkeypatch
     assert message["offset"] == (workspace / TASKS_DIR / "alpha" / "run_logs" / "run1.log").stat().st_size
 
 
-@pytest.mark.parametrize("operation", ["workspace", "path", "identity", "size", "queue_switch"])
+@pytest.mark.parametrize("operation", ["workspace", "path", "stat", "queue_switch"])
 def test_logs_websocket_slow_poll_does_not_block_http(tmp_path, monkeypatch, log_stream_idle, operation):
     from concurrent.futures import ThreadPoolExecutor
-    from types import SimpleNamespace
     from pyruns.web import app as app_mod
 
     workspace = _make_workspace(tmp_path, "main")
@@ -7996,12 +7998,8 @@ def test_logs_websocket_slow_poll_does_not_block_http(tmp_path, monkeypatch, log
 
     if operation == "workspace":
         owner, attribute = runtime, "workspace_stream_is_current"
-    elif operation == "identity":
-        owner, attribute = app_mod, "log_file_identity"
-    elif operation == "size":
-        local_path = SimpleNamespace(**vars(os.path))
-        monkeypatch.setattr(app_mod, "os", SimpleNamespace(**{**vars(os), "path": local_path}))
-        owner, attribute = local_path, "getsize"
+    elif operation == "stat":
+        owner, attribute = app_mod, "stat_log_file"
     else:
         owner, attribute = app_mod, "validate_task_log_path"
     original = getattr(owner, attribute)
@@ -8058,7 +8056,7 @@ def test_logs_websocket_slow_poll_does_not_block_http(tmp_path, monkeypatch, log
 
 def test_logs_websocket_discards_poll_size_older_than_a_live_chunk(tmp_path, monkeypatch, log_stream_idle):
     from concurrent.futures import ThreadPoolExecutor
-    from types import SimpleNamespace
+    from pyruns.utils.log_io import stat_log_file
     from pyruns.web import app as app_mod
 
     workspace = _make_workspace(tmp_path, "main")
@@ -8068,22 +8066,20 @@ def test_logs_websocket_discards_poll_size_older_than_a_live_chunk(tmp_path, mon
     runtime = _build_runtime(workspace)
     entered, release, polled_again = (threading.Event() for _ in range(3))
     armed = threading.Event()
-    local_path = SimpleNamespace(**vars(os.path))
-    monkeypatch.setattr(app_mod, "os", SimpleNamespace(**{**vars(os), "path": local_path}))
     monkeypatch.setattr(app_mod, "LOG_STREAM_TAIL_INTERVAL_SEC", 0.01)
 
-    def stale_size(path):
-        size = os.path.getsize(path)
+    def stale_stat(path, **kwargs):
+        state = stat_log_file(path, **kwargs)
         if not armed.is_set():
-            return size
+            return state
         if not entered.is_set():
             entered.set()
             assert release.wait(10)
         else:
             polled_again.set()
-        return size
+        return state
 
-    monkeypatch.setattr(local_path, "getsize", stale_size)
+    monkeypatch.setattr(app_mod, "stat_log_file", stale_stat)
     with TestClient(create_app(runtime)) as client:
         with client.websocket_connect(
             f"/api/tasks/alpha/logs/stream?log_file_name=run1.log&offset={log.stat().st_size}"
@@ -8248,6 +8244,61 @@ def test_logs_websocket_resets_after_live_log_is_truncated(tmp_path):
     assert payload["offset"] == log_file.stat().st_size
 
 
+@pytest.mark.parametrize("transport", ["http", "websocket", "websocket_resume"])
+def test_live_log_reloads_bounded_tail_after_same_size_external_rewrite(tmp_path, transport, log_stream_idle):
+    workspace = _make_workspace(tmp_path, "observe")
+    _add_task(workspace, "writer", status="running")
+    log = workspace / TASKS_DIR / "writer" / "run_logs" / "run1.log"
+    stamp = 1_700_000_000_000_000_000
+    log.write_bytes(b"history\n" * 4000 + b"before\n")
+    os.utime(log, ns=(stamp, stamp))
+    endpoint = "/api/tasks/writer/logs"
+    params = {"log_file_name": "run1.log", "tail_lines": 1}
+
+    def overwrite():
+        with log.open("r+b") as writer:
+            writer.seek(-7, os.SEEK_END)
+            writer.write(b"AFTER!\n")
+        # Same inode, length and millisecond, with an old writer clock.
+        os.utime(log, ns=(stamp, stamp + 500_000))
+
+    with TestClient(create_app(_build_runtime(workspace, owns_task_lifecycle=False))) as client:
+        initial = client.get(endpoint, params=params).json()
+        assert initial["content"] == "before\n"
+        cursor = {**params, **{k: initial[k] for k in ("offset", "log_identity", "log_revision")}}
+        if transport != "websocket":
+            overwrite()
+        if transport == "http":
+            reset = client.get(endpoint, params=cursor).json()
+            assert reset["reset"] is True
+        else:
+            with client.websocket_connect(endpoint + "/stream?" + urlencode(cursor)) as ws:
+                if transport == "websocket":
+                    assert log_stream_idle.wait(5)
+                    overwrite()
+                reset = _receive_stream_data(ws)
+                assert reset["type"] == "reset"
+                assert bool(reset.get("activity")) == (transport == "websocket")
+        assert reset["content"] == "AFTER!\n" and reset["tail_truncated"]
+        assert reset["offset"] == initial["offset"] and reset["log_identity"] == initial["log_identity"]
+        assert reset["log_revision"] != initial["log_revision"]
+        cursor["log_revision"] = reset["log_revision"]
+        with patch("pyruns.web.runtime.safe_read_log", side_effect=AssertionError("read idle log body")):
+            quiet = client.get(endpoint, params=cursor).json()
+            assert not quiet["reset"] and quiet["content"] == ""
+        with log.open("ab") as writer:
+            writer.write(b"delta\n")
+        appended = client.get(endpoint, params=cursor).json()
+        assert not appended["reset"] and appended["content"] == "delta\n"
+        # A local emitter can advance the byte cursor before its disk revision
+        # is available. An equal-length overwrite while disconnected must be visible.
+        with log.open("r+b") as writer:
+            writer.seek(-6, os.SEEK_END)
+            writer.write(b"newer\n")
+        resumed = client.get(endpoint, params={**cursor, "offset": appended["offset"]}).json()
+        assert resumed["reset"] and resumed["content"] == "newer\n"
+
+
 def test_logs_websocket_stream_tails_run_log_file_without_emitter(tmp_path):
     workspace = _make_workspace(tmp_path, "main")
     _add_task(workspace, "alpha", status="running")
@@ -8271,7 +8322,7 @@ def test_logs_websocket_stream_tails_run_log_file_without_emitter(tmp_path):
 
 
 def test_logs_websocket_idle_tail_skips_log_listing_but_catches_up(tmp_path):
-    from pyruns.utils.log_io import log_file_identity
+    from pyruns.utils.log_io import stat_log_file
 
     workspace = _make_workspace(tmp_path, "main")
     _add_task(workspace, "alpha", status="running", log_text="existing\n")
@@ -8282,16 +8333,16 @@ def test_logs_websocket_idle_tail_skips_log_listing_but_catches_up(tmp_path):
     polled = threading.Event()
     identity_calls = 0
 
-    def track_identity(path, **kwargs):
+    def track_stat(path, **kwargs):
         nonlocal identity_calls
         identity_calls += 1
         if identity_calls >= 3:
             polled.set()
-        return log_file_identity(path, **kwargs)
+        return stat_log_file(path, **kwargs)
 
     with (
         patch.object(runtime, "get_task_logs", wraps=runtime.get_task_logs) as get_logs,
-        patch("pyruns.web.app.log_file_identity", side_effect=track_identity),
+        patch("pyruns.web.app.stat_log_file", side_effect=track_stat),
         patch("pyruns.web.app.LOG_STREAM_TAIL_INTERVAL_SEC", 0.01),
         patch("pyruns.web.app.LOG_STREAM_EMITTER_QUIET_SEC", 0),
     ):
@@ -8351,7 +8402,7 @@ def test_logs_websocket_stream_tails_queued_gpu_log_from_client_offset(tmp_path)
 
 
 def test_logs_websocket_idle_queue_skips_log_listing_until_run_starts(tmp_path):
-    from pyruns.utils.log_io import log_file_identity
+    from pyruns.utils.log_io import stat_log_file
 
     workspace = _make_workspace(tmp_path, "main")
     _add_task(workspace, "alpha", status="queued")
@@ -8364,16 +8415,16 @@ def test_logs_websocket_idle_queue_skips_log_listing_until_run_starts(tmp_path):
     polled = threading.Event()
     identity_calls = 0
 
-    def track_identity(path, **kwargs):
+    def track_stat(path, **kwargs):
         nonlocal identity_calls
         identity_calls += 1
         if identity_calls >= 3:
             polled.set()
-        return log_file_identity(path, **kwargs)
+        return stat_log_file(path, **kwargs)
 
     with (
         patch.object(runtime, "get_task_logs", wraps=runtime.get_task_logs) as get_logs,
-        patch("pyruns.web.app.log_file_identity", side_effect=track_identity),
+        patch("pyruns.web.app.stat_log_file", side_effect=track_stat),
         patch("pyruns.web.app.LOG_STREAM_TAIL_INTERVAL_SEC", 0.01),
         patch("pyruns.web.app.LOG_STREAM_EMITTER_QUIET_SEC", 0),
     ):
@@ -8452,6 +8503,7 @@ def test_logs_websocket_stream_tails_active_run_log_created_after_connect(tmp_pa
     assert payload["type"] == "chunk"
     assert payload["task_name"] == "alpha"
     assert payload["content"].replace("\r\n", "\n") == "created after connect\n"
+    assert payload["activity"]
     assert payload["offset"] == log_file.stat().st_size
 
 

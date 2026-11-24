@@ -11,7 +11,8 @@ const MAX_WATCHED_TASKS = 200
 const SAMPLE_BATCH_SIZE = 32
 const PRIORITY_ROWS = 24
 const NO_ACTIVITY: ReadonlySet<string> = new Set()
-let retainedActivity: { workspace: string; deadlines: Map<string, number> } | undefined
+type Sample = Pick<MonitorLogPosition, 'identity' | 'size' | 'modified_at_ms' | 'revision'> & { seen: number }
+let retainedActivity: { workspace: string; deadlines: Map<string, number>; samples: Map<string, Sample> } | undefined
 
 function activityKey(workspace: string, task: Task) {
   return JSON.stringify([workspace, task.name, task.task_identity || task.dir, task.run_index])
@@ -20,10 +21,11 @@ function activityKey(workspace: string, task: Task) {
 export function useMonitorLogActivity(
   tasks: Task[], workspace: string, visible: boolean, selectedTask: string | null, sidebar: RefObject<HTMLDivElement>,
 ) {
-  const samples = useRef(new Map<string, Pick<MonitorLogPosition, 'identity' | 'size' | 'modified_at_ms'>>())
-  const expires = useMemo(() => {
-    return retainedActivity?.workspace === workspace ? retainedActivity.deadlines : new Map<string, number>()
+  const observations = useMemo(() => {
+    return retainedActivity?.workspace === workspace ? retainedActivity
+      : { workspace, deadlines: new Map<string, number>(), samples: new Map<string, Sample>() }
   }, [workspace])
+  const { deadlines: expires, samples } = observations
   const timer = useRef<number | undefined>(undefined)
   const request = useRef<AbortController | null>(null)
   const [active, setActive] = useState(NO_ACTIVITY)
@@ -69,23 +71,22 @@ export function useMonitorLogActivity(
   }, [expires, publish])
 
   useLayoutEffect(() => {
-    if (workspace) retainedActivity = { workspace, deadlines: expires }
+    if (workspace) retainedActivity = observations
     // Restore confirmed activity before the first paint on return, with its original expiry.
     if (visible) publish(true)
     return () => {
       window.clearTimeout(timer.current)
-      samples.current.clear()
     }
-  }, [expires, publish, workspace, visible])
+  }, [observations, publish, workspace, visible])
 
   useEffect(() => () => request.current?.abort(), [workspace, polling])
 
   useEffect(() => {
     const current = new Set(tasks.filter(task => task.status === 'running').map(task => activityKey(workspace, task)))
-    for (const key of samples.current.keys()) {
-      if (!current.has(key)) samples.current.delete(key)
+    for (const key of samples.keys()) {
+      if (!current.has(key)) samples.delete(key)
     }
-  }, [tasks, workspace])
+  }, [tasks, workspace, samples])
 
   usePolling(async () => {
     const controller = new AbortController()
@@ -109,15 +110,21 @@ export function useMonitorLogActivity(
       if (controller.signal.aborted || document.visibilityState === 'hidden') return
       const now = performance.now()
       const deadlines: Array<[string, number]> = []
-      for (const { name, run_index, identity, size, modified_at_ms } of items) {
+      for (const { name, run_index, identity, size, modified_at_ms, revision } of items) {
         const row = watched.get(name)
         if (!row || row.runIndex !== run_index || row.key !== watchedRef.current.get(name)?.key) continue
-        const previous = samples.current.get(row.key)
-        samples.current.set(row.key, { identity, size, modified_at_ms })
+        const previous = samples.get(row.key)
+        samples.set(row.key, { identity, size, modified_at_ms, revision, seen: now })
         if (typeof sampled_at_ms === 'number' && typeof modified_at_ms === 'number') {
-          if (previous?.identity === identity && previous.size === size && previous.modified_at_ms === modified_at_ms) continue
-          const age = Math.max(0, sampled_at_ms - modified_at_ms)
-          if (size > 0 && age < ACTIVITY_IDLE_MS) deadlines.push([row.key, now + ACTIVITY_IDLE_MS - age])
+          if (previous?.identity === identity && previous.size === size
+            && previous.modified_at_ms === modified_at_ms && previous.revision === revision) continue
+          if (previous && now - previous.seen < ACTIVITY_IDLE_MS) {
+            // We observed the mutation locally, even when a sync preserves the writer's old timestamp.
+            deadlines.push([row.key, now + ACTIVITY_IDLE_MS])
+          } else {
+            const age = sampled_at_ms - modified_at_ms
+            if (size > 0 && age >= 0 && age < ACTIVITY_IDLE_MS) deadlines.push([row.key, now + ACTIVITY_IDLE_MS - age])
+          }
         } else if (previous?.identity === identity && size > previous.size) {
           deadlines.push([row.key, now + ACTIVITY_IDLE_MS])
         }
@@ -129,11 +136,9 @@ export function useMonitorLogActivity(
     }
   }, ACTIVITY_POLL_MS, polling)
 
-  const markLogActivity = useCallback((task: Task | undefined, identity: string, size: number) => {
+  const markLogActivity = useCallback((task: Task | undefined) => {
     if (task?.status !== 'running' || document.visibilityState === 'hidden') return
     const key = activityKey(workspace, task)
-    // Reuse the live cursor as the baseline if this row stops being followed.
-    if (identity) samples.current.set(key, { identity, size })
     record([[key, performance.now() + ACTIVITY_IDLE_MS]])
   }, [record, workspace])
 

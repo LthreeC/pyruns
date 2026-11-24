@@ -79,7 +79,7 @@ from pyruns.utils.info_io import (
     validate_tasks_root,
     validate_workspace_directory,
 )
-from pyruns.utils.log_io import log_file_identity, read_last_bytes, read_log_preview, safe_read_log
+from pyruns.utils.log_io import LogFileState, read_last_bytes, read_log_preview, safe_read_log, stat_log_file
 from pyruns.utils.file_io import map_disk_reads, read_bounded_bytes, regular_file_opener
 from pyruns.utils.log_search import LogSearch, LogSearchResult
 from pyruns.utils.process_utils import hidden_subprocess_kwargs
@@ -2027,6 +2027,7 @@ class PyrunsRuntime:
         log_file_name: str | None = None,
         offset: int | None = None,
         log_identity: str | None = None,
+        log_revision: str | None = None,
         tail_bytes: int | None = None,
         tail_lines: int | None = None,
         known_preview: str | None = None,
@@ -2054,7 +2055,7 @@ class PyrunsRuntime:
             if current_task_dir != expected_dir:
                 raise WorkspaceChangedError("Workspace changed")
         selected_name = str(log_file_name or "").strip()
-        if not include_log_options and offset is not None and selected_name:
+        if not include_log_options and selected_name:
             # A stream has already selected the file; listing every old run on each chunk is costly.
             log_options = {}
             available_logs = []
@@ -2127,13 +2128,18 @@ class PyrunsRuntime:
         tail_truncated = False
         tail_byte_limited = False
         tail_limit_bytes = MAX_MONITOR_LOG_TAIL_BYTES
-        selected_identity = ""
+        state = LogFileState()
         if offset is not None or tail_lines is None:
-            selected_identity = log_file_identity(selected_path, **({"strict": True} if strict else {}))
+            state = stat_log_file(selected_path, strict=strict)
+        selected_identity = state.identity
+        file_revision = state.revision
         preview_revision = ""
-        reset = False
-        file_size = None
-        if offset is None:
+        reset = offset is not None and (
+            offset > state.size or bool(log_identity and selected_identity and log_identity != selected_identity)
+            or state.invalidates(log_revision, resume_offset=offset)
+        )
+        file_size = state.size if offset is not None else None
+        if offset is None or (reset and tail_lines is not None):
             if tail_lines is not None:
                 requested_tail_bytes = (
                     MAX_MONITOR_LOG_TAIL_BYTES
@@ -2150,40 +2156,31 @@ class PyrunsRuntime:
                 )
                 content, new_offset = preview.content, preview.offset
                 tail_truncated, tail_byte_limited = preview.truncated, preview.byte_limited
-                selected_identity = preview.identity or log_file_identity(selected_path, strict=strict)
+                selected_identity = preview.identity
+                file_revision = preview.file_revision
                 preview_revision = preview.revision
+                if reset:
+                    file_size = new_offset
             else:
                 byte_limit = tail_bytes if tail_bytes is not None else default_chunk
                 tail_limit_bytes = min(MAX_MONITOR_LOG_TAIL_BYTES, max(1, int(byte_limit)))
                 content, new_offset = read_last_bytes(
                     selected_path, n_bytes=tail_limit_bytes, **({"strict": True} if strict else {}),
                 )
-                try:
-                    tail_truncated = os.path.getsize(selected_path) > tail_limit_bytes
-                except OSError:
-                    tail_truncated = False
+                tail_truncated = new_offset > tail_limit_bytes
                 tail_byte_limited = tail_truncated
         else:
             byte_limit = chunk_size if chunk_size is not None else default_chunk
             requested_offset = max(0, offset)
-            try:
-                selected_size = os.path.getsize(selected_path)
-            except OSError:
-                if strict:
-                    raise
-                selected_size = 0
-            identity_changed = bool(
-                log_identity
-                and selected_identity
-                and str(log_identity) != selected_identity
-            )
-            reset = identity_changed or requested_offset > selected_size
             read_offset = 0 if reset else requested_offset
-            content, new_offset = safe_read_log(
-                selected_path, read_offset, max_bytes=max(1, byte_limit),
-                **({"strict": True} if strict else {}),
-            )
-            file_size = max(selected_size, new_offset)
+            if read_offset == state.size:
+                content, new_offset = "", read_offset
+            else:
+                content, new_offset = safe_read_log(
+                    selected_path, read_offset, max_bytes=max(1, byte_limit),
+                    **({"strict": True} if strict else {}),
+                )
+            file_size = max(state.size, new_offset)
 
         self._check_log_read_epoch(epoch)
         return {
@@ -2194,6 +2191,7 @@ class PyrunsRuntime:
             "offset": new_offset,
             "reset": reset,
             "log_identity": selected_identity,
+            "log_revision": file_revision,
             "tail_truncated": tail_truncated,
             "tail_byte_limited": tail_byte_limited,
             "tail_limit_bytes": tail_limit_bytes,

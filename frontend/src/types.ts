@@ -326,9 +326,11 @@ export interface MonitorLogPosition {
   identity: string
   size: number
   modified_at_ms?: number
+  revision?: string
 }
 
 export interface TaskLogs {
+  log_revision?: string
   preview_revision?: string
   preview_unchanged?: boolean
   task_name: string
@@ -353,6 +355,9 @@ export interface LogStreamMessage {
   offset?: number
   log_file_name?: string
   log_identity?: string
+  log_revision?: string
+  tail_truncated?: boolean
+  tail_byte_limited?: boolean
 }
 
 export interface TaskEventMessage {

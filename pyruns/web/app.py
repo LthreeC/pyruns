@@ -42,7 +42,7 @@ from pyruns.core.task_manager import TaskStateConflict
 from pyruns.utils.events import log_emitter
 from pyruns.utils.file_io import map_disk_reads
 from pyruns.utils.info_io import MAX_RUN_HISTORY_SLOTS, stat_task_run_log, validate_task_log_path
-from pyruns.utils.log_io import log_file_identity
+from pyruns.utils.log_io import LogFileState, stat_log_file
 from pyruns.utils.shell_runtime import get_follow_shell_runtime
 from pyruns.utils.search_query import DEFAULT_MAX_SEARCH_RESULTS, SearchQueryError
 from pyruns.web.runtime import (
@@ -235,8 +235,7 @@ def _monitor_log_position(key: tuple[str, int]) -> dict[str, Any] | None:
     if info is None:
         return None
     return {
-        "identity": f"{info.st_dev:x}:{info.st_ino:x}" if info.st_ino else "",
-        "size": info.st_size,
+        **LogFileState.from_stat(info)._asdict(),
         "modified_at_ms": info.st_mtime_ns // 1_000_000,
     }
 
@@ -1409,6 +1408,7 @@ def create_app(
         log_identity: str | None = Query(default=None, max_length=512),
         tail_bytes: int | None = Query(default=None, ge=1, le=MAX_LOG_RESPONSE_BYTES),
         tail_lines: int | None = Query(default=None, ge=0, le=MAX_LOG_TAIL_LINES),
+        log_revision: Annotated[str | None, Query(max_length=128)] = None,
         known_preview: str | None = Query(default=None, max_length=256),
         chunk_size: int | None = Query(default=None, ge=1, le=MAX_LOG_RESPONSE_BYTES),
     ) -> dict[str, Any] | Response:
@@ -1418,6 +1418,7 @@ def create_app(
                 log_file_name=log_file_name,
                 offset=offset,
                 log_identity=log_identity,
+                **({"log_revision": log_revision} if log_revision else {}),
                 tail_bytes=tail_bytes,
                 tail_lines=tail_lines,
                 **({"known_preview": known_preview} if known_preview is not None else {}),
@@ -1573,6 +1574,8 @@ def create_app(
         log_file_name: str | None = Query(default=None, max_length=255),
         offset: int | None = Query(default=None, ge=0),
         log_identity: str | None = Query(default=None, max_length=512),
+        log_revision: Annotated[str | None, Query(max_length=128)] = None,
+        tail_lines: Annotated[int | None, Query(ge=1, le=MAX_LOG_TAIL_LINES)] = None,
         expected_workspace: Annotated[str | None, Query(max_length=MAX_PATH_CHARS)] = None,
     ) -> None:
         rejection = websocket_rejection(websocket)
@@ -1759,14 +1762,9 @@ def create_app(
             await mark_healthy()
             return payload
 
-        def read_log_state(log_name: str) -> tuple[str, int]:
+        def read_log_state(log_name: str) -> LogFileState:
             path = validate_task_log_path(stream_task_dir, log_name)
-            identity = log_file_identity(path, strict=True)
-            try:
-                size = os.path.getsize(path)
-            except FileNotFoundError:
-                size = 0
-            return identity, size
+            return stat_log_file(path, strict=True)
 
         async def wait_for_tail() -> None:
             try:
@@ -1778,6 +1776,7 @@ def create_app(
             nonlocal stream_initialized, stream_log_name, stream_offset, stream_identity, replaying_backlog
             nonlocal pending_run_log, pending_run_chars, pending_run_overflow
             nonlocal close_code, read_failures, history_end
+            stream_revision = ""
             while not disconnected.is_set():
                 tail_wakeup.clear()
                 try:
@@ -1797,6 +1796,8 @@ def create_app(
                                 log_file_name=requested_log_name or None,
                                 offset=requested_offset,
                                 log_identity=requested_identity or None,
+                                log_revision=log_revision,
+                                tail_lines=tail_lines,
                                 chunk_size=LOG_STREAM_TAIL_CHUNK_SIZE,
                                 expected_workspace_root=stream_root,
                                 expected_task_dir=stream_task_dir,
@@ -1804,6 +1805,7 @@ def create_app(
                         stream_log_name = str(payload.get("selected_log") or "")
                         stream_offset = max(0, int(payload.get("offset") or 0))
                         stream_identity = str(payload.get("log_identity") or "")
+                        stream_revision = str(payload.get("log_revision") or "")
                         history_end = max(stream_offset, int(payload.get("file_size") or 0))
                         if stream_log_name:
                             stream_offset = max(stream_offset, stream_offsets.get(stream_log_name, 0))
@@ -1827,6 +1829,9 @@ def create_app(
                                 "offset": stream_offset,
                                 "log_file_name": stream_log_name,
                                 "log_identity": stream_identity,
+                                "log_revision": stream_revision,
+                                "tail_truncated": payload.get("tail_truncated", False),
+                                "tail_byte_limited": payload.get("tail_byte_limited", False),
                             })
                         stream_initialized = True
                         if pending_initial_overflow:
@@ -1854,7 +1859,8 @@ def create_app(
                     elif stream_log_name:
                         observed = (stream_log_name, stream_offset, stream_identity)
                         try:
-                            current_identity, current_size = await asyncio.to_thread(read_log_state, stream_log_name)
+                            current = await asyncio.to_thread(read_log_state, stream_log_name)
+                            current_identity, current_size = current.identity, current.size
                         except ValueError:
                             disconnected.set()
                             break
@@ -1868,12 +1874,14 @@ def create_app(
                             and current_identity
                             and current_identity != stream_identity
                         )
-                        if identity_changed or current_size < stream_offset:
+                        if identity_changed or current_size < stream_offset or current.invalidates(stream_revision):
                             replaying_backlog = True
+                            # A new generation needs a fresh view even if it grows again
+                            # between the stat and the read. Respect the browser's history window.
                             payload = await read_logs(
                                 log_file_name=stream_log_name,
-                                offset=stream_offset,
-                                log_identity=stream_identity or None,
+                                offset=0 if tail_lines is None else None,
+                                tail_lines=tail_lines,
                                 chunk_size=LOG_STREAM_TAIL_CHUNK_SIZE,
                                 include_log_options=False,
                                 expected_workspace_root=stream_root,
@@ -1881,6 +1889,7 @@ def create_app(
                             )
                             stream_offset = max(0, int(payload.get("offset") or 0))
                             stream_identity = str(payload.get("log_identity") or current_identity or "")
+                            stream_revision = str(payload.get("log_revision") or "")
                             history_end = max(stream_offset, int(payload.get("file_size", current_size)))
                             stream_offsets[stream_log_name] = stream_offset
                             await queue.put({
@@ -1890,17 +1899,22 @@ def create_app(
                                 "offset": stream_offset,
                                 "log_file_name": stream_log_name,
                                 "log_identity": stream_identity,
+                                "log_revision": stream_revision,
+                                "tail_truncated": payload.get("tail_truncated", False),
+                                "tail_byte_limited": payload.get("tail_byte_limited", False),
+                                "activity": True,
                             })
                             continue
+                        stream_revision = current.revision
                         if not stream_identity and current_identity:
                             stream_identity = current_identity
-                            history_end = max(history_end, current_size)
                         if current_size > stream_offset:
                             replaying_backlog = True
                         if pending_run_log and stream_log_name == QUEUE_LOG_FILENAME and current_size <= stream_offset:
                             stream_log_name = pending_run_log
                             stream_offset = stream_offsets.get(stream_log_name, 0)
                             stream_identity = ""
+                            stream_revision = ""
                             history_end = 0
                             pending_run_log = ""
                             replaying_backlog = pending_run_overflow
@@ -1930,18 +1944,19 @@ def create_app(
                                     selected_log = str(queue_payload.get("selected_log") or stream_log_name)
                                     if selected_log != stream_log_name:
                                         observed = (stream_log_name, stream_offset, stream_identity)
-                                        queue_identity, queue_size = await asyncio.to_thread(read_log_state, stream_log_name)
+                                        queued = await asyncio.to_thread(read_log_state, stream_log_name)
                                         if observed != (stream_log_name, stream_offset, stream_identity):
                                             await wait_for_tail()
                                             continue
                                         if pending_run_log:
                                             continue
-                                        if queue_size > stream_offset or queue_identity != current_identity:
+                                        if queued != current:
                                             replaying_backlog = True
                                             continue
                                         stream_log_name = selected_log
                                         stream_offset = stream_offsets.get(selected_log, 0)
                                         stream_identity = ""
+                                        stream_revision = ""
                                         history_end = 0
                                         replaying_backlog = True
                                         switched_log = True
@@ -1953,14 +1968,17 @@ def create_app(
                                     log_file_name=stream_log_name,
                                     offset=read_offset,
                                     log_identity=stream_identity or None,
+                                    log_revision=stream_revision,
+                                    tail_lines=tail_lines,
                                     chunk_size=LOG_STREAM_TAIL_CHUNK_SIZE,
                                     include_log_options=False,
                                     expected_workspace_root=stream_root,
                                     expected_task_dir=stream_task_dir,
                                 )
                                 selected_log = str(payload.get("selected_log") or stream_log_name)
-                                new_offset = max(0, int(payload.get("offset") or read_offset))
+                                new_offset = max(0, int(payload.get("offset", read_offset)))
                                 new_identity = str(payload.get("log_identity") or stream_identity or "")
+                                stream_revision = str(payload.get("log_revision") or "")
                                 if selected_log != stream_log_name:
                                     stream_log_name = selected_log
                                     stream_offset = new_offset
@@ -1979,6 +1997,10 @@ def create_app(
                                         "offset": new_offset,
                                         "log_file_name": stream_log_name,
                                         "log_identity": stream_identity,
+                                        "log_revision": stream_revision,
+                                        "tail_truncated": payload.get("tail_truncated", False),
+                                        "tail_byte_limited": payload.get("tail_byte_limited", False),
+                                        "activity": True,
                                     })
                                 elif new_offset > stream_offset:
                                     content = str(payload.get("content") or "")
@@ -1993,6 +2015,7 @@ def create_app(
                                             "offset": new_offset,
                                             "log_file_name": stream_log_name,
                                             "log_identity": stream_identity,
+                                            "log_revision": stream_revision,
                                             "activity": new_offset > history_end,
                                         })
                                 if new_offset > read_offset and new_offset < current_size:

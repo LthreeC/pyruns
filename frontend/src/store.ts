@@ -276,6 +276,7 @@ function resetWorkspaceScopedState(nextWorkspaceKey: string) {
     logTextEnd: 0,
     logOffset: 0,
     logIdentity: '',
+    logRevision: '',
     availableLogs: [],
     requestedLog: '',
     selectedLog: '',
@@ -1369,6 +1370,7 @@ interface MonitorState extends MonitorLogText {
   logGeneration: number
   logOffset: number
   logIdentity: string
+  logRevision: string
   availableLogs: string[]
   requestedLog: string
   selectedLog: string
@@ -1398,6 +1400,7 @@ export const useMonitorStore = create<MonitorState>((set, get) => ({
   logTextEnd: 0,
   logOffset: 0,
   logIdentity: '',
+  logRevision: '',
   availableLogs: [],
   requestedLog: '',
   selectedLog: '',
@@ -1425,6 +1428,7 @@ export const useMonitorStore = create<MonitorState>((set, get) => ({
       ...replaceMonitorLogContent(get(), ''),
       logOffset: 0,
       logIdentity: '',
+      logRevision: '',
       availableLogs: [],
       requestedLog: '',
       selectedLog: logMatch?.log_file || '',
@@ -1456,6 +1460,7 @@ export const useMonitorStore = create<MonitorState>((set, get) => ({
         ...replaceMonitorLogContent(get(), logs.content),
         logOffset: logs.offset,
         logIdentity: String(logs.log_identity || ''),
+        logRevision: logs.log_revision || '',
         availableLogs: logs.available_logs,
         selectedLog: logs.selected_log,
         logTailTruncated: Boolean(logs.tail_truncated),
@@ -1497,6 +1502,7 @@ export const useMonitorStore = create<MonitorState>((set, get) => ({
       ...replaceMonitorLogContent(get(), ''),
       logOffset: 0,
       logIdentity: '',
+      logRevision: '',
       logTailTruncated: false,
       logTailByteLimited: false,
       logTailExpanded: expanded,
@@ -1520,6 +1526,7 @@ export const useMonitorStore = create<MonitorState>((set, get) => ({
         ...replaceMonitorLogContent(get(), logs.content),
         logOffset: logs.offset,
         logIdentity: String(logs.log_identity || ''),
+        logRevision: logs.log_revision || '',
         availableLogs: logs.available_logs,
         selectedLog: logs.selected_log,
         logTailTruncated: Boolean(logs.tail_truncated),
@@ -1544,13 +1551,13 @@ export const useMonitorStore = create<MonitorState>((set, get) => ({
     set(s => appendMonitorLogContent(s, text))
   },
   clearLog() {
-    set({ ...replaceMonitorLogContent(get(), ''), logOffset: 0, logIdentity: '',
+    set({ ...replaceMonitorLogContent(get(), ''), logOffset: 0, logIdentity: '', logRevision: '',
       logTailTruncated: false, logTailByteLimited: false, logTailExpanded: false })
   },
   clearTask() {
     monitorLogController?.abort()
     set({ ...replaceMonitorLogContent(get(), ''), selectedTaskName: null, logMatch: null, logError: '',
-      logGeneration: ++monitorRequestSeq, logOffset: 0, logIdentity: '', availableLogs: [], requestedLog: '', selectedLog: '',
+      logGeneration: ++monitorRequestSeq, logOffset: 0, logIdentity: '', logRevision: '', availableLogs: [], requestedLog: '', selectedLog: '',
       logTailTruncated: false, logTailByteLimited: false, logTailExpanded: false, loading: false })
   },
   toggleExport(name) {

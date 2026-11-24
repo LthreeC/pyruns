@@ -47,7 +47,7 @@ async function prepareMonitor(page: Page, extraTasks: Record<string, unknown>[] 
   await page.route('**/api/tasks/live-task?*', route => route.fulfill({ json: task }))
   await page.route('**/api/tasks/live-task/logs?*', route => route.fulfill({ json: {
     selected_log: 'run1.log', available_logs: ['run1.log'], log_identity: 'original',
-    content: initial, offset: byteLength(initial),
+    log_revision: 'initial-revision', content: initial, offset: byteLength(initial),
   } }))
   await page.goto('/monitor?token=pyruns-e2e-access-token')
   await expect.poll(() => snapshot(page)).toMatchObject({ sockets: [{ closed: false }] })
@@ -67,15 +67,16 @@ function snapshot(page: Page) {
 }
 
 function completeRead(page: Page, content: string, offset: number, identity = 'original', reset = false,
-  { index = 0, fileSize = offset }: { index?: number; fileSize?: number | null } = {},
+  { index = 0, fileSize = offset, revision }: { index?: number; fileSize?: number | null; revision?: string } = {},
 ) {
   return page.evaluate(payload => {
     (window as any).monitorTransportTest.reads[payload.index].resolve(new Response(JSON.stringify({
       selected_log: 'run1.log', available_logs: ['run1.log'], log_identity: payload.identity,
       content: payload.content, offset: payload.offset, reset: payload.reset,
+      log_revision: payload.revision,
       ...(payload.fileSize === null ? {} : { file_size: payload.fileSize }),
     }), { headers: { 'Content-Type': 'application/json' } }))
-  }, { content, offset, identity, reset, index, fileSize })
+  }, { content, offset, identity, reset, index, fileSize, revision })
 }
 
 function stream(page: Page, content: string, offset: number, identity = 'original', reset = false, activity = false) {
@@ -209,7 +210,7 @@ test('shared logs use their last change on the first sample and detect writes of
   const sharedPosition = { name: shared.name, run_index: 1, identity: 'shared-log', size: 300,
     modified_at_ms: sampledAt - 20_000 }
   const stalePosition = { ...sharedPosition, name: stale.name, identity: 'old-log',
-    modified_at_ms: sampledAt - 120_000 }
+    modified_at_ms: sampledAt - 120_000, revision: 'original-stale-revision' }
   await page.route('**/api/monitor/log-positions', route => {
     const names: string[] = route.request().postDataJSON().task_names
     return route.fulfill({ json: {
@@ -237,6 +238,55 @@ test('shared logs use their last change on the first sample and detect writes of
   await page.clock.fastForward(16_000)
   await expect(strip).toHaveCount(0)
   await expect(oldRow).not.toHaveAttribute('data-log-activity')
+
+  // A synchronizer overwrites the same bytes at the same offset and restores
+  // the old mtime. Only the precise server revision changes.
+  stalePosition.revision = 'rewritten-in-place'
+  await page.clock.runFor(2100)
+  await expect(oldRow).toHaveAttribute('data-log-activity', 'true')
+  await page.clock.runFor(91_000)
+  await expect(oldRow).not.toHaveAttribute('data-log-activity')
+  stalePosition.size = 0
+  await page.clock.runFor(2100)
+  await expect(oldRow).toHaveAttribute('data-log-activity', 'true')
+  await page.clock.fastForward(91_000)
+  await expect(oldRow).not.toHaveAttribute('data-log-activity')
+})
+
+test('open terminal and HTTP fallback carry the preview revision across equal-length resets', async ({ page }) => {
+  const rows = await prepareMonitor(page)
+  const transport = await snapshot(page)
+  for (const url of [transport.sockets[0].url, transport.reads[0].url]) {
+    const params = new URL(url, 'http://localhost').searchParams
+    expect(params.get('log_revision')).toBe('initial-revision')
+    expect(params.get('tail_lines')).toBe('1000')
+  }
+  await page.evaluate(() => {
+    const socket = (window as any).monitorTransportTest.sockets.at(-1)
+    socket.onmessage?.({ data: JSON.stringify({ type: 'reset', task_name: 'live-task', log_file_name: 'run1.log',
+      log_identity: 'original', log_revision: 'replaced-revision', content: 'CHANGED\n', offset: 8, activity: true }) })
+  })
+  await page.clock.runFor(150)
+  await expect(rows).toContainText('CHANGED')
+  await expect(rows).not.toContainText('INITIAL')
+  await expect(page.locator('[data-monitor-page-task="live-task"]')).toHaveAttribute('data-log-activity', 'true')
+  await page.evaluate(() => (window as any).monitorTransportTest.sockets.at(-1).close())
+  await page.clock.runFor(800)
+  await expect.poll(async () => new URL((await snapshot(page)).sockets.at(-1).url, 'http://localhost')
+    .searchParams.get('log_revision')).toBe('replaced-revision')
+})
+
+test('HTTP fallback lights the row when it displays a confirmed equal-length edit', async ({ page }) => {
+  const rows = await prepareMonitor(page)
+  const row = page.locator('[data-monitor-page-task="live-task"]')
+  await completeRead(page, '', byteLength(initial), 'original', false, { revision: 'initial-revision' })
+  await page.clock.runFor(1600)
+  await expect.poll(async () => (await snapshot(page)).reads.length).toBe(2)
+  await expect(row).not.toHaveAttribute('data-log-activity')
+  await completeRead(page, 'CHANGED\n', byteLength(initial), 'original', true, { index: 1, revision: 'after' })
+  await page.clock.runFor(150)
+  await expect(rows).toContainText('CHANGED')
+  await expect(row).toHaveAttribute('data-log-activity', 'true')
 })
 
 test('returning to Monitor restores recent activity before reading logs again', async ({ page }) => {

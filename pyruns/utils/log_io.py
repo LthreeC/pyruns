@@ -62,27 +62,48 @@ def decode_log_bytes(data: bytes) -> str:
     return data.decode("utf-8", errors="replace")
 
 
-def log_file_identity(filepath: str, *, strict: bool = False) -> str:
-    """Return a stable, opaque identity for one concrete log file."""
+class LogFileState(NamedTuple):
+    identity: str = ""
+    size: int = 0
+    revision: str = ""
+
+    @classmethod
+    def from_stat(cls, info: os.stat_result) -> LogFileState:
+        identity = f"{info.st_dev:x}:{info.st_ino:x}" if info.st_ino else ""
+        # Include size so an append can be distinguished from a same-size rewrite.
+        # Nanoseconds travel as text to preserve precision in JavaScript.
+        return cls(identity, info.st_size, f"{info.st_size}:{info.st_mtime_ns}:{info.st_ctime_ns}")
+
+    def invalidates(self, previous_revision: str | None, *, resume_offset: int = 0) -> bool:
+        if not previous_revision or not self.revision or self.revision == previous_revision:
+            return False
+        try:
+            previous_size = int(previous_revision.split(":", 1)[0])
+        except ValueError:
+            return False
+        # Equal-size rewrites and truncations invalidate already displayed bytes.
+        # Emitter-only bytes beyond the last disk snapshot also need validation on reconnect.
+        return self.size <= previous_size or previous_size < resume_offset
+
+
+def stat_log_file(filepath: str, *, strict: bool = False) -> LogFileState:
+    """Sample identity, length and revision together, including on shared storage."""
 
     try:
         stat_result = os.stat(filepath)
     except FileNotFoundError:
-        return ""
+        return LogFileState()
     except OSError:
         if strict:
             raise
-        return ""
+        return LogFileState()
 
-    return _stat_identity(stat_result)
+    return LogFileState.from_stat(stat_result)
 
 
-def _stat_identity(stat_result: os.stat_result) -> str:
-    device = int(getattr(stat_result, "st_dev", 0) or 0)
-    inode = int(getattr(stat_result, "st_ino", 0) or 0)
-    if inode <= 0:
-        return ""
-    return f"{device:x}:{inode:x}"
+def log_file_identity(filepath: str, *, strict: bool = False) -> str:
+    """Return a stable, opaque identity for one concrete log file."""
+    return stat_log_file(filepath, strict=strict).identity
 
 
 def normalize_log_newlines(text: str) -> str:
@@ -183,6 +204,7 @@ class LogPreview(NamedTuple):
     byte_limited: bool = False
     identity: str = ""
     revision: str = ""
+    file_revision: str = ""
 
 
 def read_log_preview(
@@ -201,14 +223,16 @@ def read_log_preview(
         with open(log_path, "rb") as handle:
             stat = os.fstat(handle.fileno())
             size = stat.st_size
-            identity = _stat_identity(stat)
+            state = LogFileState.from_stat(stat)
+            identity = state.identity
+            file_revision = state.revision
             revision = ""
             if known_revision is not None and identity:
-                revision = f"{identity}:{size}:{stat.st_mtime_ns}:{stat.st_ctime_ns}:{max_lines}:{byte_limit}"
+                revision = f"{identity}:{file_revision}:{max_lines}:{byte_limit}"
                 if known_revision == revision:
-                    return LogPreview(offset=size, identity=identity, revision=revision)
+                    return LogPreview(offset=size, identity=identity, revision=revision, file_revision=file_revision)
             if size <= 0 or max_lines == 0:
-                return LogPreview(offset=size, identity=identity, revision=revision)
+                return LogPreview(offset=size, identity=identity, revision=revision, file_revision=file_revision)
             position = size
             while position > 0 and (byte_limit is None or bytes_read < byte_limit):
                 read_size = min(block_size, position)
@@ -250,7 +274,8 @@ def read_log_preview(
         data = b"".join(reversed(chunks))
         omitted = size > len(data)
         byte_limited = omitted and byte_limit is not None and len(data) >= byte_limit
-        return LogPreview(normalize_log_newlines(decode_log_bytes(data)), size, omitted, byte_limited, identity, revision)
+        return LogPreview(normalize_log_newlines(decode_log_bytes(data)), size, omitted, byte_limited,
+                          identity, revision, file_revision)
     except Exception:
         if strict:
             raise

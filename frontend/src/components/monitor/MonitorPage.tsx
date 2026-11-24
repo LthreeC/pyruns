@@ -165,6 +165,7 @@ type PendingLiveLogChunk = {
   content: string
   offset?: number
   logIdentity?: string
+  logRevision?: string
   activity?: boolean
 }
 
@@ -237,7 +238,7 @@ export default function MonitorPage() {
   const workspaceEpoch = useWorkspaceStore(state => state.workspaceEpoch)
   const pageVisible = usePageVisible()
   const {
-    selectedTaskName, logContent, logTextVersion, logTextEnd, logOffset, logIdentity, availableLogs, requestedLog, selectedLog,
+    selectedTaskName, logContent, logTextVersion, logTextEnd, logOffset, logIdentity, logRevision, availableLogs, requestedLog, selectedLog,
     logTailTruncated, logTailByteLimited, logTailExpanded, loading, exportIds, logMatch, logError, logGeneration,
     selectTask, selectLogFile, toggleExport, setExportSelected, clearExport,
   } = useMonitorStore()
@@ -1165,6 +1166,7 @@ export default function MonitorPage() {
         const chunks: string[] = []
         let nextOffset = state.logOffset
         let nextIdentity = state.logIdentity
+        let nextRevision = state.logRevision
 
         for (const chunk of buffer.chunks) {
           const chunkOffset = typeof chunk.offset === 'number' && Number.isFinite(chunk.offset)
@@ -1177,19 +1179,18 @@ export default function MonitorPage() {
           chunks.push(chunk.content)
           logAppended ||= chunk.activity === true
           if (chunk.logIdentity) {
+            if (chunk.logIdentity !== nextIdentity) nextRevision = ''
             nextIdentity = chunk.logIdentity
           }
+          if (chunk.logRevision) nextRevision = chunk.logRevision
           if (chunkOffset !== null) {
             nextOffset = Math.max(nextOffset, chunkOffset)
           }
         }
 
-        return { ...appendMonitorLogContent(state, chunks), logOffset: nextOffset, logIdentity: nextIdentity }
+        return { ...appendMonitorLogContent(state, chunks), logOffset: nextOffset, logIdentity: nextIdentity, logRevision: nextRevision }
       })
-      if (logAppended) {
-        const { logIdentity, logOffset } = useMonitorStore.getState()
-        markLogActivity(selectedTaskRef.current, activeLog === QUEUE_LOG_NAME ? '' : logIdentity, logOffset)
-      }
+      if (logAppended && activeLog !== QUEUE_LOG_NAME) markLogActivity(selectedTaskRef.current)
     }
   }, [markLogActivity])
 
@@ -1264,6 +1265,7 @@ export default function MonitorPage() {
         ...replaceMonitorLogContent(state, ''),
         logOffset: 0,
         logIdentity: '',
+        logRevision: '',
         logTailTruncated: false,
         logTailByteLimited: false,
         logTailExpanded: false,
@@ -1299,12 +1301,13 @@ export default function MonitorPage() {
               ...replaceMonitorLogContent(state, message.content || ''),
               logOffset: nextOffset,
               logIdentity: nextIdentity,
-              logTailTruncated: false,
-              logTailByteLimited: false,
-              logTailExpanded: false,
+              logRevision: message.log_revision || '',
+              logTailTruncated: Boolean(message.tail_truncated),
+              logTailByteLimited: Boolean(message.tail_byte_limited),
             }
           : state
       ))
+      if (message.activity && messageLog !== QUEUE_LOG_NAME) markLogActivity(selectedTaskRef.current)
       return
     }
 
@@ -1312,7 +1315,8 @@ export default function MonitorPage() {
     const key = `${activeWorkspaceKey}::${activeTaskName}::${activeLog || messageLog || liveLog}::${state.logGeneration}`
     const buffer = pendingLiveLogChunkRef.current
     const chunk: PendingLiveLogChunk = {
-      content: message.content, offset: message.offset, logIdentity: message.log_identity, activity: message.activity,
+      content: message.content, offset: message.offset, logIdentity: message.log_identity,
+      logRevision: message.log_revision, activity: message.activity,
     }
     if (buffer.key === key) {
       buffer.chunks.push(chunk)
@@ -1322,7 +1326,7 @@ export default function MonitorPage() {
     if (liveLogFlushTimerRef.current === null) {
       liveLogFlushTimerRef.current = window.setTimeout(flushLiveLogChunkBuffer, LOG_STREAM_FLUSH_MS)
     }
-  }, [flushLiveLogChunkBuffer])
+  }, [flushLiveLogChunkBuffer, markLogActivity])
 
   const handleLogStreamDisconnect = useCallback(() => {
     flushLiveLogChunkBuffer()
@@ -1351,6 +1355,8 @@ export default function MonitorPage() {
     logFileName: selectedLog || liveLogName || undefined,
     offset: logOffsetRef.current,
     logIdentity: logIdentityRef.current,
+    logRevision,
+    tailLines: monitorPreviewTailLines(monitorScrollback, logTailExpanded),
     generationKey: `${workspaceKey}:${logGeneration}:${logStreamRevision}`,
   })
 
@@ -1409,6 +1415,8 @@ export default function MonitorPage() {
         logFileName: requestedLog,
         offset: currentOffset,
         logIdentity: currentIdentity,
+        logRevision: monitorState.logRevision,
+        tailLines: monitorPreviewTailLines(monitorScrollback, monitorState.logTailExpanded),
         chunkSize: monitorChunkSize,
       }, controller.signal)
       if (
@@ -1432,14 +1440,23 @@ export default function MonitorPage() {
         || logs.offset < currentOffset
         || Boolean(currentIdentity && nextIdentity && currentIdentity !== nextIdentity)
       const sameFile = Boolean(currentIdentity && currentIdentity === nextIdentity)
+      const historyEnd = pollHistoryEndRef.current
+      if (requestedLog !== QUEUE_LOG_NAME && historyEnd !== null && logs.file_size !== undefined) {
+        const observedReset = shouldReplaceContent && monitorState.logRevision && logs.log_revision
+        const appended = !shouldReplaceContent && sameFile && logs.content && logs.offset > Math.max(currentOffset, historyEnd)
+        if (observedReset || appended) markLogActivity(selectedTaskRef.current)
+      }
       if (logs.file_size === undefined || pollHistoryEndRef.current === null || shouldReplaceContent || !sameFile) {
         // The first incremental read can contain backlog accumulated while disconnected.
         pollHistoryEndRef.current = logs.file_size ?? null
-      } else if (logs.content && logs.offset > Math.max(currentOffset, pollHistoryEndRef.current)) {
-        markLogActivity(selectedTaskRef.current, requestedLog === QUEUE_LOG_NAME ? '' : nextIdentity, logs.offset)
       }
       const cursorChanged = shouldReplaceContent
         || logs.offset !== currentOffset || nextIdentity !== currentIdentity
+      const nextRevision = logs.log_revision || ''
+      // An idle HTTP fallback must not rerender the terminal at each poll.
+      if (!cursorChanged && !logs.content && nextRevision === monitorState.logRevision
+        && logs.selected_log === monitorState.selectedLog && logs.available_logs.length === monitorState.availableLogs.length
+        && logs.available_logs.every((name, index) => name === monitorState.availableLogs[index])) return
       if (cursorChanged) {
         // HTTP won while the socket was connecting. Retire that socket before
         // committing its new cursor, then reconnect from the committed bytes.
@@ -1455,11 +1472,11 @@ export default function MonitorPage() {
                 : appendMonitorLogContent(state, logs.content)),
               logOffset: logs.offset,
               logIdentity: nextIdentity,
+              logRevision: nextRevision,
               availableLogs: logs.available_logs,
               selectedLog: state.selectedLog || logs.selected_log,
-              logTailTruncated: shouldReplaceContent ? false : state.logTailTruncated,
-              logTailByteLimited: shouldReplaceContent ? false : state.logTailByteLimited,
-              logTailExpanded: shouldReplaceContent ? false : state.logTailExpanded,
+              logTailTruncated: shouldReplaceContent ? Boolean(logs.tail_truncated) : state.logTailTruncated,
+              logTailByteLimited: shouldReplaceContent ? Boolean(logs.tail_byte_limited) : state.logTailByteLimited,
             }
           : state
       ))
@@ -1473,7 +1490,7 @@ export default function MonitorPage() {
         livePollInFlightRef.current = false
       }
     }
-  }, [canUseLogStream, disconnectLogStream, markLogActivity, monitorChunkSize])
+  }, [canUseLogStream, disconnectLogStream, markLogActivity, monitorChunkSize, monitorScrollback])
 
   // The WebSocket resumes immediately on return; keep HTTP on its fallback cadence.
   usePolling(pollLiveLog, 1500, !loading && isLive, false, false)
