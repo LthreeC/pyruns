@@ -1080,11 +1080,11 @@ def _install_pyruns(target_version: str, install_root: Path | None) -> tuple[int
     destination = ["--upgrade"] if install_root is None else ["--target", str(install_root), "--ignore-installed"]
     install = ["install", *destination, *options]
     environment = {**os.environ, "PIP_USER": "0"} if install_root is not None else None
-    deadline = time.monotonic() + PIP_UPGRADE_TIMEOUT_SECONDS
+    started = time.monotonic()
 
     def run(arguments: list[str]) -> tuple[int, str]:
         command = [sys.executable, "-m", "pip", *arguments]
-        remaining = deadline - time.monotonic()
+        remaining = PIP_UPGRADE_TIMEOUT_SECONDS - (time.monotonic() - started)
         if remaining <= 0:
             raise subprocess.TimeoutExpired(command, PIP_UPGRADE_TIMEOUT_SECONDS)
         print(f"[pyruns] Running: {subprocess.list2cmdline(command)}", flush=True)

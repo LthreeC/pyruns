@@ -1943,6 +1943,8 @@ def test_check_latest_version_handles_invalid_responses(monkeypatch):
 def test_run_pip_upgrade_uses_current_interpreter(monkeypatch, hidden_flags):
     calls = []
     monkeypatch.setattr(self_update, "hidden_subprocess_kwargs", lambda: hidden_flags)
+    # A coarse clock can return the same tick before pip starts.
+    monkeypatch.setattr(self_update.time, "monotonic", lambda: 212.2)
 
     def fake_run(command, **kwargs):
         calls.append((command, kwargs))
@@ -1965,7 +1967,7 @@ def test_run_pip_upgrade_uses_current_interpreter(monkeypatch, hidden_flags):
         "pyruns>=0.4.0",
     ]
     assert calls[0][1]["stderr"].closed
-    assert 0 < calls[0][1]["timeout"] <= self_update.PIP_UPGRADE_TIMEOUT_SECONDS
+    assert calls[0][1]["timeout"] == self_update.PIP_UPGRADE_TIMEOUT_SECONDS
     assert {key: value for key, value in calls[0][1].items() if key not in {"stderr", "timeout"}} == {
         "check": False,
         "env": None,
