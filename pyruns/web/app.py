@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import gzip
 import json
 import os
 import queue
@@ -1399,28 +1400,42 @@ def create_app(
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         return {"ok": True, "task": task}
 
-    @app.get("/api/tasks/{task_name}/logs")
+    @app.get("/api/tasks/{task_name}/logs", response_model=dict[str, Any])
     def get_task_logs(
         task_name: str,
+        request: Request,
         log_file_name: str | None = Query(default=None, max_length=255),
         offset: int | None = Query(default=None, ge=0),
         log_identity: str | None = Query(default=None, max_length=512),
         tail_bytes: int | None = Query(default=None, ge=1, le=MAX_LOG_RESPONSE_BYTES),
         tail_lines: int | None = Query(default=None, ge=0, le=MAX_LOG_TAIL_LINES),
+        known_preview: str | None = Query(default=None, max_length=256),
         chunk_size: int | None = Query(default=None, ge=1, le=MAX_LOG_RESPONSE_BYTES),
-    ) -> dict[str, Any]:
+    ) -> dict[str, Any] | Response:
         try:
-            return get_runtime().get_task_logs(
+            logs = get_runtime().get_task_logs(
                 task_name,
                 log_file_name=log_file_name,
                 offset=offset,
                 log_identity=log_identity,
                 tail_bytes=tail_bytes,
                 tail_lines=tail_lines,
+                **({"known_preview": known_preview} if known_preview is not None else {}),
                 chunk_size=chunk_size,
             )
         except KeyError as exc:
             raise HTTPException(status_code=404, detail=f"Task '{task_name}' not found") from exc
+        # Large terminal redraws compress well. Encode only interactive history
+        # misses in this sync endpoint's worker thread, never in the live writer.
+        if (known_preview is not None and offset is None and tail_lines is not None
+                and len(logs["content"]) >= 64 * 1024
+                and "gzip" in request.headers.get("accept-encoding", "").lower().replace(" ", "").split(",")):
+            return Response(
+                gzip.compress(JSONResponse(logs).body, compresslevel=1, mtime=0),
+                media_type="application/json",
+                headers={"Content-Encoding": "gzip", "Vary": "Accept-Encoding"},
+            )
+        return logs
 
     @app.get("/api/tasks/{task_name}/logs/download")
     async def download_task_log(

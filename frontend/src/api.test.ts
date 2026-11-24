@@ -9,6 +9,7 @@ import {
   createTaskEventStream,
   exportTasksCsv,
   getDashboard,
+  getTaskLogs,
   getTasks,
   getSystemInfo,
   getWorkspace,
@@ -37,6 +38,27 @@ it('Home requests only dashboard data and preserves cancellation', async () => {
     '/api/dashboard?refresh=true&recent_limit=6&include_workspace=false',
     expect.objectContaining({ signal: controller.signal }),
   )
+})
+
+it('reuses only validated preview text, preserving fresh log options and workspace isolation', async () => {
+  const body = { content: 'original\rprogress', selected_log: 'run1.log', available_logs: ['run1.log'],
+    offset: 17, tail_truncated: true, preview_revision: 'first' }
+  const fetchMock = vi.fn()
+    .mockResolvedValueOnce(Response.json(body))
+    .mockResolvedValueOnce(Response.json({ ...body, content: '', preview_unchanged: true,
+      tail_truncated: false, available_logs: ['run1.log', 'error.log'] }))
+    .mockResolvedValueOnce(Response.json({ ...body, content: 'rewritten', preview_revision: 'next' }))
+    .mockResolvedValueOnce(Response.json(body))
+  vi.stubGlobal('fetch', fetchMock)
+  setWorkspaceContext('/a')
+  const tail = () => getTaskLogs('alpha', { tailLines: 1000 })
+  await tail()
+  expect(await tail()).toMatchObject({ content: body.content, tail_truncated: true, available_logs: ['run1.log', 'error.log'] })
+  expect((await tail()).content).toBe('rewritten')
+  setWorkspaceContext('/b')
+  await tail()
+  expect(fetchMock.mock.calls.map(([url]) => new URL(url, 'http://localhost').searchParams.get('known_preview')))
+    .toEqual(['', 'first', 'first', ''])
 })
 
 it('batch run preserves Manager options and only binds identities for newly created batches', async () => {

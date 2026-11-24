@@ -50,6 +50,10 @@ type UnauthorizedListener = (error: ApiError) => void
 const unauthorizedListeners = new Set<UnauthorizedListener>()
 const workspaceChangedListeners = new Set<() => void>()
 let workspaceContext = { root: '' }
+// Keep only recently viewed history in this tab. Every reuse is checked by the server.
+const logPreviews = new Map<string, TaskLogs>()
+const MAX_PREVIEW_ENTRIES = 6
+const MAX_PREVIEW_CHARS = 8 * 1024 * 1024
 let notifiedWorkspaceContext: typeof workspaceContext | null = null
 let authorizationEpoch = 0
 let sessionRecoveryPromise: Promise<boolean> | null = null
@@ -66,6 +70,7 @@ export function subscribeUnauthorized(listener: UnauthorizedListener) {
 }
 
 export function setWorkspaceContext(root: string) {
+  if (root !== workspaceContext.root) logPreviews.clear()
   workspaceContext = { root }
   notifiedWorkspaceContext = null
 }
@@ -429,7 +434,7 @@ export const getMonitorLogPositions = (taskNames: string[], signal: AbortSignal)
     method: 'POST', body: JSON.stringify({ task_names: taskNames }), signal,
   })
 
-export const getTaskLogs = (name: string, options: {
+export const getTaskLogs = async (name: string, options: {
   logFileName?: string
   offset?: number
   logIdentity?: string
@@ -444,7 +449,31 @@ export const getTaskLogs = (name: string, options: {
   if (options.tailBytes != null) sp.set('tail_bytes', String(options.tailBytes))
   if (options.tailLines != null) sp.set('tail_lines', String(options.tailLines))
   if (options.chunkSize != null) sp.set('chunk_size', String(options.chunkSize))
-  return request<TaskLogs>(`/api/tasks/${encodeURIComponent(name)}/logs?${sp}`, { signal })
+  const url = `/api/tasks/${encodeURIComponent(name)}/logs?${sp}`
+  if (options.tailLines == null || options.offset != null) return request<TaskLogs>(url, { signal })
+
+  const context = workspaceContext
+  const cached = logPreviews.get(url)
+  const logs = await request<TaskLogs>(url + '&known_preview=' + encodeURIComponent(cached?.preview_revision ?? ''), { signal })
+  if (logs.preview_unchanged && cached && logs.preview_revision === cached.preview_revision) {
+    // Run selection and the list of available files are still read on every request.
+    logs.content = cached.content
+    logs.tail_truncated = cached.tail_truncated
+    logs.tail_byte_limited = cached.tail_byte_limited
+  }
+  if (signal?.aborted || context !== workspaceContext) return logs
+  logPreviews.delete(url)
+  if (logs.preview_revision && logs.content.length <= MAX_PREVIEW_CHARS) {
+    logPreviews.set(url, logs)
+    let chars = 0
+    for (const entry of logPreviews.values()) chars += entry.content.length
+    for (const [key, entry] of logPreviews) {
+      if (chars <= MAX_PREVIEW_CHARS && logPreviews.size <= MAX_PREVIEW_ENTRIES) break
+      chars -= entry.content.length
+      logPreviews.delete(key)
+    }
+  }
+  return logs
 }
 
 export function createLogStream(taskName: string, options: {

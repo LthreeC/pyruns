@@ -329,6 +329,8 @@ export interface MonitorLogPosition {
 }
 
 export interface TaskLogs {
+  preview_revision?: string
+  preview_unchanged?: boolean
   task_name: string
   selected_log: string
   available_logs: string[]

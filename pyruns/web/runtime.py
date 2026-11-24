@@ -79,7 +79,7 @@ from pyruns.utils.info_io import (
     validate_tasks_root,
     validate_workspace_directory,
 )
-from pyruns.utils.log_io import log_file_identity, read_last_bytes, read_log_tail, safe_read_log
+from pyruns.utils.log_io import log_file_identity, read_last_bytes, read_log_preview, safe_read_log
 from pyruns.utils.file_io import map_disk_reads, read_bounded_bytes, regular_file_opener
 from pyruns.utils.log_search import LogSearch, LogSearchResult
 from pyruns.utils.process_utils import hidden_subprocess_kwargs
@@ -2025,6 +2025,7 @@ class PyrunsRuntime:
         log_identity: str | None = None,
         tail_bytes: int | None = None,
         tail_lines: int | None = None,
+        known_preview: str | None = None,
         chunk_size: int | None = None,
         include_log_options: bool = True,
         expected_workspace_root: str | None = None,
@@ -2120,7 +2121,10 @@ class PyrunsRuntime:
         tail_truncated = False
         tail_byte_limited = False
         tail_limit_bytes = MAX_MONITOR_LOG_TAIL_BYTES
-        selected_identity = log_file_identity(selected_path, **({"strict": True} if strict else {}))
+        selected_identity = ""
+        if offset is not None or tail_lines is None:
+            selected_identity = log_file_identity(selected_path, **({"strict": True} if strict else {}))
+        preview_revision = ""
         reset = False
         file_size = None
         if offset is None:
@@ -2131,12 +2135,17 @@ class PyrunsRuntime:
                     else max(1, int(tail_bytes))
                 )
                 tail_limit_bytes = min(MAX_MONITOR_LOG_TAIL_BYTES, requested_tail_bytes)
-                content, new_offset, tail_truncated, tail_byte_limited = read_log_tail(
+                preview = read_log_preview(
                     selected_path,
                     max_lines=max(0, tail_lines),
                     max_bytes=tail_limit_bytes,
+                    known_revision=known_preview,
                     **({"strict": True} if strict else {}),
                 )
+                content, new_offset = preview.content, preview.offset
+                tail_truncated, tail_byte_limited = preview.truncated, preview.byte_limited
+                selected_identity = preview.identity or log_file_identity(selected_path, strict=strict)
+                preview_revision = preview.revision
             else:
                 byte_limit = tail_bytes
                 if byte_limit is None:
@@ -2193,6 +2202,8 @@ class PyrunsRuntime:
             "tail_truncated": tail_truncated,
             "tail_byte_limited": tail_byte_limited,
             "tail_limit_bytes": tail_limit_bytes,
+            **({"preview_revision": preview_revision, "preview_unchanged": preview_revision == known_preview}
+               if preview_revision else {}),
             **({"file_size": file_size} if file_size is not None else {}),
         }
 

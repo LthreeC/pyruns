@@ -26,6 +26,19 @@ describe('compactTerminalHistory', () => {
 })
 
 describe('createTerminalLogWriter', () => {
+  it('reuses a dispatched empty reset but still cancels pending text from intermediate selections', () => {
+    const writes: { text: string; done: () => void }[] = []
+    const writer = createTerminalLogWriter((text, done) => writes.push({ text, done }))
+    writer.replace('')
+    writer.replace('abandoned')
+    writer.replace('selected')
+    writes[0].done()
+    expect(writes.map(write => write.text)).toEqual(['\x18\x1bc', 'selected'])
+    writer.replace('next')
+    writes[1].done()
+    expect(writes[2].text).toBe('\x18\x1bcnext')
+  })
+
   it('drops all unsent text from the previous log and waits for the replacement to finish', () => {
     const writes: { text: string; done: () => void }[] = []
     const writer = createTerminalLogWriter((text, done) => writes.push({ text, done }))

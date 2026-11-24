@@ -1077,6 +1077,9 @@ def resolve_log_path(
     opts = get_log_options(task_dir) if options is None else options
     if log_file_name:
         return opts.get(log_file_name)
+    if len(opts) == 1:
+        # The only validated log is the default for every task status.
+        return next(iter(opts.values()))
     if opts:
         info = load_task_metadata(task_dir) or {}
         status = str(info.get("status", "") or "").lower()

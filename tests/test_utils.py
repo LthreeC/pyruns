@@ -1965,6 +1965,17 @@ def test_log_enumeration_resolves_relative_unicode_paths_and_fresh_project_ancho
 
 
 class TestResolveLogPath:
+    @pytest.mark.parametrize("name", ["run1.log", "queue.log", "error.log"])
+    def test_only_log_needs_no_task_metadata_or_mtime(self, tmp_path, monkeypatch, name):
+        def unexpected_read(*args):
+            pytest.fail("Selecting the only log should not probe the workspace again")
+
+        monkeypatch.setattr("pyruns.utils.info_io.load_task_metadata", unexpected_read)
+        monkeypatch.setattr(os.path, "getmtime", unexpected_read)
+        path = str(tmp_path / name)
+        assert resolve_log_path(str(tmp_path), options={name: path}) == path
+        assert resolve_log_path(str(tmp_path), "missing.log", options={name: path}) is None
+
     def test_resolve_named(self, tmp_path):
         task_dir = str(tmp_path)
         log_dir = os.path.join(task_dir, RUN_LOGS_DIR)

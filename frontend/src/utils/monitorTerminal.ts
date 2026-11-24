@@ -40,6 +40,7 @@ export function createTerminalLogWriter(write: (text: string, done: () => void) 
   let queuedChars = 0
   let writing = false
   let disposed = false
+  let lastWriteWasReset = false
 
   function drain() {
     if (writing || disposed) return
@@ -56,6 +57,7 @@ export function createTerminalLogWriter(write: (text: string, done: () => void) 
     queuedChars -= chunk.length
     if (next.offset === next.text.length) queue.shift()
     writing = true
+    lastWriteWasReset = chunk === TERMINAL_RESET
     write(chunk, () => {
       writing = false
       drain()
@@ -78,7 +80,7 @@ export function createTerminalLogWriter(write: (text: string, done: () => void) 
       queue.length = 0
       queuedChars = 0
       idleCallbacks.clear()
-      append(TERMINAL_RESET + text)
+      append(lastWriteWasReset ? text : TERMINAL_RESET + text)
     },
     whenIdle(callback: () => void) {
       idleCallbacks.add(callback)

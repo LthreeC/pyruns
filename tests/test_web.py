@@ -6224,6 +6224,62 @@ def test_logs_endpoint_can_tail_history_by_lines(tmp_path, total_lines, tail_lin
     assert payload["tail_byte_limited"] is False
 
 
+def test_monitor_revalidates_the_open_file_and_requested_line_window(tmp_path, monkeypatch):
+    workspace = _make_workspace(tmp_path, "main")
+    _add_task(workspace, "alpha", status="completed", log_text="one\ntwo\n")
+    path = workspace / TASKS_DIR / "alpha" / "run_logs" / "run1.log"
+    path.write_bytes(b"one\ntwo\n")
+    client = TestClient(create_app(_build_runtime(workspace)))
+
+    def read(revision="", lines=1):
+        response = client.get("/api/tasks/alpha/logs", params={
+            "log_file_name": "run1.log", "tail_lines": lines, "known_preview": revision,
+        })
+        assert response.status_code == 200
+        return response.json()
+
+    first = read()
+    revision = first["preview_revision"]
+    assert first["content"] == "two\n" and first["tail_truncated"]
+    with monkeypatch.context() as patcher:
+        patcher.setattr("pyruns.utils.log_io.decode_log_bytes", lambda _: pytest.fail("unchanged tail was decoded"))
+        (path.parent / "error.log").write_bytes(b"details")
+        warm = read(revision)
+        assert warm["preview_unchanged"] and warm["content"] == ""
+        assert warm["offset"] == first["offset"] and "error.log" in warm["available_logs"]
+    assert read(revision, lines=2)["content"] == "one\ntwo\n"
+    for contents in (b"one\ntwo\nnew\n", b"same\n", b"edit\n"):
+        old_stat = path.stat()
+        path.write_bytes(contents)
+        os.utime(path, ns=(old_stat.st_atime_ns, old_stat.st_mtime_ns + 2_000_000_000))
+        changed = read(revision)
+        assert not changed["preview_unchanged"] and changed["content"] == contents.decode().splitlines()[-1] + "\n"
+        revision = changed["preview_revision"]
+    rotated = path.with_suffix(".new")
+    rotated.write_bytes(b"next\n")
+    os.utime(rotated, ns=(path.stat().st_atime_ns, path.stat().st_mtime_ns))
+    os.replace(rotated, path)
+    assert read(revision)["content"] == "next\n"
+
+
+def test_large_monitor_preview_compresses_without_changing_raw_log_or_cursor(tmp_path):
+    workspace = _make_workspace(tmp_path, "main")
+    _add_task(workspace, "alpha", status="completed", log_text="ready")
+    content = ("\r100% ██████" * 10_000) + "\n"
+    raw = content.encode()
+    path = workspace / TASKS_DIR / "alpha" / "run_logs" / "run1.log"
+    path.write_bytes(raw)
+    client = TestClient(create_app(_build_runtime(workspace)))
+    params = {"known_preview": "", "tail_lines": 1000}
+    endpoint = "/api/tasks/alpha/logs"
+    zipped = client.get(endpoint, params=params, headers={"Accept-Encoding": "gzip"})
+    plain = client.get(endpoint, params=params, headers={"Accept-Encoding": "gzip;q=0, identity"})
+    assert zipped.headers["content-encoding"] == "gzip" and "content-encoding" not in plain.headers
+    assert int(zipped.headers["content-length"]) < len(raw) // 10
+    assert zipped.json() == plain.json()
+    assert zipped.json()["content"] == content and zipped.json()["offset"] == len(raw)
+
+
 def test_logs_endpoint_caps_large_initial_tail_by_server_byte_budget(tmp_path):
     workspace = _make_workspace(tmp_path, "main")
     log_text = "first\n" + ("x" * 5_000_001) + "\nlast\n"

@@ -108,6 +108,39 @@ test('monitor shows the latest progress redraw and keeps the original log availa
   await expect.poll(() => copiedLog).toBe(content)
 })
 
+test('revisiting a log reuses validated text and refreshes a rewritten preview', async ({ page }) => {
+  const tasks = ['alpha', 'beta'].map(name => ({ name, status: 'completed', run_index: 1, task_kind: 'shell' }))
+  await page.route('**/api/tasks?*', route => route.fulfill({ json: {
+    items: tasks, total: 2, offset: 0, limit: 200, has_more: false,
+  } }))
+  let changed = false
+  const validators: (string | null)[] = []
+  for (const { name } of tasks) {
+    await page.route(`**/api/tasks/${name}/logs?*`, route => {
+      const known = new URL(route.request().url()).searchParams.get('known_preview')
+      if (name === 'alpha') validators.push(known)
+      const revision = name === 'alpha' && changed ? 'new' : name
+      return route.fulfill({ json: {
+        selected_log: 'run1.log', available_logs: ['run1.log'], offset: 12, log_identity: name,
+        preview_revision: revision, preview_unchanged: known === revision,
+        content: known === revision ? '' : 'output-' + revision,
+      } })
+    })
+  }
+  await page.goto('/monitor?token=pyruns-e2e-access-token')
+  const rows = page.locator('.xterm-rows')
+  await expect(rows).toContainText('output-alpha')
+  for (const fresh of [false, true]) {
+    await page.getByRole('button', { name: 'View beta, completed', exact: true }).click()
+    await expect(rows).toContainText('output-beta')
+    changed = fresh
+    await page.getByRole('button', { name: 'View alpha, completed', exact: true }).click()
+    await expect(rows).toContainText(fresh ? 'output-new' : 'output-alpha')
+    await expect(rows).not.toContainText('output-beta')
+  }
+  expect(validators).toEqual(['', 'alpha', 'alpha'])
+})
+
 for (const emptyLog of [false, true]) {
   test(`monitor discards queued output when switching to ${emptyLog ? 'an empty' : 'another'} log`, async ({ page }) => {
     const now = new Date()

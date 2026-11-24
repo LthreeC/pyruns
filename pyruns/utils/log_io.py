@@ -5,7 +5,7 @@ from __future__ import annotations
 import codecs
 import locale
 import os
-from typing import Tuple
+from typing import NamedTuple, Tuple
 
 
 def _log_decode_candidates() -> list[str]:
@@ -74,6 +74,10 @@ def log_file_identity(filepath: str, *, strict: bool = False) -> str:
             raise
         return ""
 
+    return _stat_identity(stat_result)
+
+
+def _stat_identity(stat_result: os.stat_result) -> str:
     device = int(getattr(stat_result, "st_dev", 0) or 0)
     inode = int(getattr(stat_result, "st_ino", 0) or 0)
     if inode <= 0:
@@ -168,6 +172,23 @@ def read_log_tail(
     log_path: str, max_lines: int, max_bytes: int | None, *, strict: bool = False,
 ) -> tuple[str, int, bool, bool]:
     """Return text, its end offset, and flags for omitted history and the byte cap."""
+    preview = read_log_preview(log_path, max_lines, max_bytes, strict=strict)
+    return preview.content, preview.offset, preview.truncated, preview.byte_limited
+
+
+class LogPreview(NamedTuple):
+    content: str = ""
+    offset: int = 0
+    truncated: bool = False
+    byte_limited: bool = False
+    identity: str = ""
+    revision: str = ""
+
+
+def read_log_preview(
+    log_path: str, max_lines: int, max_bytes: int | None, *, known_revision: str | None = None, strict: bool = False,
+) -> LogPreview:
+    """Revalidate a requested tail against the open file before reading its bytes."""
 
     try:
         max_lines = max(0, int(max_lines))
@@ -178,9 +199,16 @@ def read_log_tail(
         bytes_read = 0
 
         with open(log_path, "rb") as handle:
-            size = os.fstat(handle.fileno()).st_size
+            stat = os.fstat(handle.fileno())
+            size = stat.st_size
+            identity = _stat_identity(stat)
+            revision = ""
+            if known_revision is not None and identity:
+                revision = f"{identity}:{size}:{stat.st_mtime_ns}:{stat.st_ctime_ns}:{max_lines}:{byte_limit}"
+                if known_revision == revision:
+                    return LogPreview(offset=size, identity=identity, revision=revision)
             if size <= 0 or max_lines == 0:
-                return "", size, False, False
+                return LogPreview(offset=size, identity=identity, revision=revision)
             position = size
             while position > 0 and (byte_limit is None or bytes_read < byte_limit):
                 read_size = min(block_size, position)
@@ -213,14 +241,20 @@ def read_log_tail(
                 estimate = remaining_breaks * len(chunk) // breaks + 1 if breaks else block_size * 2
                 block_size = min(512 * 1024, max(64 * 1024, estimate))
 
+            if revision:
+                end_stat = os.fstat(handle.fileno())
+                if (end_stat.st_size, end_stat.st_mtime_ns, end_stat.st_ctime_ns) != (
+                    stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns,
+                ):
+                    revision = ""
         data = b"".join(reversed(chunks))
         omitted = size > len(data)
         byte_limited = omitted and byte_limit is not None and len(data) >= byte_limit
-        return normalize_log_newlines(decode_log_bytes(data)), size, omitted, byte_limited
+        return LogPreview(normalize_log_newlines(decode_log_bytes(data)), size, omitted, byte_limited, identity, revision)
     except Exception:
         if strict:
             raise
-        return "", 0, False, False
+        return LogPreview()
 
 
 def _complete_log_character(handle, chunk: bytes, remaining: int) -> bytes:
