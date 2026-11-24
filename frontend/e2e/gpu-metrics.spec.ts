@@ -221,10 +221,16 @@ test('unavailable GPU readings remain visible and cannot pass the scheduling pre
   await expect(dialog.getByText('Unknown / 80 GB', { exact: true })).toBeVisible()
   await dialog.getByRole('button', { name: 'Close GPU details' }).click()
 
+  // Pin the preview policy without toggling a switch while runtime settings load.
+  const runtimePath = '/api/runtime?refresh_providers=false'
+  const runtime = await (await page.request.get(runtimePath)).json()
+  await page.route('**' + runtimePath, route => route.fulfill({ json: {
+    ...runtime, gpu_scheduler: { ...runtime.gpu_scheduler, enabled: true },
+  } }))
   await page.getByRole('button', { name: 'GPU scheduling', exact: true }).click()
   const panel = page.getByRole('dialog', { name: 'GPU scheduling', exact: true })
   const enabled = panel.getByRole('switch', { name: 'GPU scheduling', exact: true })
-  if (await enabled.getAttribute('aria-checked') !== 'true') await enabled.click()
+  await expect(enabled).toBeChecked()
   const preview = panel.getByRole('button', { name: /GPU 0 · Unknown readings GPU/ })
   await expect(preview).toContainText('Blocked')
   await preview.click()
