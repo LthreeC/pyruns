@@ -70,9 +70,14 @@ class LogFileState(NamedTuple):
     @classmethod
     def from_stat(cls, info: os.stat_result) -> LogFileState:
         identity = f"{info.st_dev:x}:{info.st_ino:x}" if info.st_ino else ""
+        # On Windows 3.12+, stat and fstat can report different meanings of
+        # ctime for the same file. Birth time is consistent across both calls.
+        change_time = info.st_ctime_ns
+        if os.name == "nt":
+            change_time = getattr(info, "st_birthtime_ns", change_time)
         # Include size so an append can be distinguished from a same-size rewrite.
         # Nanoseconds travel as text to preserve precision in JavaScript.
-        return cls(identity, info.st_size, f"{info.st_size}:{info.st_mtime_ns}:{info.st_ctime_ns}")
+        return cls(identity, info.st_size, f"{info.st_size}:{info.st_mtime_ns}:{change_time}")
 
     def invalidates(self, previous_revision: str | None, *, resume_offset: int = 0) -> bool:
         if not previous_revision or not self.revision or self.revision == previous_revision:
@@ -228,7 +233,9 @@ def read_log_preview(
             file_revision = state.revision
             revision = ""
             if known_revision is not None and identity:
-                revision = f"{identity}:{file_revision}:{max_lines}:{byte_limit}"
+                # Preview validators always come from an open handle, so they can
+                # also detect edits that preserve mtime where fstat exposes them.
+                revision = f"{identity}:{size}:{stat.st_mtime_ns}:{stat.st_ctime_ns}:{max_lines}:{byte_limit}"
                 if known_revision == revision:
                     return LogPreview(offset=size, identity=identity, revision=revision, file_revision=file_revision)
             if size <= 0 or max_lines == 0:
