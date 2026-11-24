@@ -6,6 +6,7 @@ import subprocess
 import sys
 import threading
 import time
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -1964,9 +1965,9 @@ def test_run_pip_upgrade_uses_current_interpreter(monkeypatch, hidden_flags):
         "pyruns>=0.4.0",
     ]
     assert calls[0][1]["stderr"].closed
-    assert {key: value for key, value in calls[0][1].items() if key != "stderr"} == {
+    assert 0 < calls[0][1]["timeout"] <= self_update.PIP_UPGRADE_TIMEOUT_SECONDS
+    assert {key: value for key, value in calls[0][1].items() if key not in {"stderr", "timeout"}} == {
         "check": False,
-        "timeout": self_update.PIP_UPGRADE_TIMEOUT_SECONDS,
         "env": None,
         **hidden_flags,
     }
@@ -2036,21 +2037,79 @@ def test_run_pip_upgrade_timeout_keeps_relaunch_result(monkeypatch):
 
 
 def test_pip_failure_details_survive_restart_result(monkeypatch):
-    detail = "ERROR: No matching distribution found for pyruns>=0.4.0"
+    detail = "ERROR: No matching distribution found for pyruns==0.4.0"
 
     def fake_run(command, **kwargs):
         if "pip" in command:
-            kwargs["stderr"].write(("warning\n" * 300 + detail).encode())
+            message = f"ERROR: No matching distribution found for {command[-1]}"
+            kwargs["stderr"].write(("warning\n" * 300 + message).encode())
             return SimpleNamespace(returncode=1)
         return SimpleNamespace(returncode=0, stdout="0.3.0\n")
 
     monkeypatch.setattr(self_update.subprocess, "run", fake_run)
     result = self_update.run_pip_upgrade("0.3.0", target_version="0.4.0")
-    assert result["ok"] is False
+    assert result["ok"] is False and result["installed_version"] == "0.3.0"
     assert len(result["error"]) <= 1024
+    assert "Could not fetch the Pyruns 0.4.0 wheel from PyPI" in result["error"]
     assert result["error"].endswith(detail)
     monkeypatch.setenv(self_update.UI_UPDATE_RESULT_ENV, json.dumps(result))
     assert self_update.read_update_result() == result
+
+
+@pytest.mark.parametrize("dependency_available", [True, False])
+def test_stale_mirror_fetches_only_the_confirmed_pyruns_wheel(tmp_path, monkeypatch, dependency_available):
+    commands = []
+    timeouts = []
+    wheel = None
+    staging = tmp_path / "release"
+    monkeypatch.setenv("PIP_INDEX_URL", "https://mirror.example/simple")
+    monkeypatch.setattr(self_update, "_query_staged_version", lambda root: "0.3.22.1" if root == staging else "")
+
+    def pip(command, *, stderr, env, timeout, **_kwargs):
+        nonlocal wheel
+        commands.append(command)
+        timeouts.append(timeout)
+        assert env["PIP_INDEX_URL"] == "https://mirror.example/simple"
+        assert env["PIP_USER"] == "0"
+        if len(commands) == 1:
+            stderr.write(b"ERROR: No matching distribution found for pyruns>=0.3.22.1\n")
+            return SimpleNamespace(returncode=1)
+        if "download" in command:
+            assert command[command.index("--index-url") + 1] == "https://pypi.org/simple"
+            assert "--no-deps" in command and "--only-binary=:all:" in command
+            assert command[-1] == "pyruns==0.3.22.1"
+            wheel = Path(command[command.index("--dest") + 1]) / "pyruns-0.3.22.1-py3-none-any.whl"
+            wheel.touch()
+        else:
+            assert wheel is not None and wheel.is_file()
+            assert command == [*commands[0][:-1], str(wheel)]
+            assert "--index-url" not in command and "--extra-index-url" not in command
+            if not dependency_available:
+                stderr.write(b"ERROR: No matching distribution found for private-dependency>=2\n")
+                return SimpleNamespace(returncode=1)
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(self_update.subprocess, "run", pip)
+    result = self_update.run_pip_upgrade("0.3.22", target_version="0.3.22.1", install_root=staging)
+    if dependency_available:
+        assert result["ok"] and result["installed_version"] == "0.3.22.1"
+    else:
+        assert not result["ok"] and result["installed_version"] == "0.3.22"
+        assert result["error"].endswith("private-dependency>=2")
+    assert len(commands) == 3 and wheel is not None and not wheel.parent.exists()
+    assert 0 < timeouts[2] <= timeouts[1] <= timeouts[0] <= self_update.PIP_UPGRADE_TIMEOUT_SECONDS
+
+
+@pytest.mark.parametrize("missing", ["private-dependency>=2", "pyruns-extra", "pyruns>=0.3.22.10"])
+def test_dependency_or_different_requirement_failure_keeps_configured_sources(tmp_path, monkeypatch, missing):
+    def pip(command, *, stderr, **_kwargs):
+        assert command[3] == "install" and command[-1] == "pyruns>=0.3.22.1"
+        stderr.write(f"ERROR: No matching distribution found for {missing}\n".encode())
+        return SimpleNamespace(returncode=1)
+
+    monkeypatch.setattr(self_update.subprocess, "run", pip)
+    result = self_update.run_pip_upgrade("0.3.22", target_version="0.3.22.1", install_root=tmp_path)
+    assert not result["ok"] and result["error"].endswith(missing)
 
 
 def test_waiter_preserves_coordination_failure_details(tmp_path):

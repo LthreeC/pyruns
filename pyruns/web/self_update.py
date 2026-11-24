@@ -1073,6 +1073,60 @@ def _query_staged_version(root: Path) -> str:
     return completed.stdout.strip()
 
 
+def _install_pyruns(target_version: str, install_root: Path | None) -> tuple[int, str]:
+    target = str(Version(target_version)) if target_version else ""
+    requirement = f"pyruns>={target}" if target else "pyruns"
+    options = ["--no-input", "--disable-pip-version-check"]
+    destination = ["--upgrade"] if install_root is None else ["--target", str(install_root), "--ignore-installed"]
+    install = ["install", *destination, *options]
+    environment = {**os.environ, "PIP_USER": "0"} if install_root is not None else None
+    deadline = time.monotonic() + PIP_UPGRADE_TIMEOUT_SECONDS
+
+    def run(arguments: list[str]) -> tuple[int, str]:
+        command = [sys.executable, "-m", "pip", *arguments]
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise subprocess.TimeoutExpired(command, PIP_UPGRADE_TIMEOUT_SECONDS)
+        print(f"[pyruns] Running: {subprocess.list2cmdline(command)}", flush=True)
+        # A file keeps error output bounded in memory and avoids waiting for
+        # inherited pipe handles in pip's build children after a timeout.
+        with tempfile.TemporaryFile() as error_log:
+            completed = subprocess.run(
+                command,
+                check=False,
+                timeout=remaining,
+                stderr=error_log,
+                env=environment,
+                **hidden_subprocess_kwargs(),
+            )
+            error_log.seek(0, os.SEEK_END)
+            error_log.seek(max(0, error_log.tell() - 8192))
+            stderr = error_log.read().decode("utf-8", errors="replace").strip()
+        if stderr:
+            print(stderr, file=sys.stderr, flush=True)
+        return completed.returncode, stderr if completed.returncode else ""
+
+    code, detail = run([*install, requirement])
+    missing = f"ERROR: No matching distribution found for {requirement}"
+    if not code or not target or missing not in detail.splitlines():
+        return code, detail
+
+    # Limit the public index to the application wheel. The subsequent install
+    # resolves its dependencies with the site's original pip configuration.
+    print(f"[pyruns] Configured pip sources lack Pyruns {target}. Fetching its wheel from PyPI.", flush=True)
+    with tempfile.TemporaryDirectory(prefix="pyruns-update-wheel-", ignore_cleanup_errors=True) as directory:
+        code, detail = run([
+            "download", *options, "--no-deps", "--only-binary=:all:", "--no-cache-dir",
+            "--index-url", "https://pypi.org/simple", "--dest", directory, f"pyruns=={target}",
+        ])
+        if code:
+            return code, f"Could not fetch the Pyruns {target} wheel from PyPI. {detail[-800:]}".rstrip()
+        wheels = list(Path(directory).glob("pyruns-*.whl"))
+        if len(wheels) != 1:
+            return 1, f"pip did not download the expected Pyruns {target} wheel."
+        return run([*install, str(wheels[0])])
+
+
 def run_pip_upgrade(
     previous_version: str,
     *,
@@ -1081,36 +1135,8 @@ def run_pip_upgrade(
 ) -> dict[str, Any]:
     """Run the requested pip operation and return a relaunch-safe result."""
 
-    requirement = f"pyruns>={Version(target_version)}" if target_version else "pyruns"
-    command = [sys.executable, "-m", "pip", "install"]
-    if install_root is None:
-        command.append("--upgrade")
-    else:
-        command.extend(["--target", str(install_root), "--ignore-installed"])
-    command.extend(["--no-input", "--disable-pip-version-check", requirement])
-    environment = {**os.environ, "PIP_USER": "0"} if install_root is not None else None
-    error = ""
-    print(f"[pyruns] Running: {subprocess.list2cmdline(command)}", flush=True)
     try:
-        # A file keeps error output bounded in memory and avoids waiting for
-        # inherited pipe handles in pip's build children after a timeout.
-        with tempfile.TemporaryFile() as error_log:
-            completed = subprocess.run(
-                command,
-                check=False,
-                timeout=PIP_UPGRADE_TIMEOUT_SECONDS,
-                stderr=error_log,
-                env=environment,
-                **hidden_subprocess_kwargs(),
-            )
-            error_log.seek(0, os.SEEK_END)
-            error_log.seek(max(0, error_log.tell() - 8192))
-            stderr = error_log.read().decode("utf-8", errors="replace").strip()
-        exit_code = int(completed.returncode)
-        if stderr:
-            print(stderr, file=sys.stderr, flush=True)
-            if exit_code:
-                error = stderr[-1024:]
+        exit_code, error = _install_pyruns(target_version, install_root)
     except subprocess.TimeoutExpired:
         exit_code = 124
         error = f"pip did not finish within {PIP_UPGRADE_TIMEOUT_SECONDS:g} seconds."
