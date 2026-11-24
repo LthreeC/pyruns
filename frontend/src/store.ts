@@ -277,6 +277,7 @@ function resetWorkspaceScopedState(nextWorkspaceKey: string) {
     logOffset: 0,
     logIdentity: '',
     availableLogs: [],
+    requestedLog: '',
     selectedLog: '',
     logTailTruncated: false,
     logTailByteLimited: false,
@@ -1369,6 +1370,7 @@ interface MonitorState extends MonitorLogText {
   logOffset: number
   logIdentity: string
   availableLogs: string[]
+  requestedLog: string
   selectedLog: string
   logTailTruncated: boolean
   logTailByteLimited: boolean
@@ -1397,6 +1399,7 @@ export const useMonitorStore = create<MonitorState>((set, get) => ({
   logOffset: 0,
   logIdentity: '',
   availableLogs: [],
+  requestedLog: '',
   selectedLog: '',
   logTailTruncated: false,
   logTailByteLimited: false,
@@ -1423,6 +1426,7 @@ export const useMonitorStore = create<MonitorState>((set, get) => ({
       logOffset: 0,
       logIdentity: '',
       availableLogs: [],
+      requestedLog: '',
       selectedLog: logMatch?.log_file || '',
       logTailTruncated: false,
       logTailByteLimited: false,
@@ -1485,6 +1489,7 @@ export const useMonitorStore = create<MonitorState>((set, get) => ({
     monitorLogController = controller
     const timeout = setTimeout(() => controller.abort(new Error('Log loading timed out. Please retry.')), 10_000)
     set({
+      requestedLog: logName,
       selectedLog: logName,
       logMatch: null,
       logError: '',
@@ -1545,7 +1550,7 @@ export const useMonitorStore = create<MonitorState>((set, get) => ({
   clearTask() {
     monitorLogController?.abort()
     set({ ...replaceMonitorLogContent(get(), ''), selectedTaskName: null, logMatch: null, logError: '',
-      logGeneration: ++monitorRequestSeq, logOffset: 0, logIdentity: '', availableLogs: [], selectedLog: '',
+      logGeneration: ++monitorRequestSeq, logOffset: 0, logIdentity: '', availableLogs: [], requestedLog: '', selectedLog: '',
       logTailTruncated: false, logTailByteLimited: false, logTailExpanded: false, loading: false })
   },
   toggleExport(name) {

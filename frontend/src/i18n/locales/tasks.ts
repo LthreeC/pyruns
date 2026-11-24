@@ -386,6 +386,7 @@ export default {
   'Load more history': '加载更多历史日志',
   'Read-only logs for {{name}}': '{{name}} 的只读日志',
   'Loading log…': '正在加载日志…',
+  'Checking for new output…': '正在检查新输出…',
   'Search logs': '搜索日志',
   'Search terminal logs': '搜索终端日志',
   'No match': '无匹配',

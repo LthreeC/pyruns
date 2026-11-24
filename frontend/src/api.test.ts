@@ -61,6 +61,23 @@ it('reuses only validated preview text, preserving fresh log options and workspa
     .toEqual(['', 'first', 'first', ''])
 })
 
+it('revalidates six large previews without downloading the log bodies again', async () => {
+  setWorkspaceContext('/large-previews')
+  const content = 'x'.repeat(1_500_000)
+  const fetchMock = vi.fn(async (url: string) => {
+    const known = new URL(url, 'http://localhost').searchParams.get('known_preview')
+    return Response.json({ preview_revision: 'v1', preview_unchanged: known === 'v1', content: known ? '' : content })
+  })
+  vi.stubGlobal('fetch', fetchMock)
+  const read = (index: number) => getTaskLogs('large-' + index, { tailLines: 1000 })
+  for (let i = 0; i < 6; i++) await read(i)
+  expect((await read(0)).content.length).toBe(content.length)
+  await read(6)
+  await read(1)
+  const validators = fetchMock.mock.calls.map(([url]) => new URL(url, 'http://localhost').searchParams.get('known_preview'))
+  expect(validators.slice(6)).toEqual(['v1', '', ''])
+})
+
 it('batch run preserves Manager options and only binds identities for newly created batches', async () => {
   const fetchMock = vi.fn().mockImplementation(() => Promise.resolve(new Response('{}')))
   vi.stubGlobal('fetch', fetchMock)

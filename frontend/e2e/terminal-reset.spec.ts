@@ -108,37 +108,71 @@ test('monitor shows the latest progress redraw and keeps the original log availa
   await expect.poll(() => copiedLog).toBe(content)
 })
 
-test('revisiting a log reuses validated text and refreshes a rewritten preview', async ({ page }) => {
-  const tasks = ['alpha', 'beta'].map(name => ({ name, status: 'completed', run_index: 1, task_kind: 'shell' }))
+test('revisiting a log restores its terminal before validation and refreshes a rewritten preview', async ({ page }) => {
+  const names = ['alpha', 'beta', 'gamma', 'delta', 'epsilon', 'zeta', 'eta']
+  const tasks = names.map(name => ({ name, status: 'completed', run_index: 1, task_kind: 'shell' }))
   await page.route('**/api/tasks?*', route => route.fulfill({ json: {
-    items: tasks, total: 2, offset: 0, limit: 200, has_more: false,
+    items: tasks, total: tasks.length, offset: 0, limit: 200, has_more: false,
   } }))
   let changed = false
+  let alphaResponse: Promise<void> | undefined
+  const alphaText = ['alpha-first', ...Array.from({ length: 150 }, (_, i) => 'line-' + i), 'output-alpha'].join('\n')
   const validators: (string | null)[] = []
   for (const { name } of tasks) {
-    await page.route(`**/api/tasks/${name}/logs?*`, route => {
+    await page.route(`**/api/tasks/${name}/logs?*`, async route => {
       const known = new URL(route.request().url()).searchParams.get('known_preview')
-      if (name === 'alpha') validators.push(known)
+      if (name === 'alpha') {
+        validators.push(known)
+        await alphaResponse
+      }
       const revision = name === 'alpha' && changed ? 'new' : name
       return route.fulfill({ json: {
         selected_log: 'run1.log', available_logs: ['run1.log'], offset: 12, log_identity: name,
         preview_revision: revision, preview_unchanged: known === revision,
-        content: known === revision ? '' : 'output-' + revision,
+        content: known === revision ? '' : revision === 'alpha' ? alphaText : 'output-' + revision,
       } })
     })
   }
   await page.goto('/monitor?token=pyruns-e2e-access-token')
   const rows = page.locator('.xterm-rows')
   await expect(rows).toContainText('output-alpha')
+  await rows.evaluate(node => node.setAttribute('data-original-terminal', 'yes'))
+  await page.getByRole('region', { name: 'Read-only logs for alpha' }).hover()
+  await page.mouse.wheel(0, -50_000)
+  await expect(rows).not.toContainText('output-alpha')
+  const firstRow = rows.locator(':scope > div').first()
+  const scrolledRow = await firstRow.innerText()
   for (const fresh of [false, true]) {
     await page.getByRole('button', { name: 'View beta, completed', exact: true }).click()
     await expect(rows).toContainText('output-beta')
     changed = fresh
-    await page.getByRole('button', { name: 'View alpha, completed', exact: true }).click()
-    await expect(rows).toContainText(fresh ? 'output-new' : 'output-alpha')
-    await expect(rows).not.toContainText('output-beta')
+    let release!: () => void
+    alphaResponse = new Promise<void>(resolve => { release = resolve })
+    try {
+      await page.getByRole('button', { name: 'View alpha, completed', exact: true }).click()
+      await expect(page.getByText('Checking for new output…')).toBeVisible()
+      await expect(rows).toHaveAttribute('data-original-terminal', 'yes')
+      await expect(firstRow).toHaveText(scrolledRow)
+      await expect(rows).not.toContainText('output-beta')
+    } finally {
+      release()
+    }
+    await expect(page.locator('.monitor-log-output')).toHaveAttribute('aria-busy', 'false')
+    if (fresh) await expect(rows).toContainText('output-new')
+    else await expect(firstRow).toHaveText(scrolledRow)
   }
   expect(validators).toEqual(['', 'alpha', 'alpha'])
+
+  for (const name of [...names.slice(1, 6), 'alpha']) {
+    await page.getByRole('button', { name: `View ${name}, completed`, exact: true }).click()
+    await expect(rows).toContainText(name === 'alpha' ? 'output-new' : 'output-' + name)
+  }
+  await expect(rows).toHaveAttribute('data-original-terminal', 'yes')
+  for (const name of [...names.slice(1), 'alpha']) {
+    await page.getByRole('button', { name: `View ${name}, completed`, exact: true }).click()
+    await expect(rows).toContainText(name === 'alpha' ? 'output-new' : 'output-' + name)
+  }
+  await expect(rows).not.toHaveAttribute('data-original-terminal', 'yes')
 })
 
 for (const emptyLog of [false, true]) {

@@ -3,6 +3,8 @@ export const DEFAULT_MONITOR_SCROLLBACK = 10_000
 export const DEFAULT_MONITOR_LINE_HEIGHT = 1
 export const MAX_MONITOR_CHUNK_SIZE = 4 * 1024 * 1024
 export const MAX_MONITOR_LOG_CHARS = 4 * 1024 * 1024
+// Keep the validated text and rendered-view caches sized for the same working set.
+export const MAX_RECENT_MONITOR_LOGS = 6
 export const MONITOR_INITIAL_TAIL_LINES = 1_000
 export const MAX_MONITOR_SCROLLBACK = 1_000_000
 export const MAX_MONITOR_LINE_HEIGHT = 2.5

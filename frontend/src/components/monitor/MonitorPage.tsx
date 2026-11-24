@@ -3,6 +3,7 @@ import {
   memo,
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -66,6 +67,7 @@ import {
   DEFAULT_MONITOR_LINE_HEIGHT,
   DEFAULT_MONITOR_SCROLLBACK,
   MAX_MONITOR_LOG_CHARS,
+  MAX_RECENT_MONITOR_LOGS,
   MONITOR_INITIAL_TAIL_LINES,
   monitorPreviewTailLines,
   resolveMonitorChunkSize,
@@ -86,6 +88,29 @@ import { taskDetailRefreshKey } from '@/utils/taskSnapshots'
 import { summarizeGpuWait } from '@/utils/gpuWait'
 import { formatElapsedDuration } from '@/utils/taskRuntime'
 import { canStopTask, describeTaskStop, taskStopFeedback } from '@/utils/taskStop'
+
+type TerminalFrame = {
+  key: string
+  file: string
+  identity: string
+  text: string
+  placeholder: boolean
+  logTextVersion: number
+  logTextEnd: number
+}
+
+interface MonitorTerminalView {
+  key: string
+  term: XTerminal
+  fit: FitAddon
+  search: SearchAddon
+  writer: ReturnType<typeof createTerminalLogWriter>
+  frame: TerminalFrame | null
+  dispose: () => void
+}
+
+// Bound each inactive xterm's scrollback independently of the number of tasks on disk.
+const MAX_INACTIVE_CELLS = 512 * 1024
 
 const MONITOR_SIDEBAR_WIDTH_STORAGE_KEY = 'pyruns.monitorSidebarWidthPct'
 const DEFAULT_MONITOR_SIDEBAR_WIDTH = 14
@@ -212,7 +237,7 @@ export default function MonitorPage() {
   const workspaceEpoch = useWorkspaceStore(state => state.workspaceEpoch)
   const pageVisible = usePageVisible()
   const {
-    selectedTaskName, logContent, logTextVersion, logTextEnd, logOffset, logIdentity, availableLogs, selectedLog,
+    selectedTaskName, logContent, logTextVersion, logTextEnd, logOffset, logIdentity, availableLogs, requestedLog, selectedLog,
     logTailTruncated, logTailByteLimited, logTailExpanded, loading, exportIds, logMatch, logError, logGeneration,
     selectTask, selectLogFile, toggleExport, setExportSelected, clearExport,
   } = useMonitorStore()
@@ -239,8 +264,8 @@ export default function MonitorPage() {
   const terminalWriterRef = useRef<ReturnType<typeof createTerminalLogWriter> | null>(null)
   const fitAddonRef = useRef<FitAddon | null>(null)
   const searchAddonRef = useRef<SearchAddon | null>(null)
-  const observerRef = useRef<ResizeObserver | null>(null)
-  const renderedLogRef = useRef<{ key: string; logTextVersion: number; logTextEnd: number } | null>(null)
+  const terminalViews = useRef(new Map<string, MonitorTerminalView>())
+  const activeView = useRef<MonitorTerminalView | null>(null)
   const selectedTaskNameRef = useRef<string | null>(selectedTaskName)
   const selectedLogRef = useRef(selectedLog)
   const logOffsetRef = useRef(logOffset)
@@ -547,8 +572,6 @@ export default function MonitorPage() {
       liveLogFlushTimerRef.current = null
     }
     pendingLiveLogChunkRef.current = { key: '', chunks: [] }
-    renderedLogRef.current = null
-    terminalWriterRef.current?.replace('')
     setSidebarQuery('')
     setCompactSearchFocused(false)
     setExportMode(false)
@@ -731,7 +754,7 @@ export default function MonitorPage() {
     }
   }, [resizingMonitorSidebar])
 
-  useEffect(() => {
+  const createTerminalView = useCallback((key: string): MonitorTerminalView => {
     const term = new XTerminal({
       convertEol: true,
       cursorBlink: false,
@@ -798,6 +821,7 @@ export default function MonitorPage() {
     const fitAddon = new FitAddon()
     const searchAddon = new SearchAddon({ highlightLimit: TERMINAL_SEARCH_HIGHLIGHT_LIMIT })
     const searchResultsDisposable = searchAddon.onDidChangeResults(({ resultIndex, resultCount }) => {
+      if (term !== xtermRef.current) return
       terminalSearchResultsRef.current = { resultIndex, resultCount }
       if (!terminalSearchQueryRef.current) {
         return
@@ -815,61 +839,86 @@ export default function MonitorPage() {
     term.loadAddon(searchAddon)
 
     const writer = createTerminalLogWriter((text, done) => term.write(text, done))
-    terminalWriterRef.current = writer
-    xtermRef.current = term
-    fitAddonRef.current = fitAddon
-    searchAddonRef.current = searchAddon
+    return {
+      key, term, fit: fitAddon, search: searchAddon, writer, frame: null,
+      dispose() {
+        searchResultsDisposable.dispose()
+        writer.dispose()
+        term.dispose()
+      },
+    }
+  }, [notify])
 
+  const viewKey = JSON.stringify([
+    workspaceEpoch, workspaceKey, selectedTaskName, selectedTask?.task_identity ?? selectedTask?.dir,
+    requestedLog, requestedLog ? null : selectedTask?.run_index, !requestedLog && selectedTask?.status === 'queued',
+    logTailExpanded, logMatch ? logGeneration : null,
+  ])
+  const showingPreviousView = loading && Boolean(terminalViews.current.get(viewKey)?.frame?.file)
+
+  useLayoutEffect(() => {
+    const views = terminalViews.current
     return () => {
-      observerRef.current?.disconnect()
-      searchResultsDisposable.dispose()
-      writer.dispose()
-      term.dispose()
-      terminalWriterRef.current = null
+      for (const view of views.values()) view.dispose()
+      views.clear()
+      activeView.current = null
       xtermRef.current = null
+      terminalWriterRef.current = null
       fitAddonRef.current = null
       searchAddonRef.current = null
     }
-  }, [notify])
+  }, [workspaceEpoch, workspaceKey])
+
+  useLayoutEffect(() => {
+    const views = terminalViews.current
+    const container = termContainerRef.current
+    let next = views.get(viewKey)
+    const previous = activeView.current
+    if (previous && previous !== next) {
+      previous.term.element?.remove()
+      // Discard unfinished writes and oversized buffers instead of processing
+      // a large, invisible log after the user has already moved on.
+      if (!previous.frame || previous.writer.busy ||
+          (previous.term.buffer.normal.length + previous.term.buffer.alternate.length) * previous.term.cols > MAX_INACTIVE_CELLS) {
+        views.delete(previous.key)
+        previous.dispose()
+      }
+    }
+    if (container && terminalVisible) {
+      if (!next && !loading) next = createTerminalView(viewKey)
+      if (next && next !== previous) {
+        views.delete(viewKey)
+        views.set(viewKey, next)
+        if (!next.term.element) next.term.open(container)
+        else if (next.term.element.parentElement !== container) container.appendChild(next.term.element)
+        configureReadOnlyTerminalInput(next.term.textarea)
+        if (document.activeElement === container) next.term.focus()
+      }
+    }
+    activeView.current = next ?? null
+    xtermRef.current = next?.term ?? null
+    terminalWriterRef.current = next?.writer ?? null
+    fitAddonRef.current = next?.fit ?? null
+    searchAddonRef.current = next?.search ?? null
+    for (const [key, view] of views) {
+      if (views.size <= (next ? MAX_RECENT_MONITOR_LOGS : MAX_RECENT_MONITOR_LOGS - 1)) break
+      views.delete(key)
+      view.dispose()
+    }
+  }, [viewKey, terminalVisible, loading, createTerminalView])
 
   useEffect(() => {
     if (xtermRef.current) {
       xtermRef.current.options.scrollback = logMatch ? Math.max(monitorScrollback, 32 * 1024) : monitorScrollback
     }
-  }, [monitorScrollback, logMatch])
+  }, [monitorScrollback, logMatch, viewKey, loading])
 
   useEffect(() => {
-    if (!xtermRef.current) {
-      return
-    }
-    xtermRef.current.options.lineHeight = monitorLineHeight
-    const rafId = window.requestAnimationFrame(() => {
-      try {
-        fitAddonRef.current?.fit()
-      } catch {
-        // xterm can reject fitting while its container is between layouts.
-      }
-    })
-    return () => window.cancelAnimationFrame(rafId)
-  }, [monitorLineHeight])
-
-  useEffect(() => {
-    if (!terminalVisible) {
-      observerRef.current?.disconnect()
-      return
-    }
-
     const term = xtermRef.current
     const fitAddon = fitAddonRef.current
     const container = termContainerRef.current
     if (!term || !fitAddon || !container) return
-
-    if (!term.element) {
-      term.open(container)
-    } else if (term.element.parentElement !== container) {
-      container.appendChild(term.element)
-    }
-    configureReadOnlyTerminalInput(term.textarea)
+    term.options.lineHeight = monitorLineHeight
 
     const fitTerminal = () => {
       try {
@@ -879,47 +928,42 @@ export default function MonitorPage() {
       }
     }
 
-    const rafId = requestAnimationFrame(fitTerminal)
-    observerRef.current?.disconnect()
-
     const observer = new ResizeObserver(fitTerminal)
     observer.observe(container)
-    observerRef.current = observer
-
-    return () => {
-      cancelAnimationFrame(rafId)
-      observer.disconnect()
-    }
-  }, [terminalVisible])
+    return () => observer.disconnect()
+  }, [monitorLineHeight, viewKey, loading])
 
   const renderKey = `${workspaceKey}::${selectedTaskName ?? ''}::${selectedLog || ''}::${logGeneration}`
   const shouldShowNoLogPlaceholder = !loading && availableLogs.length === 0 && !selectedLog
 
   useEffect(() => {
-    const writer = terminalWriterRef.current
-    if (!writer) return
-
-    if (!selectedTaskName) {
+    const view = activeView.current
+    if (!view || loading) return
+    const { writer } = view
+    if (logError) {
       writer.replace('')
-      renderedLogRef.current = null
+      view.frame = null
       return
     }
 
-    const previous = renderedLogRef.current
+    const previous = view.frame
     const nextChunk = previous?.key === renderKey
       ? monitorLogAppendDelta(previous, { logContent, logTextVersion, logTextEnd })
       : null
     if (nextChunk !== null && writer.queuedChars + nextChunk.length <= MAX_MONITOR_LOG_CHARS) {
       writer.append(nextChunk)
-    } else {
+    } else if (!previous || logMatch || previous.file !== selectedLog || previous.identity !== logIdentity ||
+               previous.placeholder !== shouldShowNoLogPlaceholder || previous.text !== logContent) {
+      // An unchanged, revalidated view keeps its xterm buffer and selection.
       const preview = logMatch ? logContent : compactTerminalHistory(logContent)
       writer.replace(preview || (
         shouldShowNoLogPlaceholder ? '\x1b[2m  < NO LOG >\x1b[0m\r\n' : ''
       ))
     }
 
-    renderedLogRef.current = { key: renderKey, logTextVersion, logTextEnd }
-  }, [renderKey, selectedTaskName, logContent, logTextVersion, logTextEnd, shouldShowNoLogPlaceholder, logMatch])
+    view.frame = { key: renderKey, file: selectedLog, identity: logIdentity, text: logContent,
+      placeholder: shouldShowNoLogPlaceholder, logTextVersion, logTextEnd }
+  }, [renderKey, viewKey, loading, logError, selectedLog, logIdentity, logContent, logTextVersion, logTextEnd, shouldShowNoLogPlaceholder, logMatch])
 
   useEffect(() => {
     const term = xtermRef.current
@@ -1480,7 +1524,10 @@ export default function MonitorPage() {
     void selectTask(task.name, match)
       .catch(err => notify({ tone: 'error', title: t("Could not load task logs"), detail: errorMessage(err) }))
     termContainerRef.current?.scrollIntoView({ block: 'nearest' })
-    xtermRef.current?.focus()
+    window.requestAnimationFrame(() => {
+      if (xtermRef.current) xtermRef.current.focus()
+      else termContainerRef.current?.focus({ preventScroll: true })
+    })
   }, [exportMode, toggleExport, closeTerminalSearch, compactMonitorLayout, sidebarQuery, selectTask, notify])
 
   const handleTaskAction = useCallback(async (action: 'run' | 'cancel') => {
@@ -2069,13 +2116,15 @@ export default function MonitorPage() {
                 ref={termContainerRef}
                 className="monitor-terminal-shell h-full w-full"
                 role="region"
+                tabIndex={-1}
                 aria-label={t('Read-only logs for {{name}}', { name: selectedTask?.display_name ?? selectedTaskName })}
               />
               {loading && (
-                <div className="monitor-loading-overlay pointer-events-none absolute inset-0 z-10 flex items-center justify-center text-xs text-[#cbd5e1]" role="status">
+                <div className={clsx('pointer-events-none absolute z-10 flex text-xs text-[#cbd5e1]', showingPreviousView
+                  ? 'right-2 top-2' : 'monitor-loading-overlay inset-0 items-center justify-center')} role="status">
                   <span className="inline-flex items-center gap-2 rounded-md border border-[#303136] bg-[#18181b] px-3 py-2">
                     <LoaderCircle className="h-4 w-4 motion-safe:animate-spin" />
-                    {t("Loading log…")}
+                    {showingPreviousView ? t("Checking for new output…") : t("Loading log…")}
                   </span>
                 </div>
               )}

@@ -900,7 +900,7 @@ def test_react_monitor_uses_realtime_task_events_and_preserves_current_selection
 def test_react_monitor_writes_terminal_deltas_without_full_screen_repaint():
     source = FRONTEND_MONITOR.read_text(encoding="utf-8")
 
-    assert "renderedLogRef" in source
+    assert "const previous = view.frame" in source
     assert "monitorLogAppendDelta(previous, { logContent, logTextVersion, logTextEnd })" in source
     assert "writer.append(nextChunk)" in source
     assert "writer.queuedChars + nextChunk.length <= MAX_MONITOR_LOG_CHARS" in source
@@ -912,8 +912,8 @@ def test_react_monitor_supports_configurable_terminal_line_height():
 
     assert "const monitorLineHeight = resolveMonitorLineHeight(workspace?.settings)" in source
     assert "lineHeight: DEFAULT_MONITOR_LINE_HEIGHT" in source
-    assert "xtermRef.current.options.lineHeight = monitorLineHeight" in source
-    assert "fitAddonRef.current?.fit()" in source
+    assert "term.options.lineHeight = monitorLineHeight" in source
+    assert "fitAddon.fit()" in source
 
 
 def test_react_code_editor_focuses_from_blank_editor_area():

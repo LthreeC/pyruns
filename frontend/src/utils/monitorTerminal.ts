@@ -73,6 +73,7 @@ export function createTerminalLogWriter(write: (text: string, done: () => void) 
 
   return {
     get queuedChars() { return queuedChars },
+    get busy() { return writing || queue.length > 0 },
     append,
     replace(text: string) {
       // One chunk may already be in xterm. Nothing else from the old log should

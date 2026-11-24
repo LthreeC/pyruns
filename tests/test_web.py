@@ -5035,35 +5035,43 @@ def test_workspace_switch_waits_for_in_flight_workspace_read(tmp_path, monkeypat
     assert responses[0]["script_name"] == "main"
 
 
-def test_workspace_switch_waits_for_in_flight_log_read(tmp_path, monkeypatch):
+def test_slow_log_read_allows_another_selection_and_rejects_old_workspace(tmp_path, monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
     from pyruns.web import runtime as runtime_module
 
     workspace_a = _make_workspace(tmp_path, "main")
     workspace_b = _make_workspace(tmp_path, "alt")
     _add_task(workspace_a, "same-name", status="completed", log_text="workspace-a\n")
+    _add_task(workspace_a, "other", status="completed", log_text="other\n")
     _add_task(workspace_b, "same-name", status="completed", log_text="workspace-b\n")
     runtime = _build_runtime(workspace_a, owns_task_lifecycle=False)
     entered = threading.Event()
     release = threading.Event()
-    responses: list[dict] = []
     original_get_log_options = runtime_module.get_log_options
 
     def blocked_get_log_options(task_dir):
-        entered.set()
-        if not release.wait(5):
-            raise TimeoutError("log read test did not release")
+        if Path(task_dir) == workspace_a / TASKS_DIR / "same-name":
+            entered.set()
+            if not release.wait(5):
+                raise TimeoutError("log read test did not release")
         return original_get_log_options(task_dir)
 
     monkeypatch.setattr(runtime_module, "get_log_options", blocked_get_log_options)
-    _assert_workspace_switch_waits(
-        runtime,
-        workspace_b,
-        lambda: responses.append(runtime.get_task_logs("same-name", tail_lines=20)),
-        entered,
-        release,
-        "workspace changed while a log response was being assembled",
-    )
-    assert responses[0]["content"].splitlines() == ["workspace-a"]
+    try:
+        with ThreadPoolExecutor(2) as pool:
+            old = pool.submit(runtime.get_task_logs, "same-name", tail_lines=20)
+            try:
+                assert entered.wait(2)
+                other = pool.submit(runtime.get_task_logs, "other", tail_lines=20)
+                assert other.result(timeout=2)["content"].splitlines() == ["other"]
+                runtime.change_run_root(str(workspace_b))
+            finally:
+                release.set()
+            with pytest.raises(runtime_module.WorkspaceChangedError):
+                old.result(timeout=2)
+        assert runtime.get_task_logs("same-name", tail_lines=20)["content"].splitlines() == ["workspace-b"]
+    finally:
+        runtime.shutdown()
 
 
 def test_runtime_provider_refresh_uses_snapshot_without_blocking_workspace_switch(tmp_path, monkeypatch):

@@ -29,6 +29,7 @@ import type {
   RunComparison,
 } from './types'
 import { recordGpuWaitReceipt } from './utils/gpuWait'
+import { MAX_MONITOR_LOG_CHARS, MAX_RECENT_MONITOR_LOGS } from './utils/monitorSettings'
 
 const BASE = ''
 const WORKSPACE_METADATA_HEADERS = { 'X-Pyruns-Include-Templates': 'false' }
@@ -52,8 +53,6 @@ const workspaceChangedListeners = new Set<() => void>()
 let workspaceContext = { root: '' }
 // Keep only recently viewed history in this tab. Every reuse is checked by the server.
 const logPreviews = new Map<string, TaskLogs>()
-const MAX_PREVIEW_ENTRIES = 6
-const MAX_PREVIEW_CHARS = 8 * 1024 * 1024
 let notifiedWorkspaceContext: typeof workspaceContext | null = null
 let authorizationEpoch = 0
 let sessionRecoveryPromise: Promise<boolean> | null = null
@@ -463,13 +462,10 @@ export const getTaskLogs = async (name: string, options: {
   }
   if (signal?.aborted || context !== workspaceContext) return logs
   logPreviews.delete(url)
-  if (logs.preview_revision && logs.content.length <= MAX_PREVIEW_CHARS) {
+  if (logs.preview_revision && logs.content.length <= MAX_MONITOR_LOG_CHARS) {
     logPreviews.set(url, logs)
-    let chars = 0
-    for (const entry of logPreviews.values()) chars += entry.content.length
-    for (const [key, entry] of logPreviews) {
-      if (chars <= MAX_PREVIEW_CHARS && logPreviews.size <= MAX_PREVIEW_ENTRIES) break
-      chars -= entry.content.length
+    for (const key of logPreviews.keys()) {
+      if (logPreviews.size <= MAX_RECENT_MONITOR_LOGS) break
       logPreviews.delete(key)
     }
   }

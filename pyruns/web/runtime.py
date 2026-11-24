@@ -2015,7 +2015,11 @@ class PyrunsRuntime:
         renamed = str(result)
         return self.require_task(renamed, refresh=True, include_tracks=include_tracks)
 
-    @_with_stable_workspace
+    def _check_log_read_epoch(self, epoch: int) -> None:
+        with self._workspace_lock:
+            if epoch != self._workspace_epoch:
+                raise WorkspaceChangedError("Workspace changed while loading the log.")
+
     def get_task_logs(
         self,
         task_name: str,
@@ -2033,14 +2037,15 @@ class PyrunsRuntime:
         strict: bool = False,
     ) -> Dict[str, Any]:
         """Load a historical log chunk for the monitor page."""
-        if expected_workspace_root is not None:
-            current_root = os.path.normcase(os.path.abspath(self.root_dir))
-            expected_root = os.path.normcase(os.path.abspath(expected_workspace_root))
-            if current_root != expected_root:
-                raise WorkspaceChangedError("Workspace changed")
-        task = self.get_task(task_name, refresh=False, summary=True)
-        if task is None:
-            raise KeyError(task_name)
+        # Bind paths/settings under the lock. Directory scans and file reads
+        # on a slow mount must not serialize independent Monitor selections.
+        with self._workspace_lock:
+            self._check_expected_workspace(expected_workspace_root)
+            task = self.get_task(task_name, refresh=False, summary=True)
+            if task is None:
+                raise KeyError(task_name)
+            epoch = self._workspace_epoch
+            default_chunk = _int_setting(self.settings, "monitor_chunk_size", _cfg.DEFAULT_MONITOR_CHUNK_SIZE)
 
         task_dir = str(task["dir"])
         if expected_task_dir is not None:
@@ -2105,6 +2110,7 @@ class PyrunsRuntime:
                 selected_path = candidate
 
         if not selected_path:
+            self._check_log_read_epoch(epoch)
             return {
                 "task_name": task_name,
                 "selected_log": selected_name,
@@ -2147,13 +2153,7 @@ class PyrunsRuntime:
                 selected_identity = preview.identity or log_file_identity(selected_path, strict=strict)
                 preview_revision = preview.revision
             else:
-                byte_limit = tail_bytes
-                if byte_limit is None:
-                    byte_limit = _int_setting(
-                        self.settings,
-                        "monitor_chunk_size",
-                        _cfg.DEFAULT_MONITOR_CHUNK_SIZE,
-                    )
+                byte_limit = tail_bytes if tail_bytes is not None else default_chunk
                 tail_limit_bytes = min(MAX_MONITOR_LOG_TAIL_BYTES, max(1, int(byte_limit)))
                 content, new_offset = read_last_bytes(
                     selected_path, n_bytes=tail_limit_bytes, **({"strict": True} if strict else {}),
@@ -2164,13 +2164,7 @@ class PyrunsRuntime:
                     tail_truncated = False
                 tail_byte_limited = tail_truncated
         else:
-            byte_limit = chunk_size
-            if byte_limit is None:
-                byte_limit = _int_setting(
-                    self.settings,
-                    "monitor_chunk_size",
-                    _cfg.DEFAULT_MONITOR_CHUNK_SIZE,
-                )
+            byte_limit = chunk_size if chunk_size is not None else default_chunk
             requested_offset = max(0, offset)
             try:
                 selected_size = os.path.getsize(selected_path)
@@ -2191,6 +2185,7 @@ class PyrunsRuntime:
             )
             file_size = max(selected_size, new_offset)
 
+        self._check_log_read_epoch(epoch)
         return {
             "task_name": task_name,
             "selected_log": selected_name,
