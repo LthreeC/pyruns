@@ -964,6 +964,99 @@ def test_dev_server_interrupt_stops_and_reaps_process_tree(monkeypatch):
     assert commands.signal.getsignal(commands.signal.SIGINT) == original_sigint_handler
 
 
+@pytest.mark.parametrize("fault", ["one-empty-read", "pruned-and-unreadable", "stale-terminal"])
+def test_detached_runner_preserves_live_child_when_metadata_is_unreliable(tmp_path, monkeypatch, fault):
+    from pyruns._config import ENV_KEY_ROOT
+    from pyruns.cli import detached_runner
+    from pyruns.core.task_manager import TaskManager
+    from pyruns.utils.info_io import load_task_metadata
+    from pyruns.utils.process_utils import process_identity_matches
+
+    workspace = Path(bootstrap_shell_workspace(str(tmp_path / "_pyruns_")))
+    monkeypatch.setenv(ENV_KEY_ROOT, str(workspace))
+    ready = tmp_path / "child-ready"
+    release = tmp_path / "child-release"
+    script = tmp_path / "workload.py"
+    script.write_text(
+        "from pathlib import Path\n"
+        "import time\n"
+        "deadline = time.monotonic() + 15\n"
+        "Path('child-ready').touch()\n"
+        "while not Path('child-release').exists():\n"
+        "    if time.monotonic() >= deadline:\n"
+        "        raise SystemExit(99)\n"
+        "    time.sleep(0.02)\n"
+        "print('workload finished', flush=True)\n",
+        encoding="utf-8",
+    )
+    name = "metadata-loss"
+    task = TaskGenerator(root_dir=str(workspace / TASKS_DIR)).create_shell_task(
+        name, _render_argument_command([sys.executable, str(script)], str(workspace)),
+        exact_name=True, workdir=str(tmp_path),
+    )
+    token = "a" * 32
+    _write_test_submission(workspace, token, [name], [1])
+    monkeypatch.setattr(detached_runner, "_parse_args", lambda: SimpleNamespace(
+        workspace=str(workspace), jobs=1, submission_token=token,
+    ))
+
+    manager = None
+    injected = False
+    polled_again = False
+
+    def capture_manager(**kwargs):
+        nonlocal manager
+        manager = TaskManager(**kwargs)
+        return manager
+
+    def read_task_state(task_dir):
+        nonlocal injected, polled_again
+        if injected:
+            if not polled_again:
+                polled_again = True
+                release.touch()
+            if fault == "pruned-and-unreadable":
+                return {}
+            return load_task_metadata(task_dir)
+
+        info = load_task_metadata(task_dir)
+        pid = (info.get("pids") or [None])[-1]
+        created_at = (info.get("pid_create_times") or [None])[-1]
+        if not (ready.is_file() and info.get("status") == "running" and pid and created_at):
+            return info
+        assert process_identity_matches(pid, created_at)
+        injected = True
+        if fault == "pruned-and-unreadable":
+            # Model a concurrent disk refresh discarding the display registry.
+            assert manager is not None
+            with manager._lock:
+                manager.tasks.clear()
+                manager._rebuild_indexes_locked()
+                manager._clear_running_locked(name)
+        if fault == "stale-terminal":
+            return {**info, "status": "failed", "run_statuses": ["failed"]}
+        return {}
+
+    monkeypatch.setattr(detached_runner, "TaskManager", capture_manager)
+    monkeypatch.setattr(detached_runner, "load_task_metadata", read_task_state)
+    try:
+        result = detached_runner.main()
+    finally:
+        release.touch(exist_ok=True)
+
+    assert injected
+    assert result == 0
+    assert polled_again
+    info = load_task_metadata(task["dir"])
+    assert info["status"] == "completed"
+    assert info["run_statuses"] == ["completed"]
+    assert info["exit_codes"] == [0]
+    log_dir = Path(task["dir"]) / "run_logs"
+    assert "workload finished" in (log_dir / "run1.log").read_text(encoding="utf-8")
+    error_log = log_dir / "error.log"
+    assert not error_log.exists() or "reason=system_shutdown" not in error_log.read_text(encoding="utf-8")
+
+
 def test_detached_runner_exits_when_claimed_task_state_disappears(tmp_path, monkeypatch):
     from pyruns.cli import detached_runner
 
@@ -990,6 +1083,9 @@ def test_detached_runner_exits_when_claimed_task_state_disappears(tmp_path, monk
             assert expected_run_indices == {"lost": 1}
             assert gpu_wait_rule == "off"
             return ["lost"] if names == ["lost"] else []
+
+        def local_submission_status(self, *_args, **_kwargs):
+            return None
 
         def shutdown(self):
             events.append("shutdown")
@@ -1059,6 +1155,9 @@ def test_detached_runner_observes_submitted_run_after_new_rerun_starts(
             assert expected_run_indices == {"repeat": 1}
             assert gpu_wait_rule == "off"
             return ["repeat"]
+
+        def local_submission_status(self, *_args, **_kwargs):
+            return None
 
         def shutdown(self):
             events.append("shutdown")
@@ -1139,6 +1238,9 @@ def test_detached_runner_settled_task_does_not_abort_or_follow_other_attempts(
         def start_batch_tasks(self, selected, **_kwargs):
             assert _kwargs["gpu_wait_rule"] == "off"
             return selected
+
+        def local_submission_status(self, *_args, **_kwargs):
+            return None
 
         def shutdown(self):
             events.append("shutdown")

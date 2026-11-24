@@ -399,11 +399,14 @@ def main() -> int:
                 status = _submitted_run_status(
                     info, run_index, expected_runner_id=expected_runner_id, expected_attempt_id=token,
                 )
-                if status not in _ACTIVE_STATUSES:
-                    # An unstarted queue cancellation has no realized run slot.
-                    # Lost identities also fail this task, while the remaining
-                    # submitted tasks keep running under this runner's ownership.
-                    settled[name] = status
+                if status in _ACTIVE_STATUSES:
+                    continue
+                # A missing or stale snapshot cannot end a run whose local worker
+                # is still active. Returning here would trigger shutdown cleanup.
+                local_status = tm.local_submission_status(name, run_index, attempt_id=token)
+                if local_status in _ACTIVE_STATUSES:
+                    continue
+                settled[name] = status or local_status
             if len(settled) == len(names):
                 if abort_requested(abort_file, token=token):
                     return _stop_and_report(

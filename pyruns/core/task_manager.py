@@ -221,6 +221,7 @@ class TaskManager:
         self.runner_host = local_runner_host()
         token = str(runner_token or uuid.uuid4().hex[:8])
         self._submission_attempt_id = str(runner_token or "") or None
+        self._submission_worker_states: dict[tuple[str, int], str] = {}
         self.runner_id = f"{self.runner_host}:{os.getpid()}:{token}"
         self.lease_seconds = DEFAULT_RUNNER_LEASE_SECONDS
         self._last_queued_lease_heartbeat = 0.0
@@ -2221,6 +2222,27 @@ class TaskManager:
         cls._trim_run_slots(cleaned, cls._realized_run_slot_count(cleaned))
         return cleaned
 
+    def local_submission_status(self, task_name: str, run_index: int, *, attempt_id: str) -> str | None:
+        """Report this submission's worker or queue state independently of the current disk read."""
+        if attempt_id != self._submission_attempt_id:
+            return None
+
+        # Serialize with dispatch so a refresh cannot hide a worker between
+        # claiming the run and recording its submission.
+        with self._shutdown_lock, self._lock:
+            worker_status = self._submission_worker_states.get((task_name, run_index))
+            if worker_status is not None:
+                return worker_status
+            task = self._tasks_by_name.get(task_name)
+            if (
+                task and self._is_current_runner(task) and task_attempt_matches(task, attempt_id)
+                and active_task_run_index(task) == run_index
+            ):
+                status = task.get("status")
+                if status == "queued" or (status == "running" and task_name in self._running_ids):
+                    return status
+        return None
+
     def start_batch_tasks(
         self,
         task_ids: List[str],
@@ -4043,6 +4065,10 @@ class TaskManager:
                 self.max_workers,
                 len(self._running_ids),
             )
+            if attempt_id is not None and attempt_id == self._submission_attempt_id:
+                # Record the worker before submission_ready releases it.
+                with self._lock:
+                    self._submission_worker_states[(target["name"], run_index)] = "running"
             submission_accepted = True
         except Exception as exc:
             self._finalize_task_attempt(
@@ -4113,24 +4139,40 @@ class TaskManager:
         expected_attempt_id: str | None = None,
     ) -> None:
         """Handle worker completion and pull final state from disk."""
+        track_submission = (
+            expected_runner_id == self.runner_id and expected_attempt_id is not None
+            and expected_attempt_id == self._submission_attempt_id
+        )
         worker_error = None
+        worker_status = "failed"
         try:
             exc = future.exception()
             if exc:
                 worker_error = exc
                 logger.error("Worker for %s raised: %s", task_id, exc)
+            elif track_submission:
+                result = future.result()
+                if isinstance(result, dict) and result.get("status") in ("completed", "failed", "cancelled"):
+                    worker_status = result["status"]
         except CancelledError as exc:
             worker_error = exc
         except Exception:
             pass
 
-        self._finalize_task_attempt(
-            task_id,
-            expected_runner_id=expected_runner_id,
-            expected_run_index=expected_run_index,
-            expected_attempt_id=expected_attempt_id,
-            error=worker_error,
-        )
+        try:
+            self._finalize_task_attempt(
+                task_id,
+                expected_runner_id=expected_runner_id,
+                expected_run_index=expected_run_index,
+                expected_attempt_id=expected_attempt_id,
+                error=worker_error,
+            )
+        finally:
+            if track_submission:
+                with self._lock:
+                    key = (task_id, expected_run_index)
+                    if key in self._submission_worker_states:
+                        self._submission_worker_states[key] = worker_status
 
     def _finalize_task_attempt(
         self,
