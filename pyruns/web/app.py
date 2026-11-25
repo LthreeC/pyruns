@@ -34,6 +34,7 @@ from starlette.websockets import WebSocketState
 from pyruns import __version__
 from pyruns._config import (
     DEFAULT_UI_PORT,
+    ENV_KEY_CLI_TERMINAL_RUNTIME,
     MAX_MONITOR_CHUNK_SIZE,
     MAX_MONITOR_SCROLLBACK,
     QUEUE_LOG_FILENAME,
@@ -692,6 +693,8 @@ def create_app(
     update_coordinator: UiUpdateCoordinator | None = None,
 ) -> FastAPI:
     """Create the Pyruns FastAPI app."""
+    # A UI started inside a tracked CLI task still uses the workspace Runtime settings.
+    os.environ.pop(ENV_KEY_CLI_TERMINAL_RUNTIME, None)
     get_follow_shell_runtime()
     app = FastAPI(title="Pyruns API", version=__version__)
     monitor_log_positions = _MonitorLogPositions()

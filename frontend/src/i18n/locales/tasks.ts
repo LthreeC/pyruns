@@ -205,7 +205,7 @@ export default {
   'Replace Notes': '覆盖笔记',
   'Save Notes': '保存笔记',
   'Environment Variables': '环境变量',
-  'Task overrides applied on the next run.': '任务覆盖设置将在下次运行时生效。',
+  'These values override Runtime Env on the next run. The script can change them.': '下次启动时，任务变量覆盖 Runtime Env。脚本仍可重新赋值。',
   'Key': '变量名',
   'Value': '值',
   'Actions': '操作',

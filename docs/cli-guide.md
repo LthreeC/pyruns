@@ -220,7 +220,7 @@ set -euo pipefail
 
 REPO_DIR=${TRAIN_REPO_DIR:-"$PWD"}
 CONFIG="$REPO_DIR/configs/train.yaml"
-export CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0,1}
+export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES-0,1}"
 cd "$REPO_DIR"
 
 python validate.py --config "$CONFIG"
@@ -228,6 +228,8 @@ python train.py --config "$CONFIG" \
   --epochs 10 --lr 0.001
 BASH
 ```
+
+这里的 `0,1` 只在启动环境未设置 `CUDA_VISIBLE_DEVICES` 时生效。通过 `-e` 传入的卡号、调度器分配的卡号，以及显式设置的空值都会保留。
 
 需要完整记录命令中的显式参数、变量赋值、引号、续行和换行时，优先使用 `--stdin`，
 尤其适合由自动化程序或 AI agent 提交长命令。它保存收到的脚本文本，不会自动保存运行时
@@ -296,6 +298,8 @@ WSL 使用 Linux 路径和程序，例如 Windows 的 `D:\data` 在默认挂载�
 外部程序失败时检查 `$LASTEXITCODE` 并 `exit $LASTEXITCODE`；cmd 需检查 `errorlevel` 并退出。
 
 ### 环境变量
+
+直接运行 `pyr exec` 时，脚本继承调用终端的环境，在脚本中执行的赋值对后续命令生效。网页侧栏的 Runtime Env 只用于网页提交。用 `pyr run` 重跑已有任务时，会在当前终端环境上应用该任务保存的 Env。
 
 少量变量用 `-e` / `--env` 后接一个或多个 `KEY=VALUE`，再用 `-c` 提供完整命令；
 `-e` 也可以按变量组重复使用：

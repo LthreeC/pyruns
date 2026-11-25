@@ -22,6 +22,7 @@ import pyruns.core.task_manager as task_manager_module
 from pyruns._config import (
     CONFIG_DEFAULT_FILENAME,
     CONFIG_FILENAME,
+    ENV_KEY_CLI_TERMINAL_RUNTIME,
     ERROR_LOG_FILENAME,
     POWERSHELL_CONFIG_FILENAME,
     DEFAULT_ROOT_NAME,
@@ -1963,7 +1964,8 @@ def test_task_manager_on_task_done_clears_gpu_schedule_state(tmp_path):
     assert task["name"] not in manager._batch_running_ids
 
 
-def test_task_manager_gpu_auto_respects_existing_cuda_visible_devices_in_task_env(tmp_path):
+def test_task_manager_gpu_auto_respects_existing_cuda_visible_devices_in_task_env(tmp_path, monkeypatch):
+    monkeypatch.delenv(ENV_KEY_CLI_TERMINAL_RUNTIME, raising=False)
     workspace = tmp_path / DEFAULT_ROOT_NAME / "train"
     tasks_dir = workspace / TASKS_DIR
     tasks_dir.mkdir(parents=True)
@@ -2007,7 +2009,7 @@ def test_task_manager_gpu_auto_respects_existing_cuda_visible_devices_in_task_en
 
     assert target is not None
     assert target["_gpu_assignment"]["gpu_ids"] == [1, 2]
-    assert target["_scheduled_env"] == {"PYRUNS_ASSIGNED_GPUS": "1,2"}
+    assert target["_scheduled_env"] == {"PYRUNS_ASSIGNED_GPUS": "1,2", "CUDA_VISIBLE_DEVICES": "1,2"}
 
 
 def test_task_manager_gpu_auto_times_out_waiting_tasks_and_writes_logs(tmp_path):

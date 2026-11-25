@@ -112,7 +112,9 @@ shell_executable: {SETTINGS_DEFAULTS.get("shell_executable")}
 python_executable: {SETTINGS_DEFAULTS.get("python_executable")}             # absolute Python path; empty = pyruns server Python
 conda_env: {SETTINGS_DEFAULTS.get("conda_env")}                     # conda env name; applies to Python and shell tasks
 conda_executable: {SETTINGS_DEFAULTS.get("conda_executable")}           # conda executable used by conda_env
-global_env: {{}}                       # workspace env overrides; task env overrides this
+# Web tasks inherit the server process environment, then apply global_env and task Env in order.
+# A script can reassign inherited values for its child processes.
+global_env: {{}}
 
 # GPU scheduler
 gpu_scheduler_enabled: {SETTINGS_DEFAULTS.get("gpu_scheduler_enabled")}             # false = run normally; true = wait for eligible local GPUs

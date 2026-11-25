@@ -1126,7 +1126,7 @@ export default function RuntimePanel({ open, left, section, onClose }: RuntimePa
         {envVisited && (
           <section hidden={activePage !== 'env'} id="runtime-panel-env" role="tabpanel" aria-labelledby="runtime-tab-env" className="space-y-3">
             <div className="flex flex-wrap items-center justify-between gap-2">
-              <h3 className="text-xs font-medium text-txt-primary">{t('Workspace environment variables')}</h3>
+              <h3 className="text-xs font-medium text-txt-primary">{t('Workspace environment defaults')}</h3>
               <select
                 value=""
                 aria-label={t('Insert environment variable')}

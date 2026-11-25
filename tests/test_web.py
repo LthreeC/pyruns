@@ -37,7 +37,7 @@ from pyruns._config import (
     WORKSPACE_KIND_SCRIPT,
     WORKSPACE_KIND_SHELL,
 )
-from pyruns.core.executor import _build_command, _resolve_python_runtime
+from pyruns.core.executor import _build_command, _prepare_env, _resolve_python_runtime
 from pyruns.core.task_manager import TaskManager, active_task_run_index
 from pyruns.utils.runner_device import local_runner_device
 from pyruns.utils.config_utils import save_yaml
@@ -2339,7 +2339,9 @@ def test_runtime_update_persists_runtime_and_global_env(tmp_path, monkeypatch):
         "envs": [],
         "error": "",
     })
-    monkeypatch.delenv(ENV_KEY_CLI_TERMINAL_RUNTIME, raising=False)
+    # The UI can itself be launched from a tracked CLI task.
+    monkeypatch.setenv(ENV_KEY_CLI_TERMINAL_RUNTIME, "1")
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "7")
     client = TestClient(create_app(runtime))
 
     response = client.patch(
@@ -2362,6 +2364,7 @@ def test_runtime_update_persists_runtime_and_global_env(tmp_path, monkeypatch):
 
     task_dir = workspace / TASKS_DIR / "eval_task"
     task_dir.mkdir(parents=True)
+    assert _prepare_env(task_dir=str(task_dir))["CUDA_VISIBLE_DEVICES"] == "0"
     python_runtime = _resolve_python_runtime(str(task_dir))
     assert python_runtime == {
         "mode": "conda",

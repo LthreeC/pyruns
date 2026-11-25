@@ -225,9 +225,11 @@ gpu_scheduler_respect_cuda_visible_devices: true
 gpu_scheduler_require_same_gpu_model: false
 ```
 
-`global_env` 的覆盖顺序为：终端环境 < `global_env` < 任务 Env。UI 里的 Workspace Env 文本支持 `KEY=value`、`export KEY=value`、单双引号和注释；不会执行命令替换、变量展开或任意 shell 代码。
+网页启动任务时，先继承 `pyr ui` 的进程环境，再依次应用 Runtime 的 `global_env` 和 Details 中的任务 Env。GPU 调度开启时，本轮分配的 `CUDA_VISIBLE_DEVICES` 随启动环境传入脚本。脚本里的显式赋值在执行到该行时生效。
 
-直接用 CLI 运行任务时，例如 `pyr -w train run baseline`，会继承当前终端环境；Web UI 的 Runtime / Workspace Env 设置只影响 UI 发起的任务运行。CLI 只接受精确任务名，不接受序号。
+Env 编辑器支持 `KEY=value`、`export KEY=value`、单双引号和注释，变量值按字面保存。需要 Bash 默认值时，把 `export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES-4}"` 写在脚本里。只有外层完全未设置该变量时才使用 `4`，显式空值会保留。
+
+直接使用 CLI 时，基础值来自调用终端。`pyr exec` 可用 `-e` 或 `--env-file` 覆盖同名变量。`pyr run` 重跑时应用该任务已保存的 Env。两者随后执行脚本。网页 Runtime 的 `global_env` 只用于网页启动的任务。
 
 ## 7. 重点配置项
 

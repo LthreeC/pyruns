@@ -867,7 +867,7 @@ export default function TaskDetailPanel({ task, onClose, onTaskUpdated, onRefres
             <div className="flex flex-col gap-3">
               <div className="space-y-1">
                 <h3 className="text-sm font-semibold text-txt-primary">{t("Environment Variables")}</h3>
-                <p className="text-xs leading-5 text-txt-secondary">{t("Task overrides applied on the next run.")}</p>
+                <p className="text-xs leading-5 text-txt-secondary">{t("These values override Runtime Env on the next run. The script can change them.")}</p>
               </div>
 
               {envPairs.length > 0 && (

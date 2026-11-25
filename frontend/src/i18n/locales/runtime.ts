@@ -3,7 +3,7 @@ export default {
   'Python executable': 'Python 可执行文件',
   'Insert variable': '插入变量',
   'Insert environment variable': '插入环境变量',
-  'Workspace environment variables': '工作区环境变量',
+  'Workspace environment defaults': '工作区默认环境变量',
   'Wait for GPUs': '等待 GPU 就绪',
   'Refresh GPU preview': '刷新 GPU 预览',
   'Close GPU scheduling': '关闭 GPU 调度',

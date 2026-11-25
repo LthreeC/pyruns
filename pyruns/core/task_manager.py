@@ -36,8 +36,9 @@ from pyruns._config import (
     TASKS_DIR,
     TRASH_DIR,
 )
-from pyruns.core.executor import _load_workspace_global_env, run_task_worker
+from pyruns.core.executor import _cli_terminal_runtime_enabled, _load_workspace_global_env, run_task_worker
 from pyruns.core.gpu_scheduler import (
+    CUDA_VISIBLE_DEVICES,
     GpuAssignment,
     GpuDecision,
     GpuResourceScheduler,
@@ -3917,8 +3918,12 @@ class TaskManager:
                                 wait_logs.append((current, lines))
                             self._recompute_processing_flag_locked()
                         else:
-                            assignment = dataclasses.replace(decision.assignment, run_index=run_index)
-                            current["_scheduled_env"] = dict(assignment.env)
+                            launch_env = dict(decision.assignment.env)
+                            if not _cli_terminal_runtime_enabled():
+                                # Runtime Env may change between a web reservation and process launch.
+                                launch_env[CUDA_VISIBLE_DEVICES] = decision.assignment.cuda_visible_devices
+                            assignment = dataclasses.replace(decision.assignment, run_index=run_index, env=launch_env)
+                            current["_scheduled_env"] = launch_env
                             current["_gpu_assignment"] = self._gpu_assignment_to_dict(assignment)
                             current["status"] = "running"
                             current["run_index"] = run_index

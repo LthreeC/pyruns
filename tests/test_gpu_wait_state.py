@@ -5,10 +5,12 @@ import time
 import pytest
 
 from pyruns._config import DEFAULT_ROOT_NAME, ENV_KEY_CLI_TERMINAL_RUNTIME
+from pyruns.core.executor import _prepare_env
 from pyruns.core.gpu_scheduler import GpuDevice, GpuResourceScheduler, GpuSchedulerConfig
 from pyruns.core.task_generator import TaskGenerator
 from pyruns.core.task_manager import TaskManager
 from pyruns.utils.info_io import load_task_info, update_task_info
+from pyruns.utils.settings import save_settings_for_root
 
 
 class StaticGpuProvider:
@@ -48,27 +50,32 @@ def _create_manager_with_task(tmp_path, monkeypatch, *, config: GpuSchedulerConf
 
 
 @pytest.mark.parametrize(
-    ("workspace_device", "task_device", "expected_device"),
+    ("cli", "workspace_device", "task_device", "expected_mask"),
     [
-        ("1", None, 1),
-        ("0", "1", 1),
+        (False, None, None, "0"),
+        (False, "1", None, "1"),
+        (False, "0", "1", "1"),
+        (False, "MIG-GPU-1/0/1", None, "MIG-GPU-1/0/1"),
+        (True, "1", None, "0"),
+        (True, "0", "1", "1"),
     ],
 )
 def test_gpu_scheduler_respects_workspace_and_task_cuda_visible_devices(
     tmp_path,
     monkeypatch,
+    cli,
     workspace_device,
     task_device,
-    expected_device,
+    expected_mask,
 ):
-    monkeypatch.delenv(ENV_KEY_CLI_TERMINAL_RUNTIME, raising=False)
+    monkeypatch.setenv(ENV_KEY_CLI_TERMINAL_RUNTIME, "1" if cli else "0")
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "0")
+    monkeypatch.delenv("PYRUNS_TEST_RUN_TAG", raising=False)
     workspace = tmp_path / DEFAULT_ROOT_NAME / "main"
     tasks_dir = workspace / "tasks"
     tasks_dir.mkdir(parents=True)
-    (workspace.parent / "_pyruns_settings.yaml").write_text(
-        f"global_env:\n  CUDA_VISIBLE_DEVICES: '{workspace_device}'\n",
-        encoding="utf-8",
-    )
+    workspace_env = {"CUDA_VISIBLE_DEVICES": workspace_device} if workspace_device else {}
+    save_settings_for_root(str(workspace), {"global_env": workspace_env})
     task = TaskGenerator(root_dir=str(tasks_dir)).create_task("env-gpu", {"lr": 0.1})
     manager = TaskManager(
         tasks_dir=str(tasks_dir),
@@ -105,8 +112,17 @@ def test_gpu_scheduler_respects_workspace_and_task_cuda_visible_devices(
 
     assert target is not None
     assert run_index == 1
-    assert target["_gpu_assignment"]["gpu_ids"] == [expected_device]
-    assert target["_scheduled_env"] == {"PYRUNS_ASSIGNED_GPUS": str(expected_device)}
+    assert target["_gpu_assignment"]["cuda_visible_devices"] == expected_mask
+    expected_id = "1" if expected_mask.startswith("MIG-") else expected_mask
+    assert target["_gpu_assignment"]["gpu_ids"] == [int(expected_id)]
+
+    # A Runtime edit between reservation and spawn applies to ordinary variables.
+    # The child must still inherit the CUDA mask that was checked for this run.
+    save_settings_for_root(str(workspace), {"global_env": {"CUDA_VISIBLE_DEVICES": "4", "PYRUNS_TEST_RUN_TAG": "new"}})
+    launch_env = _prepare_env({**target["env"], **target["_scheduled_env"]}, task_dir=task["dir"])
+    assert launch_env.get("PYRUNS_TEST_RUN_TAG") == (None if cli else "new")
+    assert launch_env["CUDA_VISIBLE_DEVICES"] == expected_mask
+    assert launch_env["PYRUNS_ASSIGNED_GPUS"] == expected_id
 
 
 def test_gpu_wait_state_is_persisted_and_timeout_survives_manager_restart(tmp_path, monkeypatch):
