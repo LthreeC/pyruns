@@ -5355,6 +5355,71 @@ def test_web_main_shutdowns_runtime_after_uvicorn_returns(monkeypatch):
     assert events == ["run", "shutdown"]
 
 
+@pytest.mark.parametrize("stall_on_startup", [True, False], ids=["startup", "heartbeat"])
+def test_ui_serves_logs_while_shared_update_lock_does_not_return(tmp_path, monkeypatch, stall_on_startup):
+    from pyruns.web import self_update
+
+    workspace = _make_workspace(tmp_path, "main")
+    _add_task(workspace, "finished", status="completed", log_text="visible during the outage\n")
+    _add_task(workspace, "pending")
+    runtime = _build_runtime(workspace, owns_task_lifecycle=False)
+    runtime.detached_task_runs = True
+    coordinator = self_update.UiUpdateCoordinator(
+        lambda: None, shared=True, isolated_upgrades=True, current_version=__version__,
+        state_dir=str(tmp_path / "coordination"),
+    )
+    store = coordinator._store
+    assert store is not None
+    original_try = store._try_native_lock
+    stall, entered, recover = threading.Event(), threading.Event(), threading.Event()
+    if stall_on_startup:
+        stall.set()
+
+    def wait_for_server_reply(fd):
+        if stall.is_set():
+            entered.set()
+            assert recover.wait(timeout=8), "simulated NFS LOCK never released"
+        return original_try(fd)
+
+    def wait_for_support(supported):
+        deadline = time.monotonic() + 4
+        while coordinator.supported != supported and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert coordinator.supported == supported
+
+    monkeypatch.setattr(store, "_try_native_lock", wait_for_server_reply)
+    monkeypatch.setattr(self_update, "UPDATE_HEARTBEAT_SECONDS", 0.05)
+    monkeypatch.setattr(self_update, "SHARED_PROBE_WAIT_SECONDS", 0.2)
+    try:
+        with TestClient(create_app(runtime, update_coordinator=coordinator)) as client:
+            try:
+                if not stall_on_startup:
+                    wait_for_support(True)
+                    stall.set()
+                assert entered.wait(timeout=4)
+                wait_for_support(False)
+                state = client.get("/api/system/info").json()
+                assert state["restart_supported"] and not state["update_supported"]
+                assert state["update_state"] == "unavailable"
+                assert "has not responded" in state["update_unavailable_reason"]
+                assert client.get("/api/workspace").json()["workspace_ready"]
+                logs = client.get("/api/tasks/finished/logs?log_file_name=run1.log").json()
+                assert logs["content"] == "visible during the outage\n"
+                assert client.post("/api/system/update").status_code == 503
+                response = client.post("/api/tasks/pending/run")
+                assert response.status_code == 503
+                assert "Could not coordinate this task start" in response.json()["detail"]
+                assert load_task_info(str(workspace / TASKS_DIR / "pending"))["status"] == "pending"
+                assert not recover.is_set()
+            finally:
+                recover.set()
+            wait_for_support(True)
+            assert client.get("/api/system/info").json()["update_supported"]
+    finally:
+        coordinator.close()
+        runtime.shutdown()
+
+
 def test_web_main_replaces_idle_server_with_updater_after_shutdown(monkeypatch, tmp_path):
     from pyruns.web import app as web_app
 

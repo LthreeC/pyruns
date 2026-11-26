@@ -48,6 +48,8 @@ PYPI_MAX_RESPONSE_BYTES = 1_048_576
 UPDATE_PARTICIPANT_WAIT_SECONDS = 60.0
 UPDATE_STATUS_REPORT_SECONDS = 5.0
 SCHEDULED_OPERATION_RETRY_SECONDS = 10.0
+SHARED_PROBE_WAIT_SECONDS = 1.0
+SHARED_COORDINATION_PENDING = "Shared Pyruns update coordination has not responded yet."
 PIP_UPGRADE_TIMEOUT_SECONDS = 300.0
 COORDINATED_UPDATE_WAIT_SECONDS = 420.0
 LOCAL_RELEASE_WAIT_SECONDS = 60.0
@@ -98,6 +100,8 @@ class UiUpdateCoordinator:
         self._shutdown_callback = shutdown_callback
         self._lock = threading.RLock()
         self._instance_lock = threading.Lock()
+        self._shared_probe_lock = threading.Lock()
+        self._shared_probe_at: float | None = None
         self._requested = False
         self._shutdown_triggered = False
         self._runtime: Any = None
@@ -115,6 +119,7 @@ class UiUpdateCoordinator:
         self._store = CoordinationStore(state_dir) if shared else None
         self._coordination_error = ""
         self._coordination_degraded = False
+        self._background_attach = False
         self._stop = threading.Event()
         self._monitor: threading.Thread | None = None
         self._next_version_check = 0.0
@@ -122,7 +127,16 @@ class UiUpdateCoordinator:
 
     @property
     def supported(self) -> bool:
-        return self._store is None or not self._coordination_error
+        return not self.coordination_issue
+
+    @property
+    def coordination_issue(self) -> str:
+        if self._store is None:
+            return ""
+        probe_at = self._shared_probe_at
+        if probe_at is not None and time.monotonic() - probe_at >= SHARED_PROBE_WAIT_SECONDS:
+            return SHARED_COORDINATION_PENDING
+        return self._coordination_error
 
     @property
     def requested(self) -> bool:
@@ -296,32 +310,59 @@ class UiUpdateCoordinator:
                 else "follower"
             )
 
-    def attach(self, runtime: Any) -> None:
+    def attach(self, runtime: Any, *, background: bool = False) -> None:
         """Register a production UI and begin watching shared update state."""
 
         self._runtime = runtime
         if self._store is None or self._monitor is not None:
             return
+        self._background_attach = background
+        if background:
+            # LOCK_NB only bounds contention after the filesystem has replied.
+            # A remote lock RPC must not delay startup or block monitoring.
+            self._coordination_error = SHARED_COORDINATION_PENDING
+        else:
+            self._register_shared_instance(self._store)
+        if not self._coordination_degraded:
+            self._start_monitor()
+
+    @contextmanager
+    def _locked_store(self, *, observe: bool = False) -> Iterator[CoordinationStore]:
+        store = self._store
+        assert store is not None
+        if observe:
+            self._shared_probe_lock.acquire()
+            self._shared_probe_at = time.monotonic()
+        elif not self._shared_probe_lock.acquire(timeout=SHARED_PROBE_WAIT_SECONDS):
+            raise UpdateCoordinationError(SHARED_COORDINATION_PENDING)
         try:
-            self._store.ensure()
+            with store.locked():
+                yield store
+        finally:
+            if observe:
+                self._shared_probe_at = None
+            self._shared_probe_lock.release()
+
+    def _register_shared_instance(self, store: CoordinationStore) -> None:
+        try:
             active_count, restart_active_count = self._serving_counts()
-            with self._store.locked():
-                request = self._store.active_request_locked(recover=True)
-                if self._store.request_is_isolated(request):
+            with self._locked_store(observe=True):
+                if self._stop.is_set():
+                    return
+                request = store.active_request_locked(recover=True)
+                if store.request_is_isolated(request):
                     request = None
-                if request is not None:
-                    self._join_request(request)
                 self._write_instance(
                     phase="draining" if request is not None else "serving",
                     active_count=active_count,
                     restart_active_count=restart_active_count,
-                    request_id=self._request_id,
+                    request_id=str((request or {}).get("request_id") or ""),
                 )
         except (OSError, UpdateCoordinationError, ValueError) as exc:
-            self._coordination_error = str(exc)
+            self._coordination_error = str(exc) or "Shared Pyruns update coordination is unavailable."
             if isinstance(exc, OSError) and _coordination_write_is_denied(exc):
                 try:
-                    request = self._store.read_request_locked(
+                    request = store.read_request_locked(
                         strict=True,
                         allow_missing=True,
                     )
@@ -332,16 +373,20 @@ class UiUpdateCoordinator:
                     )
                 if (
                     request is not None
-                    and self._store.request_is_active(request)
+                    and store.request_is_active(request)
                 ):
                     self._coordination_degraded = False
                 elif self._coordination_error != (
                     "Shared update coordination could not be read safely."
                 ):
                     self._coordination_degraded = True
-            if self._coordination_degraded:
-                return
-        self._start_monitor()
+        else:
+            with self._lock:
+                if self._stop.is_set() or (self._requested and not self._request_id):
+                    return
+                if request is not None:
+                    self._join_request(request)
+                self._coordination_error = ""
 
     def _start_monitor(self) -> None:
         if self._monitor is not None:
@@ -365,11 +410,11 @@ class UiUpdateCoordinator:
             if self._store is None or self._coordination_degraded:
                 yield
                 return
-            if self._coordination_error:
+            if self.coordination_issue:
                 raise UpdateInProgressError(
                     "Could not coordinate this task start with the shared Pyruns installation."
                 )
-            lock_context = self._store.locked()
+            lock_context = self._locked_store()
             lock_acquired = False
             try:
                 lock_context.__enter__()
@@ -483,7 +528,7 @@ class UiUpdateCoordinator:
             # Restarting this interface needs only the local task-start guard.
             self._prepare_local_restart(target_version)
             return True
-        if self._coordination_error:
+        if self.coordination_issue:
             raise UpdateCheckError(
                 "Shared update coordination is unavailable for this installation."
             )
@@ -501,7 +546,7 @@ class UiUpdateCoordinator:
             self._role = "owner"
             return True
         try:
-            with self._store.locked():
+            with self._locked_store():
                 request = self._store.current_request_locked()
                 existing = request if self._store.request_is_active(request) else None
                 if isolated and (
@@ -703,57 +748,65 @@ class UiUpdateCoordinator:
             ):
                 return False
             self._next_shared_restart_check = now + SCHEDULED_OPERATION_RETRY_SECONDS
-            if self._isolated_upgrades:
-                version, release = selected_release(self._current_version)
-                if release is not None and version == installed:
-                    # The active release is durable even if a later request
+        published = False
+        request = None
+        if self._isolated_upgrades:
+            version, release = selected_release(self._current_version)
+            published = release is not None and version == installed
+        if not published:
+            with self._locked_store(observe=True) as store:
+                request = store.read_request_locked()
+        with self._lock:
+            scheduled = self._scheduled_operation
+            if self._requested or self._stop.is_set() or (scheduled is not None and not scheduled.get("error")):
+                return False
+            try:
+                if published:
+                    # The release pointer is durable even if a newer request
                     # replaced the completion record on the shared filesystem.
-                    try:
-                        self._prepare_local_restart(installed)
-                    except (ActiveTasksError, UpdateCheckError):
-                        return False
+                    self._prepare_local_restart(installed)
                     return True
-            with self._store.locked():
-                request = self._store.read_request_locked()
-                try:
-                    return self._join_completed_restart(request, installed)
-                except UpdateCheckError:
-                    return False
+                return self._join_completed_restart(request, installed)
+            except (ActiveTasksError, UpdateCheckError):
+                return False
 
     def _monitor_tick(self) -> None:
         if self._store is None:
             self._retry_scheduled_operation()
             return
-        # Match prepare's lock order so a completed request cannot clear a
-        # newly accepted update while this monitor is reading shared state.
         with self._lock:
             if self._isolated_upgrades and (self._scheduled_operation or {}).get("operation") == "restart":
                 self._retry_scheduled_operation()
-            if self._requested and not self._request_id:
+            if self._stop.is_set() or (self._requested and not self._request_id):
                 return
-            with self._store.locked():
-                request = self._store.active_request_locked(recover=True)
-                if (
-                    request is not None
-                    and self._store.request_is_isolated(request)
-                    and request.get("owner_instance_id") != self._instance_id
-                    and not self._requested
-                ):
-                    # Other interfaces stay online until they can see the new files.
-                    request = None
-                if request is not None:
-                    self._join_request(request)
-                elif self._requested and not self._shutdown_triggered:
-                    completed = self._store.read_request_locked()
-                    # Missing/stale NFS reads are not proof that pip stopped.
-                    if (
-                        completed is not None
-                        and completed.get("request_id") == self._request_id
-                        and completed.get("stage") == "completed"
-                    ):
-                        self._requested = False
-                        self._request_id = ""
-                        self._target_version = ""
+            observed = (self._requested, self._request_id)
+        # Keep the in-process lock available to system info and local restart
+        # even if the remote filesystem does not return from a lock request.
+        with self._locked_store(observe=True) as store:
+            if self._stop.is_set():
+                return
+            current = store.current_request_locked()
+        with self._lock:
+            # The snapshot cannot overwrite an operation accepted during I/O.
+            if self._stop.is_set() or observed != (self._requested, self._request_id):
+                return
+            request = current if self._store.request_is_active(current) else None
+            if (
+                request is not None
+                and self._store.request_is_isolated(request)
+                and request.get("owner_instance_id") != self._instance_id
+                and not self._requested
+            ):
+                # Other interfaces stay online until they can see the new files.
+                request = None
+            if request is not None:
+                self._join_request(request)
+            elif self._requested and not self._shutdown_triggered:
+                # Missing/stale NFS reads are not proof that pip stopped.
+                if current is not None and current.get("request_id") == self._request_id and current.get("stage") == "completed":
+                    self._requested = False
+                    self._request_id = ""
+                    self._target_version = ""
         if request is not None:
             self._heartbeat_request_if_owner()
             self._drain_once()
@@ -776,17 +829,21 @@ class UiUpdateCoordinator:
         self._retry_scheduled_operation(serving_counts)
 
     def _monitor_loop(self) -> None:
-        while not self._stop.wait(UPDATE_HEARTBEAT_SECONDS):
-            try:
-                self._monitor_tick()
-            except (OSError, RuntimeError, TypeError, UpdateCoordinationError, ValueError) as exc:
-                with self._lock:
-                    self._coordination_error = str(exc) or (
-                        "Shared update coordination became unavailable."
-                    )
-            else:
-                with self._lock:
+        try:
+            if self._background_attach and self._store is not None:
+                self._register_shared_instance(self._store)
+                if self._coordination_degraded:
+                    return
+            while not self._stop.wait(UPDATE_HEARTBEAT_SECONDS):
+                try:
+                    self._monitor_tick()
+                except (OSError, RuntimeError, TypeError, ValueError) as exc:
+                    self._coordination_error = str(exc) or "Shared update coordination became unavailable."
+                else:
                     self._coordination_error = ""
+        finally:
+            if self._background_attach and not self._request_id:
+                self._remove_instance()
 
     def handoff(self) -> dict[str, Any]:
         """Stop monitoring and leave a waiter/updater lease for process replacement."""
@@ -807,6 +864,8 @@ class UiUpdateCoordinator:
         }
 
     def _stop_monitor(self) -> None:
+        if self._stop.is_set():
+            return
         self._stop.set()
         if self._monitor is not None and self._monitor is not threading.current_thread():
             self._monitor.join(timeout=2.0)
@@ -821,7 +880,7 @@ class UiUpdateCoordinator:
         """Remove this process lease and recover a failed owner handoff."""
 
         self._stop_monitor()
-        if self._store is None:
+        if self._store is None or (self._background_attach and not self._request_id):
             return
         try:
             if failed_handoff and self._role == "owner" and self._request_id:
@@ -834,10 +893,17 @@ class UiUpdateCoordinator:
                         and self._store.request_is_active(request)
                     ):
                         self._store.recover_stale_request_locked(request)
-            with self._instance_lock:
-                self._store.remove_record("instances", self._instance_id)
         except (OSError, UpdateCoordinationError, ValueError):
             pass
+        self._remove_instance()
+
+    def _remove_instance(self) -> None:
+        if self._store is not None:
+            try:
+                with self._instance_lock:
+                    self._store.remove_record("instances", self._instance_id)
+            except (OSError, UpdateCoordinationError, ValueError):
+                pass
 
 
 def check_latest_version(current_version: str) -> dict[str, Any]:

@@ -16,9 +16,9 @@ import sys
 import threading
 import time
 import webbrowser
-from contextlib import nullcontext
+from contextlib import asynccontextmanager, nullcontext
 from pathlib import Path
-from typing import Annotated, Any, Awaitable, Literal, TYPE_CHECKING, TypeVar
+from typing import Annotated, Any, AsyncIterator, Awaitable, Literal, TYPE_CHECKING, TypeVar
 from urllib.parse import parse_qsl, quote, unquote, urlencode, urlsplit, urlunsplit
 
 import uvicorn
@@ -708,7 +708,18 @@ def create_app(
     # A UI started inside a tracked CLI task still uses the workspace Runtime settings.
     os.environ.pop(ENV_KEY_CLI_TERMINAL_RUNTIME, None)
     get_follow_shell_runtime()
-    app = FastAPI(title="Pyruns API", version=__version__)
+
+    @asynccontextmanager
+    async def lifespan(application: FastAPI) -> AsyncIterator[None]:
+        if update_coordinator is not None:
+            update_coordinator.attach(application.state.runtime, background=True)
+        try:
+            yield
+        finally:
+            if update_coordinator is not None:
+                await run_in_threadpool(update_coordinator.quiesce)
+
+    app = FastAPI(title="Pyruns API", version=__version__, lifespan=lifespan)
     monitor_log_positions = _MonitorLogPositions()
     app.state.runtime = runtime or PyrunsRuntime()
     reload_token = os.getenv(_UI_TOKEN_ENV) if access_token is None else None
@@ -2148,33 +2159,38 @@ def create_app(
     @app.get("/api/system/info")
     def get_system_info() -> dict[str, Any]:
         coordinator = app.state.update_coordinator
-        update_supported = coordinator is not None and coordinator.supported
         installed_version = __version__
         restart_required = False
         state, scheduled_operation = "unavailable", None
+        issue = ""
         if coordinator is not None:
-            installed_version = coordinator.refresh_installed_version()
+            issue = coordinator.coordination_issue
+            installed_version = coordinator.installed_version if issue else coordinator.refresh_installed_version()
             restart_required = coordinator.restart_required
             state, scheduled_operation = coordinator.operation_status()
+            if issue and state == "idle":
+                state = "unavailable"
         return {
             "version": __version__,
             "installed_version": installed_version,
             "restart_required": restart_required,
             "instance_id": app.state.instance_id,
-            "update_supported": update_supported,
+            "update_supported": coordinator is not None and not issue,
             "restart_supported": coordinator is not None,
             "update_state": state,
             "scheduled_operation": scheduled_operation,
             "last_update": app.state.update_result,
+            **({"update_unavailable_reason": issue} if issue else {}),
         }
 
     @app.get("/api/system/update/check")
     def check_pyruns_update() -> dict[str, Any]:
         coordinator = app.state.update_coordinator
-        if coordinator is None or not coordinator.supported:
+        issue = coordinator.coordination_issue if coordinator is not None else ""
+        if coordinator is None or issue:
             raise HTTPException(
                 status_code=503,
-                detail="Update checks are available only in the normal 'pyr ui' server.",
+                detail=issue or "Update checks are available only in the normal 'pyr ui' server.",
             )
         try:
             installed = coordinator.installed_upgrade_version()
@@ -2195,10 +2211,11 @@ def create_app(
         payload: SystemUpdateRequest | None = None,
     ) -> dict[str, Any]:
         coordinator = app.state.update_coordinator
-        if coordinator is None or not coordinator.supported:
+        issue = coordinator.coordination_issue if coordinator is not None else ""
+        if coordinator is None or issue:
             raise HTTPException(
                 status_code=503,
-                detail="Full-process updates are available only in the normal 'pyr ui' server.",
+                detail=issue or "Full-process updates are available only in the normal 'pyr ui' server.",
             )
         try:
             ready = coordinator.prepare(
@@ -2340,8 +2357,6 @@ def main(
         current_version=__version__,
         isolated_upgrades=True,
     )
-    if update_coordinator is not None:
-        update_coordinator.attach(runtime)
     previous_token = os.environ.get(_UI_TOKEN_ENV) if reload else None
     previous_cookie_nonce = os.environ.get(_UI_COOKIE_NONCE_ENV) if reload else None
     previous_session_state = os.environ.get(_UI_SESSION_STATE_ENV) if reload else None
