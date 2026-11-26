@@ -69,6 +69,7 @@ from pyruns.utils.config_utils import (
 )
 from pyruns.utils.info_io import (
     get_log_options,
+    log_directory_revision,
     load_script_info,
     load_task_metadata,
     resolve_log_path,
@@ -2028,6 +2029,7 @@ class PyrunsRuntime:
         offset: int | None = None,
         log_identity: str | None = None,
         log_revision: str | None = None,
+        known_log_options: str | None = None,
         tail_bytes: int | None = None,
         tail_lines: int | None = None,
         known_preview: str | None = None,
@@ -2037,7 +2039,7 @@ class PyrunsRuntime:
         expected_task_dir: str | None = None,
         strict: bool = False,
     ) -> Dict[str, Any]:
-        """Load a historical log chunk for the monitor page."""
+        """Read a log chunk. A matching options revision elides the already-known list."""
         # Bind paths/settings under the lock. Directory scans and file reads
         # on a slow mount must not serialize independent Monitor selections.
         with self._workspace_lock:
@@ -2055,8 +2057,26 @@ class PyrunsRuntime:
             if current_task_dir != expected_dir:
                 raise WorkspaceChangedError("Workspace changed")
         selected_name = str(log_file_name or "").strip()
-        if not include_log_options and selected_name:
-            # A stream has already selected the file; listing every old run on each chunk is costly.
+        task_status = str(task.get("status", "")).lower()
+        queue_name = _cfg.QUEUE_LOG_FILENAME
+        active_run_name = ""
+        if task_status == "running":
+            try:
+                run_index = max(1, int(task.get("run_index", 1) or 1))
+            except (TypeError, ValueError):
+                run_index = 1
+            active_run_name = f"run{run_index}.log"
+
+        options_revision = ""
+        if include_log_options and selected_name and offset is not None and known_log_options is not None:
+            # Sample before enumeration so concurrent additions invalidate the next poll.
+            # The active run can also appear in the list before its file is created.
+            directory_revision = log_directory_revision(task_dir)
+            if directory_revision:
+                options_revision = f"{directory_revision}:{int(selected_name == active_run_name)}"
+        options_unchanged = bool(options_revision and options_revision == known_log_options)
+        if selected_name and (not include_log_options or options_unchanged):
+            # The selected file still needs fresh path and identity checks on each read.
             log_options = {}
             available_logs = []
             valid_name = (
@@ -2074,15 +2094,6 @@ class PyrunsRuntime:
             available_logs = list(log_options.keys())
             selected_path = log_options.get(selected_name) if selected_name else None
 
-        task_status = str(task.get("status", "")).lower()
-        queue_name = _cfg.QUEUE_LOG_FILENAME
-        active_run_name = ""
-        if task_status == "running":
-            try:
-                run_index = max(1, int(task.get("run_index", 1) or 1))
-            except (TypeError, ValueError):
-                run_index = 1
-            active_run_name = f"run{run_index}.log"
         if not selected_name and task_status == "queued" and queue_name in log_options:
             selected_name = queue_name
             selected_path = log_options.get(queue_name)
@@ -2091,7 +2102,7 @@ class PyrunsRuntime:
             selected_name = active_run_name
             selected_path = log_options.get(selected_name)
 
-        if selected_name and selected_name == active_run_name and selected_name not in available_logs:
+        if selected_name and selected_name == active_run_name and not options_unchanged and selected_name not in available_logs:
             available_logs.insert(0, selected_name)
 
         if not selected_name:
@@ -2116,6 +2127,7 @@ class PyrunsRuntime:
                 "task_name": task_name,
                 "selected_log": selected_name,
                 "available_logs": available_logs,
+                **({"log_options_revision": options_revision} if options_revision else {}),
                 "content": "",
                 "offset": 0,
                 "reset": bool(offset is not None and log_identity),
@@ -2187,6 +2199,7 @@ class PyrunsRuntime:
             "task_name": task_name,
             "selected_log": selected_name,
             "available_logs": available_logs,
+            **({"log_options_revision": options_revision} if options_revision else {}),
             "content": content,
             "offset": new_offset,
             "reset": reset,

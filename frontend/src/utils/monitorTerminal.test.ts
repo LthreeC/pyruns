@@ -14,6 +14,20 @@ describe('compactTerminalHistory', () => {
     expect(compactTerminalHistory('cut\rframe01\rframe02\r')).toBe('frame02\r')
   })
 
+  it('folds long variable-width progress, preserving the cursor for the next live write', () => {
+    const redraws = '\rstep 1\rstep 22'.repeat(25_000)
+    expect(compactTerminalHistory(redraws + '\rstep 100')).toBe('step 100')
+    expect(compactTerminalHistory(redraws + '\rstep 99\rste')).toBe('step 99\rste')
+    const uneven = redraws + '\rstep 100\rstep 7\rste'
+    expect(compactTerminalHistory(uneven)).toBe('step 100\rstep 7\rste')
+  })
+
+  it('keeps wrapped variable-width redraws when the terminal is narrow', () => {
+    const row = '\rphase 9\rphase 10\rphase 100\rstep'
+    expect(compactTerminalHistory(row, 6)).toBe(row)
+    expect(compactTerminalHistory(row, 9)).toBe('phase 100\rstep')
+  })
+
   it.each([
     'ordinary\r\nWindows text\r\n',
     'longer text\rshort\rfinal',

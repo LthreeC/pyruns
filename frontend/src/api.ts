@@ -53,6 +53,10 @@ const workspaceChangedListeners = new Set<() => void>()
 let workspaceContext = { root: '' }
 // Keep only recently viewed history in this tab. Every reuse is checked by the server.
 const logPreviews = new Map<string, TaskLogs>()
+// A live HTTP reader follows one file at a time. Periodically enumerate even on
+// a validator hit, for mounts that report stale or coarse directory attributes.
+const LOG_OPTIONS_RECHECK_MS = 30_000
+let liveLogOptions: { task: string; file: string; revision: string; names: string[]; checkedAt: number } | null = null
 let notifiedWorkspaceContext: typeof workspaceContext | null = null
 let authorizationEpoch = 0
 let sessionRecoveryPromise: Promise<boolean> | null = null
@@ -69,7 +73,10 @@ export function subscribeUnauthorized(listener: UnauthorizedListener) {
 }
 
 export function setWorkspaceContext(root: string) {
-  if (root !== workspaceContext.root) logPreviews.clear()
+  if (root !== workspaceContext.root) {
+    logPreviews.clear()
+    liveLogOptions = null
+  }
   workspaceContext = { root }
   notifiedWorkspaceContext = null
 }
@@ -438,6 +445,7 @@ export const getTaskLogs = async (name: string, options: {
   offset?: number
   logIdentity?: string
   logRevision?: string
+  currentLogOptions?: string[]
   tailBytes?: number
   tailLines?: number
   chunkSize?: number
@@ -451,6 +459,25 @@ export const getTaskLogs = async (name: string, options: {
   if (options.tailLines != null) sp.set('tail_lines', String(options.tailLines))
   if (options.chunkSize != null) sp.set('chunk_size', String(options.chunkSize))
   const url = `/api/tasks/${encodeURIComponent(name)}/logs?${sp}`
+  const names = options.currentLogOptions
+  if (names && options.offset != null && options.logFileName) {
+    const context = workspaceContext
+    const cached = liveLogOptions?.names === names && liveLogOptions.task === name && liveLogOptions.file === options.logFileName
+      && performance.now() - liveLogOptions.checkedAt < LOG_OPTIONS_RECHECK_MS ? liveLogOptions : null
+    const logs = await request<TaskLogs>(url + '&known_log_options=' + encodeURIComponent(cached?.revision ?? ''), { signal })
+    const unchanged = cached !== null && logs.log_options_revision === cached.revision
+    if (unchanged) logs.available_logs = cached.names
+    if (!signal?.aborted && context === workspaceContext && logs.log_options_revision && !unchanged) {
+      // The view may retain its original array after an equivalent response.
+      // A manual reload gets a fresh array and therefore a fresh enumeration.
+      if (names.length === logs.available_logs.length && names.every((item, i) => item === logs.available_logs[i])) {
+        logs.available_logs = names
+      }
+      liveLogOptions = { task: name, file: options.logFileName, revision: logs.log_options_revision,
+        names: logs.available_logs, checkedAt: performance.now() }
+    }
+    return logs
+  }
   if (options.tailLines == null || options.offset != null) return request<TaskLogs>(url, { signal })
 
   const context = workspaceContext

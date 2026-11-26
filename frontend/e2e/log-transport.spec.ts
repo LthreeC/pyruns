@@ -5,7 +5,7 @@ const first = '中文😀\n'
 const second = '続き🚀\n'
 const byteLength = (value: string) => Buffer.byteLength(value, 'utf8')
 
-async function prepareMonitor(page: Page, extraTasks: Record<string, unknown>[] = []) {
+async function prepareMonitor(page: Page, extraTasks: Record<string, unknown>[] = [], logNames = ['run1.log']) {
   const now = new Date()
   await page.clock.install({ time: now })
   await page.clock.pauseAt(new Date(now.getTime() + 100))
@@ -46,7 +46,7 @@ async function prepareMonitor(page: Page, extraTasks: Record<string, unknown>[] 
   } }))
   await page.route('**/api/tasks/live-task?*', route => route.fulfill({ json: task }))
   await page.route('**/api/tasks/live-task/logs?*', route => route.fulfill({ json: {
-    selected_log: 'run1.log', available_logs: ['run1.log'], log_identity: 'original',
+    selected_log: 'run1.log', available_logs: logNames, log_identity: 'original',
     log_revision: 'initial-revision', content: initial, offset: byteLength(initial),
   } }))
   await page.goto('/monitor?token=pyruns-e2e-access-token')
@@ -67,16 +67,18 @@ function snapshot(page: Page) {
 }
 
 function completeRead(page: Page, content: string, offset: number, identity = 'original', reset = false,
-  { index = 0, fileSize = offset, revision }: { index?: number; fileSize?: number | null; revision?: string } = {},
+  { index = 0, fileSize = offset, revision, logNames = ['run1.log'], optionsRevision }: {
+    index?: number; fileSize?: number | null; revision?: string; logNames?: string[]; optionsRevision?: string
+  } = {},
 ) {
   return page.evaluate(payload => {
     (window as any).monitorTransportTest.reads[payload.index].resolve(new Response(JSON.stringify({
-      selected_log: 'run1.log', available_logs: ['run1.log'], log_identity: payload.identity,
+      selected_log: 'run1.log', available_logs: payload.logNames, log_options_revision: payload.optionsRevision, log_identity: payload.identity,
       content: payload.content, offset: payload.offset, reset: payload.reset,
       log_revision: payload.revision,
       ...(payload.fileSize === null ? {} : { file_size: payload.fileSize }),
     }), { headers: { 'Content-Type': 'application/json' } }))
-  }, { content, offset, identity, reset, index, fileSize, revision })
+  }, { content, offset, identity, reset, index, fileSize, revision, logNames, optionsRevision })
 }
 
 function stream(page: Page, content: string, offset: number, identity = 'original', reset = false, activity = false) {
@@ -287,6 +289,27 @@ test('HTTP fallback lights the row when it displays a confirmed equal-length edi
   await page.clock.runFor(150)
   await expect(rows).toContainText('CHANGED')
   await expect(row).toHaveAttribute('data-log-activity', 'true')
+})
+
+test('HTTP fallback retains a large log picker during append and discovers new files', async ({ page }) => {
+  const logNames = Array.from({ length: 40 }, (_, i) => `run${i + 1}.log`)
+  const rows = await prepareMonitor(page, [], logNames)
+  const options = page.getByRole('combobox', { name: 'Select task log file' }).locator('option')
+  const validator = async (i: number) => new URL((await snapshot(page)).reads[i]?.url || 'http://localhost').searchParams.get('known_log_options')
+  expect(await validator(0)).toBe('')
+  await completeRead(page, '', byteLength(initial), 'original', false, { logNames, optionsRevision: 'directory-v1' })
+  await page.clock.runFor(1600)
+  await expect.poll(() => validator(1)).toBe('directory-v1')
+  await completeRead(page, first, byteLength(initial + first), 'original', false, { index: 1, logNames: [], optionsRevision: 'directory-v1' })
+  await page.clock.runFor(150)
+  await expect(rows).toContainText(first.trim())
+  await expect(options).toHaveCount(40)
+  await page.clock.runFor(1600)
+  await expect.poll(() => validator(2)).toBe('directory-v1')
+  await completeRead(page, '', byteLength(initial + first), 'original', false, {
+    index: 2, logNames: [...logNames, 'error.log'], optionsRevision: 'directory-v2',
+  })
+  await expect(options).toHaveCount(41)
 })
 
 test('returning to Monitor restores recent activity before reading logs again', async ({ page }) => {

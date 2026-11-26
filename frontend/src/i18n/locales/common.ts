@@ -1,5 +1,7 @@
 export default {
   'Task sources': '任务来源',
+  'Find a source': '查找任务来源',
+  'No matching sources': '没有匹配的任务来源',
   'No task sources selected': '尚未勾选任务来源',
   'Select all sources': '全选',
   'Common tasks': '通用',

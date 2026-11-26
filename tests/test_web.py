@@ -2920,6 +2920,31 @@ def test_root_serves_react_frontend_shell(tmp_path):
     assert "assets/" in response.text
 
 
+def test_cached_bundles_follow_the_current_interface_after_an_update(tmp_path, monkeypatch):
+    dist = tmp_path / "static"
+    assets = dist / "assets"
+    assets.mkdir(parents=True)
+    monkeypatch.setattr("pyruns.web.app._frontend_dist_dir", lambda: dist)
+    client = TestClient(create_app(_build_runtime(_make_workspace(tmp_path, "main"))))
+    for filename in ("index-a1b2c3d4.js", "index-z9y8x7w6.js"):
+        (assets / filename).write_text(filename, encoding="utf-8")
+        (dist / "index.html").write_text(f'<script src="/assets/{filename}"></script>', encoding="utf-8")
+        for route in ("/", "/monitor", "/index.html"):
+            shell = client.get(route)
+            assert filename in shell.text
+            assert "no-store" in shell.headers["cache-control"]
+        bundle = client.get(f"/assets/{filename}")
+        assert bundle.text == filename
+        assert "immutable" in bundle.headers["cache-control"]
+        validated = client.get(f"/assets/{filename}", headers={"If-None-Match": bundle.headers["etag"]})
+        assert validated.status_code == 304
+        assert validated.headers["cache-control"] == bundle.headers["cache-control"]
+    (assets / "plain.js").write_text("plain", encoding="utf-8")
+    assert "immutable" not in client.get("/assets/plain.js").headers.get("cache-control", "")
+    missing = client.get("/assets/missing-01234567.js")
+    assert missing.status_code == 404 and "immutable" not in missing.headers.get("cache-control", "")
+
+
 def test_unknown_api_get_returns_json_404(tmp_path):
     workspace = _make_workspace(tmp_path, "main")
     runtime = _build_runtime(workspace)
@@ -6238,6 +6263,55 @@ def test_logs_endpoint_can_tail_history_by_lines(tmp_path, total_lines, tail_lin
     assert payload["tail_byte_limited"] is False
 
 
+def test_incremental_log_reader_revalidates_directory_and_reads_live_file(tmp_path, monkeypatch):
+    workspace = _make_workspace(tmp_path, "main")
+    _add_task(workspace, "alpha", status="completed", log_text="one\n")
+    path = workspace / TASKS_DIR / "alpha" / "run_logs" / "run1.log"
+    path.write_bytes(b"one\n")
+    endpoint = "/api/tasks/alpha/logs"
+    runtime = _build_runtime(workspace, owns_task_lifecycle=False)
+    client = TestClient(create_app(runtime))
+
+    def read(**params):
+        response = client.get(endpoint, params={"log_file_name": "run1.log", "tail_lines": 1, **params})
+        assert response.status_code == 200
+        return response.json()
+
+    first = read(offset=0, known_log_options="")
+    revision = first["log_options_revision"]
+    assert first["available_logs"] == ["run1.log"]
+    cursor = {"offset": first["offset"], "log_identity": first["log_identity"], "known_log_options": revision}
+    with monkeypatch.context() as patcher:
+        patcher.setattr("pyruns.web.runtime.get_log_options", lambda _: pytest.fail("enumerated unchanged logs"))
+        with path.open("ab") as handle:
+            handle.write(b"two\n")
+        appended = read(**cursor)
+        assert appended["log_options_revision"] == revision and appended["available_logs"] == []
+        assert appended["content"] == "two\n" and not appended["reset"]
+
+    (path.parent / "run2.log").touch()
+    changed = read(**cursor)
+    assert changed["log_options_revision"] != revision
+    assert changed["available_logs"] == ["run1.log", "run2.log"]
+    # A manual history read always enumerates even with a current validator.
+    assert read(known_log_options=changed["log_options_revision"])["available_logs"] == changed["available_logs"]
+    # A stale directory attribute must never authorize reading a different file or skip a reset.
+    with monkeypatch.context() as patcher:
+        patcher.setattr("pyruns.web.runtime.log_directory_revision", lambda _: revision.rsplit(":", 1)[0])
+        replacement = path.with_suffix(".new")
+        replacement.write_bytes(b"rotated\n")
+        replacement.replace(path)
+        rotated = read(**cursor)
+        assert rotated["reset"] and rotated["content"] == "rotated\n"
+        assert rotated["log_identity"] != first["log_identity"]
+    (path.parent / "run2.log").unlink()
+    assert read(offset=0, known_log_options=changed["log_options_revision"])["available_logs"] == ["run1.log"]
+    with monkeypatch.context() as patcher:
+        patcher.setattr("pyruns.web.runtime.log_directory_revision", lambda _: "")
+        uncertain = read(**cursor)
+        assert "log_options_revision" not in uncertain and uncertain["available_logs"] == ["run1.log"]
+
+
 def test_monitor_revalidates_the_open_file_and_requested_line_window(tmp_path, monkeypatch):
     workspace = _make_workspace(tmp_path, "main")
     _add_task(workspace, "alpha", status="completed", log_text="one\ntwo\n")
@@ -7495,7 +7569,7 @@ def test_logs_websocket_replays_backlog_without_poll_delay(tmp_path):
     assert all(chunk["type"] == "chunk" for chunk in chunks)
     assert not any(chunk.get("activity") for chunk in chunks)
     assert chunks[-1]["offset"] == log_file.stat().st_size
-    assert get_options.call_count == 1
+    get_options.assert_not_called()
 
 
 def test_logs_websocket_replay_waits_for_full_send_queue(tmp_path):
@@ -7736,7 +7810,7 @@ def test_logs_websocket_replay_preserves_order_when_emitter_fires(tmp_path):
 
 
 def test_logs_websocket_keeps_emitter_chunk_during_initial_selection(tmp_path):
-    from pyruns.utils.log_io import stat_log_file
+    from pyruns.utils.info_io import stat_task_log
 
     workspace = _make_workspace(tmp_path, "main")
     _add_task(workspace, "alpha", status="running")
@@ -7762,17 +7836,17 @@ def test_logs_websocket_keeps_emitter_chunk_during_initial_selection(tmp_path):
             stale_read.set()
         return payload
 
-    def track_stat(path, **kwargs):
+    def track_stat(task_dir, name):
         nonlocal poll_count
         poll_count += 1
         if poll_count >= 3:
             polled.set()
-        return stat_log_file(path, **kwargs)
+        return stat_task_log(task_dir, name)
 
     with (
         patch.object(runtime, "get_task_logs", side_effect=pause_initial_read),
         patch.object(log_emitter, "subscribe", wraps=log_emitter.subscribe) as subscribe,
-        patch("pyruns.web.app.stat_log_file", side_effect=track_stat),
+        patch("pyruns.web.app.stat_task_log", side_effect=track_stat),
         patch("pyruns.web.app.LOG_STREAM_TAIL_INTERVAL_SEC", 0.01),
         patch("pyruns.web.app.LOG_STREAM_EMITTER_QUIET_SEC", 0),
     ):
@@ -7983,7 +8057,7 @@ def test_logs_websocket_initial_lookup_does_not_block_http(tmp_path, monkeypatch
     assert message["offset"] == (workspace / TASKS_DIR / "alpha" / "run_logs" / "run1.log").stat().st_size
 
 
-@pytest.mark.parametrize("operation", ["workspace", "path", "stat", "queue_switch"])
+@pytest.mark.parametrize("operation", ["workspace", "stat", "queue_switch"])
 def test_logs_websocket_slow_poll_does_not_block_http(tmp_path, monkeypatch, log_stream_idle, operation):
     from concurrent.futures import ThreadPoolExecutor
     from pyruns.web import app as app_mod
@@ -8001,10 +8075,8 @@ def test_logs_websocket_slow_poll_does_not_block_http(tmp_path, monkeypatch, log
 
     if operation == "workspace":
         owner, attribute = runtime, "workspace_stream_is_current"
-    elif operation == "stat":
-        owner, attribute = app_mod, "stat_log_file"
     else:
-        owner, attribute = app_mod, "validate_task_log_path"
+        owner, attribute = app_mod, "stat_task_log"
     original = getattr(owner, attribute)
 
     def slow_operation(*args, **kwargs):
@@ -8059,7 +8131,7 @@ def test_logs_websocket_slow_poll_does_not_block_http(tmp_path, monkeypatch, log
 
 def test_logs_websocket_discards_poll_size_older_than_a_live_chunk(tmp_path, monkeypatch, log_stream_idle):
     from concurrent.futures import ThreadPoolExecutor
-    from pyruns.utils.log_io import stat_log_file
+    from pyruns.utils.info_io import stat_task_log
     from pyruns.web import app as app_mod
 
     workspace = _make_workspace(tmp_path, "main")
@@ -8071,8 +8143,8 @@ def test_logs_websocket_discards_poll_size_older_than_a_live_chunk(tmp_path, mon
     armed = threading.Event()
     monkeypatch.setattr(app_mod, "LOG_STREAM_TAIL_INTERVAL_SEC", 0.01)
 
-    def stale_stat(path, **kwargs):
-        state = stat_log_file(path, **kwargs)
+    def stale_stat(task_dir, name):
+        state = stat_task_log(task_dir, name)
         if not armed.is_set():
             return state
         if not entered.is_set():
@@ -8082,7 +8154,7 @@ def test_logs_websocket_discards_poll_size_older_than_a_live_chunk(tmp_path, mon
             polled_again.set()
         return state
 
-    monkeypatch.setattr(app_mod, "stat_log_file", stale_stat)
+    monkeypatch.setattr(app_mod, "stat_task_log", stale_stat)
     with TestClient(create_app(runtime)) as client:
         with client.websocket_connect(
             f"/api/tasks/alpha/logs/stream?log_file_name=run1.log&offset={log.stat().st_size}"
@@ -8130,14 +8202,14 @@ def test_logs_websocket_buffers_run_switch_with_bounded_disk_fallback(
     run_log.write_text(prefix, encoding="utf-8", newline="")
     runtime = _build_runtime(workspace)
     entered, release = threading.Event(), threading.Event()
-    original_validate = app_mod.validate_task_log_path
+    original_stat = app_mod.stat_task_log
 
-    def blocked_validate(*args, **kwargs):
+    def blocked_stat(*args, **kwargs):
         entered.set()
         assert release.wait(10)
-        return original_validate(*args, **kwargs)
+        return original_stat(*args, **kwargs)
 
-    monkeypatch.setattr(app_mod, "validate_task_log_path", blocked_validate)
+    monkeypatch.setattr(app_mod, "stat_task_log", blocked_stat)
     monkeypatch.setattr(app_mod, "LOG_STREAM_TAIL_INTERVAL_SEC", 60)
     if buffer_case == "count_limit":
         monkeypatch.setattr(app_mod, "LOG_STREAM_QUEUE_LIMIT", 2)
@@ -8325,7 +8397,7 @@ def test_logs_websocket_stream_tails_run_log_file_without_emitter(tmp_path):
 
 
 def test_logs_websocket_idle_tail_skips_log_listing_but_catches_up(tmp_path):
-    from pyruns.utils.log_io import stat_log_file
+    from pyruns.utils.info_io import get_log_options, stat_task_log
 
     workspace = _make_workspace(tmp_path, "main")
     _add_task(workspace, "alpha", status="running", log_text="existing\n")
@@ -8336,16 +8408,17 @@ def test_logs_websocket_idle_tail_skips_log_listing_but_catches_up(tmp_path):
     polled = threading.Event()
     identity_calls = 0
 
-    def track_stat(path, **kwargs):
+    def track_stat(task_dir, name):
         nonlocal identity_calls
         identity_calls += 1
         if identity_calls >= 3:
             polled.set()
-        return stat_log_file(path, **kwargs)
+        return stat_task_log(task_dir, name)
 
     with (
         patch.object(runtime, "get_task_logs", wraps=runtime.get_task_logs) as get_logs,
-        patch("pyruns.web.app.stat_log_file", side_effect=track_stat),
+        patch("pyruns.web.runtime.get_log_options", wraps=get_log_options) as list_logs,
+        patch("pyruns.web.app.stat_task_log", side_effect=track_stat),
         patch("pyruns.web.app.LOG_STREAM_TAIL_INTERVAL_SEC", 0.01),
         patch("pyruns.web.app.LOG_STREAM_EMITTER_QUIET_SEC", 0),
     ):
@@ -8354,6 +8427,7 @@ def test_logs_websocket_idle_tail_skips_log_listing_but_catches_up(tmp_path):
         ) as websocket:
             assert polled.wait(2)
             assert get_logs.call_count == 1
+            assert list_logs.call_count == 0
             with log_file.open("a", encoding="utf-8") as handle:
                 handle.write("after idle\n")
             payload = _receive_stream_data(websocket)
@@ -8405,7 +8479,7 @@ def test_logs_websocket_stream_tails_queued_gpu_log_from_client_offset(tmp_path)
 
 
 def test_logs_websocket_idle_queue_skips_log_listing_until_run_starts(tmp_path):
-    from pyruns.utils.log_io import stat_log_file
+    from pyruns.utils.info_io import stat_task_log
 
     workspace = _make_workspace(tmp_path, "main")
     _add_task(workspace, "alpha", status="queued")
@@ -8418,16 +8492,16 @@ def test_logs_websocket_idle_queue_skips_log_listing_until_run_starts(tmp_path):
     polled = threading.Event()
     identity_calls = 0
 
-    def track_stat(path, **kwargs):
+    def track_stat(task_dir, name):
         nonlocal identity_calls
         identity_calls += 1
         if identity_calls >= 3:
             polled.set()
-        return stat_log_file(path, **kwargs)
+        return stat_task_log(task_dir, name)
 
     with (
         patch.object(runtime, "get_task_logs", wraps=runtime.get_task_logs) as get_logs,
-        patch("pyruns.web.app.stat_log_file", side_effect=track_stat),
+        patch("pyruns.web.app.stat_task_log", side_effect=track_stat),
         patch("pyruns.web.app.LOG_STREAM_TAIL_INTERVAL_SEC", 0.01),
         patch("pyruns.web.app.LOG_STREAM_EMITTER_QUIET_SEC", 0),
     ):

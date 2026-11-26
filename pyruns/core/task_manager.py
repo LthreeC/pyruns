@@ -58,6 +58,7 @@ from pyruns.utils.info_io import (
     normalize_task_status,
     namespace_operation_is_live,
     prepare_task_log_path,
+    read_run_attempt_id,
     run_slot_count,
     task_attempt_matches,
     task_info_lock,
@@ -149,6 +150,18 @@ class TaskClaimConflict(RuntimeError):
     """Raised when another runner already owns a live task lease."""
 
 
+@dataclasses.dataclass(frozen=True)
+class _ObservedGpuRun:
+    runner_id: str
+    run_index: int
+    attempt_id: str
+    gpu_ids: tuple[int, ...]
+    lease_until: float
+    pid: int | None
+    created_at: float | None
+    runner_device: str
+
+
 class TaskStateConflict(RuntimeError):
     """Raised when disk state changed before a local state transition landed."""
 
@@ -184,8 +197,10 @@ class TaskManager:
         self.tasks: List[Dict[str, Any]] = []
         self._tasks_by_name: Dict[str, Dict[str, Any]] = {}
         self._search_view_cache: dict[str, tuple[tuple, Mapping[str, Any]]] = {}
-        self._task_page_cache: OrderedDict[tuple[str, str], list[Dict[str, Any]]] = OrderedDict()
-        self._task_page_counts: Dict[str, int] | None = None
+        self._task_page_cache: OrderedDict[tuple[str, str, frozenset[str] | None], list[Dict[str, Any]]] = OrderedDict()
+        self._task_page_populations: OrderedDict[
+            frozenset[str] | None, tuple[list[Dict[str, Any]], Dict[str, int]]
+        ] = OrderedDict()
         self._task_page_source = self.tasks
         self._task_page_source_size = 0
         self._lock = threading.Lock()
@@ -222,6 +237,7 @@ class TaskManager:
         self.runner_host = local_runner_host()
         token = str(runner_token or uuid.uuid4().hex[:8])
         self._submission_attempt_id = str(runner_token or "") or None
+        self._gpu_queue_sequence = 0
         self._submission_worker_states: dict[tuple[str, int], str] = {}
         self.runner_id = f"{self.runner_host}:{os.getpid()}:{token}"
         self.lease_seconds = DEFAULT_RUNNER_LEASE_SECONDS
@@ -236,6 +252,7 @@ class TaskManager:
         self._failed_claim_ids: set[str] = set()
         self._disk_scan_complete = False
         self.gpu_scheduler = GpuResourceScheduler()
+        self._observed_gpu_runs: dict[str, _ObservedGpuRun] = {}
 
         logger.info("TaskManager initialised  root=%s", tasks_dir)
         if lazy_scan is None:
@@ -322,6 +339,8 @@ class TaskManager:
         if not isinstance(raw, dict):
             return None
         wait = copy.deepcopy(raw)
+        wait.pop("_serial_batch", None)
+        wait.pop("_queue_position", None)
         if task_storage_scope(task.get("dir", "")) == "remote":
             return wait
         try:
@@ -741,15 +760,9 @@ class TaskManager:
         with self._lock:
             ordered, status_counts = self._get_task_page_index_locked(
                 sort_mode, status, query=query, search_field=search_field,
+                sources=frozenset(sources) if sources is not None else None,
                 include_payload=not summary or search_field in {"config", "script"},
             )
-            if sources is not None:
-                ordered = [task for task in ordered if task_source(task.get("dir", "")) in sources]
-                status_counts = dict.fromkeys(status_counts, 0)
-                for task in self.tasks:
-                    if task and task_source(task.get("dir", "")) in sources:
-                        key = normalize_task_status(task.get("status")) or "pending"
-                        status_counts[key] = status_counts.get(key, 0) + 1
             total = len(ordered)
             selected = (
                 ordered[safe_offset:safe_offset + safe_limit]
@@ -772,40 +785,50 @@ class TaskManager:
     def _invalidate_task_page_cache_locked(self) -> None:
         """Discard only derived list indexes; callers hold the registry lock."""
         self._task_page_cache.clear()
-        self._task_page_counts = None
+        self._task_page_populations.clear()
         self._task_page_source = self.tasks
         self._task_page_source_size = len(self.tasks)
 
     def _get_task_page_index_locked(
         self, sort_mode: str, status: str,
         *, query: str = "", search_field: str = "all", include_payload: bool = True,
+        sources: frozenset[str] | None = None,
     ) -> tuple[list[Dict[str, Any]], Dict[str, int]]:
         """Reuse bounded ordered views across pages and API payload formats."""
         if sort_mode not in TASK_SORT_MODES:
             raise ValueError(f"Unknown task sort mode: {sort_mode}")
         if self.tasks is not self._task_page_source or len(self.tasks) != self._task_page_source_size:
             self._invalidate_task_page_cache_locked()
-        if self._task_page_counts is None:
+        population = self._task_page_populations.get(sources)
+        if population is None:
+            tasks = self.tasks if sources is None else [
+                task for task in self.tasks if task and task_source(task.get("dir", "")) in sources
+            ]
             counts = dict.fromkeys(
                 ("pending", "queued", "running", "completed", "failed", "cancelled"), 0,
             )
-            for task in self.tasks:
+            for task in tasks:
                 if task is not None:
                     task_status = str(
                         normalize_task_status(task.get("status", "pending")) or "pending"
                     ).strip().lower()
                     counts[task_status] = counts.get(task_status, 0) + 1
-            self._task_page_counts = counts
+            population = tasks, counts
+            self._task_page_populations[sources] = population
+            if len(self._task_page_populations) > _TASK_PAGE_CACHE_SIZE:
+                self._task_page_populations.popitem(last=False)
+        self._task_page_populations.move_to_end(sources)
+        tasks, counts = population
         status_text = str(status or "").strip()
         status_key = "All" if status_text.lower() == "all" else status_text.lower()
-        key = (sort_mode, status_key)
+        key = (sort_mode, status_key, sources)
         ordered = self._task_page_cache.get(key)
         if ordered is None:
-            all_key = (sort_mode, "All")
+            all_key = (sort_mode, "All", sources)
             ordered = self._task_page_cache.get(all_key)
             if ordered is None:
                 candidates = [
-                    task for task in self.tasks
+                    task for task in tasks
                     if task is not None and task_status_matches(
                         normalize_task_status(task.get("status", "pending")) or "pending", status_key,
                     )
@@ -816,7 +839,7 @@ class TaskManager:
                     matches = filter_tasks_by_search_field(
                         candidates, query, search_field=search_field, include_payload=include_payload,
                     )
-                    return sort_tasks_for_manager(matches, sort_mode), dict(self._task_page_counts)
+                    return sort_tasks_for_manager(matches, sort_mode), dict(counts)
                 # Likewise, the first active-only request need not sort a
                 # workspace full of historical tasks before returning its page.
                 ordered = sort_tasks_for_manager(candidates, sort_mode)
@@ -835,7 +858,7 @@ class TaskManager:
             ordered = filter_tasks_by_search_field(
                 ordered, query, search_field=search_field, include_payload=include_payload,
             )
-        return ordered, dict(self._task_page_counts)
+        return ordered, dict(counts)
 
     _SEARCH_VIEW_DEFAULTS = {
         "dir": "", "name": "", "status": "pending", "pinned": None,
@@ -1753,14 +1776,15 @@ class TaskManager:
                     self._last_discovery_refresh_time is None
                     or now - self._last_discovery_refresh_time >= 4.0
                 ))
+                if not discover and not active_due and not self._dirty_ui_tasks:
+                    return None
                 dirty = set(self._dirty_ui_tasks)
-                targets = dirty | {
-                    task["name"] for task in self.tasks
-                    if active_due and (task["status"] in ("running", "queued")
-                                       or task.get("_terminal_write_pending"))
-                }
-            if not state_due and not payload_due and not active_due and not discover and not dirty:
-                return None
+                targets = set(dirty)
+                if active_due and not full_check:
+                    targets.update(
+                        task["name"] for task in self.tasks
+                        if task["status"] in ("running", "queued") or task.get("_terminal_write_pending")
+                    )
             changed = self.refresh_from_disk(
                 task_ids=sorted(targets) if targets and not full_check else None,
                 check_all=full_check, discover=discover,
@@ -2285,6 +2309,10 @@ class TaskManager:
             gpu_wait_rule = parse_gpu_wait_rule(gpu_wait_rule).canonical
         to_sync: list[dict[str, Any]] = []
         to_wait_log: list[tuple[Dict[str, Any], int, GpuSchedulerConfig]] = []
+        # A detached CLI runner admits the tasks in one submission individually.
+        serial_batch = self._submission_attempt_id if expected_run_indices is not None else None
+        if self.max_workers == 1 and len(task_ids) > 1 and not serial_batch:
+            serial_batch = uuid.uuid4().hex
         with self._lock:
             available_slots = max(0, int(self.max_workers) - len(self._batch_running_ids))
             for identifier in task_ids:
@@ -2327,6 +2355,9 @@ class TaskManager:
                 gpu_config = self._task_gpu_scheduler_config(task, project_gpu_config, gpu_wait_rule)
                 if gpu_config.enabled:
                     wait_state = self._new_gpu_wait_state(run_index, gpu_config)
+                    if self.max_workers == 1 and serial_batch:
+                        self._gpu_queue_sequence += 1
+                        wait_state.update(_serial_batch=serial_batch, _queue_position=self._gpu_queue_sequence)
                     to_sync.append({
                         "name": task["name"],
                         "status": "queued",
@@ -3716,16 +3747,40 @@ class TaskManager:
         *,
         independent_only: bool,
     ) -> List[Dict[str, Any]]:
-        candidates = [
-            (index, task)
-            for index, task in enumerate(self.tasks)
-            if (
-                task
-                and str(normalize_task_status(task.get("status")) or "").strip().lower() == "queued"
-                and not self._queue_owned_elsewhere(task)
-                and (not independent_only or task.get("_queued_independent"))
-            )
-        ]
+        # Only each serial submission's head may compete for a GPU. A later
+        # task with a different visibility mask cannot pass its blocked predecessor.
+        heads: dict[str, tuple[int, int]] = {}
+        active_groups: set[str] = set()
+        candidates = []
+        for index, task in enumerate(self.tasks):
+            if not task:
+                continue
+            status = normalize_task_status(task.get("status"))
+            if status == "running":
+                assignment = task.get("_gpu_assignment")
+                group = assignment.get("_serial_batch") if isinstance(assignment, dict) else None
+                if isinstance(group, str):
+                    active_groups.add(group)
+            if status != "queued" or (independent_only and not task.get("_queued_independent")):
+                continue
+            wait = task.get("gpu_wait")
+            if isinstance(wait, dict):
+                group, position = wait.get("_serial_batch"), wait.get("_queue_position")
+                if isinstance(group, str) and type(position) is int:
+                    if group not in heads or position < heads[group][0]:
+                        heads[group] = (position, index)
+                    continue
+            if not self._queue_owned_elsewhere(task):
+                candidates.append((index, task))
+        if (
+            self._submission_attempt_id and self._submission_attempt_id in heads
+            and "running" in self._submission_worker_states.values()
+        ):
+            active_groups.add(self._submission_attempt_id)
+        candidates.extend(
+            (index, self.tasks[index]) for group, (_, index) in heads.items()
+            if group not in active_groups and not self._queue_owned_elsewhere(self.tasks[index])
+        )
         ordered = sorted(
             candidates,
             key=lambda item: (
@@ -3788,7 +3843,7 @@ class TaskManager:
         self.gpu_scheduler.snapshot(gpu_config, now=monotonic_now)
         try:
             with task_info_lock(self.tasks_dir, timeout_sec=_GPU_SCHEDULE_LOCK_TIMEOUT_SEC):
-                self._sync_gpu_reservations_from_running_tasks()
+                reservation_error = self._sync_gpu_reservations_from_running_tasks()
                 with self._lock:
                     candidate_names = [
                         str(task.get("name", "") or "")
@@ -3868,14 +3923,17 @@ class TaskManager:
                             timeout_log = (candidate, run_index, waited, max_wait)
                         break
 
-                    decision = self.gpu_scheduler.try_reserve(
-                        task_name,
-                        run_index,
-                        gpu_config,
-                        task_env=task_env,
-                        queued_since=monotonic_now - waited,
-                        refresh_snapshot=False,
-                    )
+                    if reservation_error:
+                        decision = GpuDecision(None, reservation_error, [])
+                    else:
+                        decision = self.gpu_scheduler.try_reserve(
+                            task_name,
+                            run_index,
+                            gpu_config,
+                            task_env=task_env,
+                            queued_since=monotonic_now - waited,
+                            refresh_snapshot=False,
+                        )
 
                     with self._lock:
                         current = self._resolve_identifier_locked(task_name)
@@ -3925,6 +3983,8 @@ class TaskManager:
                             assignment = dataclasses.replace(decision.assignment, run_index=run_index, env=launch_env)
                             current["_scheduled_env"] = launch_env
                             current["_gpu_assignment"] = self._gpu_assignment_to_dict(assignment)
+                            if serial_batch := wait_state.get("_serial_batch"):
+                                current["_gpu_assignment"]["_serial_batch"] = serial_batch
                             current["status"] = "running"
                             current["run_index"] = run_index
                             self._mark_running_locked(current["name"], counts_for_batch=not is_independent)
@@ -3946,7 +4006,7 @@ class TaskManager:
                         assignment_log = None
                         # A claim race can reveal a newly running foreign task.
                         # Refresh reservations before evaluating another candidate.
-                        self._sync_gpu_reservations_from_running_tasks()
+                        reservation_error = self._sync_gpu_reservations_from_running_tasks()
                         continue
                     if target is not None:
                         break
@@ -5220,13 +5280,27 @@ class TaskManager:
             "waited_seconds": assignment.waited_seconds,
         }
 
-    def _sync_gpu_reservations_from_running_tasks(self) -> None:
+    def _observed_gpu_run_may_be_active(self, run: _ObservedGpuRun) -> bool:
+        if run.pid and run.created_at:
+            identity = {
+                "runner_host": self.runner_host, "runner_device": run.runner_device,
+                "_attempt_id": run.attempt_id, "run_index": run.run_index,
+            }
+            if self._verified_run_process_time(identity, run.pid, run.created_at) is not None:
+                return True
+            if get_process_create_time(run.pid) is not None or not self._pid_may_exist(run.pid):
+                return False
+        return run.lease_until > time.time()
+
+    def _sync_gpu_reservations_from_running_tasks(self) -> str | None:
+        """Publish a complete reservation table, or return why GPU admission must wait."""
         with self._lock:
             known_tasks = {
                 str(task.get("name", "") or ""): {
                     "dir": str(task.get("dir", "") or ""),
                     "status": str(task.get("status", "") or "").lower(),
                     "info_signature": task.get("_info_signature"),
+                    "load_error": task.get("_load_error"),
                     "foreign_live": self._is_foreign_live_runner(task),
                     "local_live": self._is_current_runner(task) and self._lease_active(task),
                     # A local runner has already published its assignment into
@@ -5242,59 +5316,105 @@ class TaskManager:
         # GPU admission scans more often than UI discovery and only reserves
         # GPUs on this host. Keep the full UI path index intact.
         local_paths: dict[str, str] = {}
+        prior_owners = self.gpu_scheduler.reserved_task_names() | self._observed_gpu_runs.keys()
+        prior_paths = self._scanned_paths
         if self._include_other_devices:
             scan_ok, disk_names = self._scan_task_dir_names(local_paths=local_paths)
         else:
             scan_ok, disk_names = self._scan_task_dir_names()
+        if not scan_ok:
+            return "Cannot verify GPU reservations: task directory scan unavailable"
+
         reservations: Dict[str, List[int]] = {}
-        if scan_ok:
-            task_refs: List[tuple[str, str]] = []
-            for task_name in disk_names:
-                task_dir = local_paths.get(task_name) or self.task_directory(task_name)
-                known = known_tasks.get(task_name)
-                if known is not None and known["status"] == "running" and known["local_live"]:
-                    local_gpu_ids = self._gpu_ids_from_assignment(known["gpu_assignment"])
-                    if local_gpu_ids:
-                        reservations[task_name] = local_gpu_ids
-                        continue
-                    # An assignment can be persisted just after this snapshot;
-                    # retain the read fallback until the in-memory value exists.
-                if known is None or known["status"] == "running" or bool(known["foreign_live"]):
+        observed_runs: dict[str, _ObservedGpuRun] = {}
+        task_refs: List[tuple[str, str]] = []
+        # Shared storage may return an old listing while a direct lookup of a
+        # previously reserved task still works. Recheck only those absent names.
+        for task_name in prior_owners.difference(disk_names):
+            task_refs.append((task_name, prior_paths.get(task_name) or self.task_directory(task_name)))
+        for task_name in disk_names:
+            task_dir = local_paths.get(task_name) or self.task_directory(task_name)
+            known = known_tasks.get(task_name)
+            if known is not None and known["status"] == "running" and known["local_live"]:
+                local_gpu_ids = self._gpu_ids_from_assignment(known["gpu_assignment"])
+                if local_gpu_ids:
+                    reservations[task_name] = local_gpu_ids
+                    continue
+                # The assignment may have been persisted just after this snapshot.
+            if known is None or known["status"] == "running" or known["foreign_live"] or task_name in prior_owners:
+                task_refs.append((task_name, task_dir))
+                continue
+            if known["status"] == "queued":
+                if not known["local_live"]:
                     task_refs.append((task_name, task_dir))
-                    continue
-                if known["status"] == "queued" and bool(known["local_live"]):
-                    # A locally leased queued task cannot be claimed by another
-                    # scheduler, so rereading it here only duplicates refresh I/O.
-                    continue
-                if known["status"] == "queued":
-                    task_refs.append((task_name, task_dir))
-                    continue
-                try:
-                    disk_stat = os.stat(os.path.join(task_dir, TASK_INFO_FILENAME))
-                except OSError:
-                    continue
-                if self._stat_signature(disk_stat) != known["info_signature"]:
-                    task_refs.append((task_name, task_dir))
-        else:
-            task_refs = []
-            for task_name, task in known_tasks.items():
-                if task["status"] != "running":
-                    continue
-                if task["local_live"]:
-                    local_gpu_ids = self._gpu_ids_from_assignment(task["gpu_assignment"])
-                    if local_gpu_ids:
-                        reservations[task_name] = local_gpu_ids
-                        continue
-                task_refs.append((task_name, str(task["dir"] or "")))
+                continue
+            try:
+                disk_stat = os.stat(os.path.join(task_dir, TASK_INFO_FILENAME))
+            except FileNotFoundError:
+                continue
+            except OSError:
+                return f"Cannot verify GPU reservations: metadata unavailable for {task_name}"
+            if self._stat_signature(disk_stat) != known["info_signature"]:
+                task_refs.append((task_name, task_dir))
         for task_name, task_dir in task_refs:
             if not task_name or not task_dir:
                 continue
+            known = known_tasks.get(task_name)
+            previous = self._observed_gpu_runs.get(task_name)
             try:
-                info = load_task_metadata(task_dir)
-            except Exception:
+                info = load_task_metadata(task_dir, raise_error=True)
+            except FileNotFoundError:
+                # Task roots can also contain non-task directories. A known
+                # owner with a temporarily missing record still holds its cards.
+                if not (known and known["status"] == "running") and task_name not in prior_owners:
+                    continue
+                if task_name not in disk_names:
+                    try:
+                        os.lstat(task_dir)
+                    except FileNotFoundError:
+                        if not (previous and self._observed_gpu_run_may_be_active(previous)) and not (
+                            known and (known["local_live"] or known["foreign_live"])
+                        ):
+                            continue
+                    except OSError:
+                        pass
+                info = {}
+            except ValueError:
+                # A corrupt historical task already isolated by discovery should
+                # not stall unrelated experiments. Never discard an active owner.
+                if known and known["status"] == "failed" and known["load_error"] and task_name not in prior_owners:
+                    continue
+                info = {}
+            except OSError:
+                info = {}
+            status = str(info.get("status", "") or "").lower()
+            if not info or (status not in _VALID_TASK_STATUSES and task_name in prior_owners):
+                return f"Cannot verify GPU reservations: metadata unavailable for {task_name}"
+            if status != "running" and not previous:
                 continue
-            if str(info.get("status", "") or "").lower() != "running":
+            try:
+                run_index = active_task_run_index(info)
+            except ValueError:
+                return f"Cannot verify GPU reservations: invalid run history for {task_name}"
+            runner_id = str(info.get("runner_id") or "")
+            attempt_id = read_run_attempt_id(info, run_index) or str(info.get("_attempt_id") or "")
+            if previous:
+                different_attempt = previous.attempt_id and attempt_id != previous.attempt_id
+                inconsistent = run_index <= previous.run_index and (
+                    run_index < previous.run_index or different_attempt or status in {"pending", "queued"}
+                    or (status == "running" and (
+                        runner_id != previous.runner_id
+                        or (not self._is_current_runner(info) and runner_location(info, self.runner_host) != "local")
+                    ))
+                )
+                if inconsistent and self._observed_gpu_run_may_be_active(previous):
+                    return f"Cannot verify GPU reservations: stale run metadata for {task_name}"
+            if status != "running":
                 continue
+            same_run = (
+                previous is not None and previous.run_index == run_index
+                and previous.attempt_id == attempt_id and previous.runner_id == runner_id
+            )
             if self._is_current_runner(info):
                 with self._lock:
                     current = self._tasks_by_name.get(task_name)
@@ -5304,12 +5424,30 @@ class TaskManager:
                     ):
                         continue
             elif runner_location(info, self.runner_host) != "local" or not self._running_info_has_live_owner(info):
+                if same_run and self._observed_gpu_run_may_be_active(previous):
+                    return f"Cannot verify GPU reservations: stale owner metadata for {task_name}"
                 continue
             gpu_ids = self._gpu_ids_from_assignment(info.get("_gpu_assignment"))
+            if same_run and previous.gpu_ids != tuple(gpu_ids):
+                # GPU allocation cannot change during an execution. A partial
+                # running record must not release some or all of its devices.
+                return f"Cannot verify GPU reservations: inconsistent assignment for {task_name}"
             if gpu_ids:
                 reservations[task_name] = gpu_ids
+                lease_until = self._lease_until_value(info)
+                pid, created_at = self._current_process_identity(info)
+                if same_run:
+                    lease_until = max(lease_until, previous.lease_until)
+                    if not created_at and (not pid or pid == previous.pid):
+                        pid, created_at = previous.pid, previous.created_at
+                observed_runs[task_name] = _ObservedGpuRun(
+                    runner_id, run_index, attempt_id, tuple(gpu_ids), lease_until,
+                    pid, created_at, str(info.get("runner_device") or ""),
+                )
 
         self.gpu_scheduler.sync_reservations(reservations)
+        self._observed_gpu_runs = observed_runs
+        return None
 
     @staticmethod
     def _gpu_queue_run_index(lines: List[str]) -> int | None:

@@ -29,6 +29,27 @@ from pyruns.utils.task_files import read_task_payload, write_task_payload
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows extended paths and DOS filename rules")
+def test_log_metadata_preserves_extended_task_directory(tmp_path):
+    tasks = tmp_path / "tasks"
+    (tasks / "trial" / "run_logs").mkdir(parents=True)
+    (tasks / "trial" / "run_logs" / "run1.log").write_bytes(b"ordinary")
+    special = "\\\\?\\" + str(tasks / "trial.")
+    logs = os.path.join(special, "run_logs")
+    path = os.path.join(logs, "run1.log")
+    os.makedirs(logs)
+    try:
+        with open(path, "wb") as f:
+            f.write(b"extended name")
+        assert info_io.stat_task_log(special, "run1.log").st_size == len(b"extended name")
+        assert info_io.stat_task_log(str(tasks / "trial"), "run1.log").st_size == len(b"ordinary")
+    finally:
+        if os.path.exists(path):
+            os.unlink(path)
+        os.rmdir(logs)
+        os.rmdir(special)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows extended paths and DOS filename rules")
 def test_workspace_file_boundary_distinguishes_missing_and_literal_windows_names(tmp_path):
     root = tmp_path / "workspace"
     root.mkdir()

@@ -34,6 +34,29 @@ def names(page):
     return [task["name"] for task in page[0]]
 
 
+def test_refresh_cooldown_skips_the_registry_until_work_is_due(manager, monkeypatch):
+    class CountedTasks(list):
+        iterations = 0
+
+        def __iter__(self):
+            self.iterations += 1
+            return super().__iter__()
+
+    manager.tasks = CountedTasks(manager.tasks)
+    monkeypatch.setattr(task_manager_module.time, "monotonic", lambda: 100.0)
+    with patch.object(manager, "refresh_from_disk", return_value=False) as refresh:
+        assert manager.refresh_ui_snapshot(force=True, background=True) is False
+        refresh.assert_called_once_with(task_ids=None, check_all=True, discover=True, check_payload=True)
+        refresh.reset_mock()
+        assert manager.refresh_ui_snapshot(background=True) is None
+        assert manager.refresh_ui_snapshot() is None
+        refresh.assert_not_called()
+        manager.invalidate_ui_snapshot(["task2"])
+        assert manager.refresh_ui_snapshot(background=True) is False
+        refresh.assert_called_once_with(task_ids=["task2"], check_all=False, discover=False, check_payload=True)
+        assert manager.tasks.iterations == 0
+
+
 @pytest.mark.parametrize("warm_index", [False, True])
 def test_active_group_filters_cached_and_cold_pages_without_changing_global_totals(manager, warm_index):
     from pyruns.utils.sort_utils import filter_tasks
@@ -86,6 +109,37 @@ def test_repeated_pages_share_sort_counts_and_copy_only_selected_tasks(manager):
     assert second[1] == third[1] == 3
     assert second[2]["pending"] == third[2]["pending"] == 3
     assert manager.get_task("task2", summary=True)["env"]["TOKEN"] == "before"
+
+
+def test_source_filtered_pages_reuse_membership_and_invalidate_with_the_registry(manager):
+    remote = "tasks-node-aaaaaaaaaaaa"
+    task = manager._tasks_by_name["task10"]
+    with manager._lock:
+        task["dir"] = f"/workspace/{remote}/task10"
+        manager._rebuild_indexes_locked()
+
+    def page(sources, **options):
+        return manager.get_task_page(sort_mode="name_asc", summary=True, sources=sources, **options)
+
+    first = page({"shared"}, limit=1)
+    assert names(first) == ["task2"]
+    assert (first[1], first[2]["pending"]) == (2, 2)
+    with patch.object(task_manager_module, "task_source", wraps=task_manager_module.task_source) as classify:
+        second = page({"shared"}, offset=1, limit=1)
+        assert names(second) == ["task3"]
+        assert classify.call_count == 1  # Only the serialized row.
+        assert page({"shared"}, query="task", search_field="name", status="failed")[1] == 0
+        assert classify.call_count == 1
+    assert names(page({remote})) == ["task10"]
+    assert page(None)[2]["pending"] == 3
+    assert page(set())[1:] == (0, dict.fromkeys(first[2], 0))
+    assert manager.update_task_notes("task3", "revised", "before")[0]
+    assert names(page({"shared"}, query="revised", search_field="notes")) == ["task3"]
+    local = manager._tasks_by_name["task2"]
+    update_task_metadata(local["dir"], lambda info: info.update(status="failed"))
+    manager.load_task_by_name("task2")
+    assert names(page({"shared"}, status="failed")) == ["task2"]
+    assert page({"shared"})[2]["pending"] == 1
 
 
 def test_search_reads_current_notes_env_and_payload_without_resorting(manager):
@@ -217,6 +271,10 @@ def test_cache_is_bounded_and_source_replacement_and_invalid_sort_stay_correct(m
     for status in ["All", "PENDING", "pending", *(f"unknown{index}" for index in range(30))]:
         manager.get_task_page(sort_mode="name_asc", status=status)
         assert len(manager._task_page_cache) <= task_manager_module._TASK_PAGE_CACHE_SIZE
+    for index in range(30):
+        manager.get_task_page(sources={f"source{index}"})
+        assert len(manager._task_page_cache) <= task_manager_module._TASK_PAGE_CACHE_SIZE
+        assert len(manager._task_page_populations) <= task_manager_module._TASK_PAGE_CACHE_SIZE
     with pytest.raises(ValueError, match="Unknown task sort mode"):
         manager.get_task_page(sort_mode="broken")
     manager.tasks = [{"name": "replacement", "status": "failed"}]

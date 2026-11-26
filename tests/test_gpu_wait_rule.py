@@ -156,6 +156,81 @@ def test_explicit_cuda_mask_that_hides_all_gpus_is_not_overridden(mask):
     assert "CUDA_VISIBLE_DEVICES" in decision.reason
 
 
+@pytest.mark.parametrize("workers", [1, 2])
+def test_blocked_gpu_head_holds_only_its_own_serial_batch(tmp_path, workers):
+    generator = TaskGenerator(root_dir=str(tmp_path / "tasks"))
+    for name, gpu in (("first", "0"), ("second", "1"), ("other", "1")):
+        generator.create_task(name, {}, task_metadata={"env": {"CUDA_VISIBLE_DEVICES": gpu}})
+    manager = TaskManager(tasks_dir=str(tmp_path / "tasks"), lazy_scan=False, owns_task_lifecycle=False)
+    manager.gpu_scheduler = GpuResourceScheduler(provider=_GpuProvider([
+        GpuDevice(0, "A", "GPU-0", 1024, 24576, 95),
+        GpuDevice(1, "B", "GPU-1", 1024, 24576, 0),
+    ]))
+    try:
+        rule = "1-8-70-0-0"
+        assert manager.start_batch_tasks(["first", "second"], max_workers=workers, gpu_wait_rule=rule) == ["first", "second"]
+        manager.scan_disk()
+        if workers == 2:
+            assert manager._pick_queued_task()[0]["name"] == "second"
+        else:
+            assert manager._pick_queued_task()[0] is None
+            assert manager.start_batch_tasks(["other"], max_workers=2, gpu_wait_rule=rule) == ["other"]
+            assert manager._pick_queued_task()[0]["name"] == "other"
+            assert manager.cancel_task("first")
+            # Once the independent reservation is gone, the next member can run.
+            manager._finalize_task_attempt(
+                "other", expected_runner_id=manager.runner_id, expected_run_index=1,
+                error=RuntimeError("simulated independent worker failure"),
+            )
+            assert manager._pick_queued_task()[0]["name"] == "second"
+    finally:
+        manager.shutdown()
+
+
+@pytest.mark.parametrize("expired", ["first", "second"])
+def test_serial_gpu_batch_keeps_the_submission_deadline(tmp_path, monkeypatch, expired):
+    monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising=False)
+    generator = TaskGenerator(root_dir=str(tmp_path / "tasks"))
+    tasks = {name: generator.create_task(name, {}) for name in ("first", "second")}
+    manager = TaskManager(tasks_dir=str(tmp_path / "tasks"), lazy_scan=False, owns_task_lifecycle=False)
+    manager.gpu_scheduler = GpuResourceScheduler(provider=_GpuProvider([GpuDevice(0, "A", "GPU-0", 0, 24576, 0)]))
+    try:
+        assert manager.start_batch_tasks(list(tasks), max_workers=1, gpu_wait_rule="1-8-70-0-1") == list(tasks)
+        if expired == "second":
+            assert manager._pick_queued_task()[0]["name"] == "first"
+        update_task_info(tasks[expired]["dir"], lambda info: info["gpu_wait"].update(deadline_at=time.time() - 1))
+        manager.scan_disk()
+        if expired == "second":
+            assert manager._pick_queued_task()[0] is None
+            assert load_task_info(tasks["second"]["dir"])["status"] == "queued"
+            manager._finalize_task_attempt(
+                "first", expected_runner_id=manager.runner_id, expected_run_index=1, error=RuntimeError("test"),
+            )
+        assert manager._pick_queued_task()[0] is None
+        assert load_task_info(tasks[expired]["dir"])["status"] == "failed"
+        if expired == "first":
+            assert manager._pick_queued_task()[0]["name"] == "second"
+    finally:
+        manager.shutdown()
+
+
+def test_foreign_queued_head_still_precedes_a_recoverable_batch_member(tmp_path):
+    generator = TaskGenerator(root_dir=str(tmp_path / "tasks"))
+    for name in ("first", "second"):
+        generator.create_task(name, {})
+    manager = TaskManager(tasks_dir=str(tmp_path / "tasks"), lazy_scan=False, owns_task_lifecycle=False)
+    try:
+        manager.start_batch_tasks(["first", "second"], max_workers=1, gpu_wait_rule="1-8-70-0-0")
+        update_task_info(str(tmp_path / "tasks" / "first"), lambda info: info.update(
+            runner_id=manager.runner_id + "-other", lease_until=time.time() + 60,
+        ))
+        manager.scan_disk()
+        with manager._lock:
+            assert manager._queued_candidates_locked(independent_only=False) == []
+    finally:
+        manager.shutdown()
+
+
 def test_submission_rules_override_project_and_do_not_block_ready_tasks(tmp_path, monkeypatch):
     tasks_dir = tmp_path / "tasks"
     tasks_dir.mkdir()

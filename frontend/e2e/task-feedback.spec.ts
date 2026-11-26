@@ -328,3 +328,35 @@ test('source checkboxes filter both task views and allow an empty selection', as
   await page.reload()
   await expect(page.getByText('No task sources selected')).toBeVisible()
 })
+
+test('device search navigates matching hosts without changing hidden selections', async ({ page }) => {
+  const sources = [
+    { id: 'shared', host: '' }, { id: 'local', host: 'desk' },
+    ...Array.from({ length: 12 }, (_, i) => ({ id: `tasks-lab-${i}`, host: `lab-${i}` })),
+  ]
+  await page.route('**/api/tasks?*', route => route.fulfill({ json: {
+    items: [], total: 0, offset: 0, limit: 50, has_more: false, task_sources: sources,
+  } }))
+  await page.goto('/manager?token=pyruns-e2e-access-token')
+  const trigger = page.getByRole('button', { name: 'Task sources' })
+  await trigger.click()
+  const search = page.getByRole('searchbox', { name: 'Find a source' })
+  await search.fill('LAB-11')
+  const device = page.getByRole('checkbox', { name: 'lab-11', exact: true })
+  await search.press('ArrowDown')
+  await expect(device).toBeFocused()
+  await expect(device).toBeChecked()
+  await device.press('Space')
+  await expect(device).not.toBeChecked()
+  await search.fill('absent')
+  await expect(page.getByText('No matching sources')).toBeVisible()
+  await search.press('Escape')
+  await expect(trigger).toBeFocused()
+  await trigger.click()
+  await expect(search).toHaveValue('')
+  await expect(page.getByRole('checkbox', { name: 'lab-0', exact: true })).toBeChecked()
+  await expect(device).not.toBeChecked()
+  await search.fill('lab-11')
+  await page.getByRole('checkbox', { name: 'Select all sources' }).click()
+  await expect(device).toBeChecked()
+})

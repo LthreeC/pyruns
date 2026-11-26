@@ -265,6 +265,10 @@ class GpuResourceScheduler:
         with self._lock:
             self._reservations.pop(str(task_name), None)
 
+    def reserved_task_names(self) -> set[str]:
+        with self._lock:
+            return set(self._reservations)
+
     def sync_reservations(self, reservations: Dict[str, List[int]]) -> None:
         """Replace local reservations with active assignments recovered from disk."""
 

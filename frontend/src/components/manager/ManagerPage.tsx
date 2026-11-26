@@ -395,7 +395,12 @@ export default function ManagerPage() {
     }
   }, [focusTaskName, searchParams, setSearchParams, workspaceEpoch])
 
-  const selectedTasks = useMemo(() => tasks.filter(task => selectedIds.has(task.name)), [tasks, selectedIds])
+  const pinnedTasks = useMemo(() => tasks.filter(task => task.pinned), [tasks])
+  const otherTasks = useMemo(() => tasks.filter(task => !task.pinned), [tasks])
+  const selectedTasks = useMemo(
+    () => [...pinnedTasks, ...otherTasks].filter(task => selectedIds.has(task.name)),
+    [pinnedTasks, otherTasks, selectedIds],
+  )
   const runSelection = useMemo(() => selectedTasks.filter(task => task.task_storage !== 'remote'), [selectedTasks])
   const deleteSelection = useMemo(() => selectedTasks.filter(task => !stopOnExecutionDevice(task)), [selectedTasks])
   const visibleSelectedCount = selectedTasks.length
@@ -403,8 +408,6 @@ export default function ManagerPage() {
   const orderMutationPending = hasPendingOrderMutation(pendingTaskActions)
   const activeSelectedCount = deleteSelection.filter(isActiveTask).length
   const allPageSelected = tasks.length > 0 && visibleSelectedCount === tasks.length
-  const pinnedTasks = useMemo(() => tasks.filter(task => task.pinned), [tasks])
-  const otherTasks = useMemo(() => tasks.filter(task => !task.pinned), [tasks])
   const showPinnedSection = pinnedTasks.length > 0
   const summary = useMemo(() => statusCounts ? {
     total: Object.values(statusCounts).reduce((count, value) => count + value, 0),
@@ -1003,7 +1006,9 @@ export default function ManagerPage() {
                 disabled={runSelection.length === 0 || Boolean(bulkAction)}
                 aria-busy={bulkAction === 'run' || undefined}
               >
-                {t('Run ({{count}})', { count: runSelection.length })}
+                {normalizeWorkerInput(maxWorkersInput) === 1 && runSelection.length > 1
+                  ? t('Run one at a time ({{count}})', { count: runSelection.length })
+                  : t('Run ({{count}})', { count: runSelection.length })}
               </ActionButton>
 
               <ActionButton

@@ -16,6 +16,34 @@ from pyruns.launcher import bootstrap_shell_workspace
 from pyruns.utils.info_io import ensure_run_slot, update_task_info
 
 
+def test_show_reads_external_curves_only_for_json(tmp_path, capsys, monkeypatch):
+    from pyruns._config import ENV_KEY_CLI_TERMINAL_RUNTIME, ENV_KEY_ROOT
+    from pyruns.utils import track_store
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv(ENV_KEY_ROOT, str(tmp_path / "_pyruns_"))
+    monkeypatch.setenv(ENV_KEY_CLI_TERMINAL_RUNTIME, "1")
+    workspace = Path(bootstrap_shell_workspace(str(tmp_path / "_pyruns_")))
+    task = TaskGenerator(root_dir=str(workspace / "tasks")).create_shell_task(
+        "curve", "echo curve", workdir=str(tmp_path), exact_name=True,
+    )
+    points = list(range(track_store.INLINE_TRACK_POINTS))
+    update_task_info(task["dir"], lambda info: info.update(
+        status="completed", run_index=1, run_statuses=["completed"], tracks=[{"step": points}],
+    ))
+    assert (Path(task["dir"]) / track_store.TRACK_STORE_FILENAME).is_file()
+    prefix = ["-C", str(tmp_path), "-w", "shell", "show"]
+    with monkeypatch.context() as m:
+        m.setattr(track_store, "read_tracks", lambda *a, **kw: pytest.fail("text show loaded curves"))
+        for name in ("curve", "curve@1"):
+            assert main([*prefix, name]) == 0
+            assert "Status:     completed" in capsys.readouterr().out
+    assert main([*prefix, "curve@1", "--json"]) == 0
+    data = json.loads(capsys.readouterr().out)
+    assert data["tracks"] == [{"step": points}]
+    assert data["selected_run"]["track"] == {"step": points}
+
+
 def test_ls_limits_before_serializing_and_reuses_filtered_snapshot(monkeypatch, capsys):
     tasks = [
         {"name": f"task-{index:04d}", "status": "completed", "pinned": index == 999}
@@ -250,6 +278,11 @@ def test_cli_tail_selects_historical_log_and_rejects_invalid_options(tmp_path, c
     logs.mkdir(exist_ok=True)
     (logs / "run1.log").write_text("first\nold last\n", encoding="utf-8")
     (logs / "run2.log").write_text("new run\n", encoding="utf-8")
+    # A missing or corrupt input snapshot cannot invalidate a log or exit status.
+    (logs / "run1.input.json").write_text("corrupt", encoding="utf-8")
+    (logs / "run2.input.json").write_text("corrupt", encoding="utf-8")
+    assert main(["-C", str(tmp_path), "-w", "shell", "wait", "logged", "--timeout", "1"]) == 0
+    capsys.readouterr()
     prefix = ["-C", str(tmp_path), "-w", "shell", "log"]
     assert main([*prefix, "logged@1", "--tail", "1"]) == 0
     assert capsys.readouterr().out == "old last\n"

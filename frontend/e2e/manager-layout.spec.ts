@@ -66,6 +66,25 @@ async function fixture(page: Page, taskCount = 50) {
   return { requests, mutations, first: tasks[0].name, reported: tasks[1].name, remoteRunning: tasks[5].name, remoteQueued: tasks[6].name }
 }
 
+test('single-worker batch follows the visible pinned and unpinned order', async ({ page }) => {
+  await fixture(page, 7)
+  await page.route('**/api/tasks/batch/run?*', route => route.fulfill({ json: { count: 2, items: [], skipped: [] } }))
+  await page.goto('/manager?token=pyruns-e2e-access-token')
+  const cards = page.locator('[data-task-card]')
+  await expect(cards).toHaveCount(7)
+  const unpinned = await cards.nth(3).getAttribute('data-task-card')
+  const pinned = await cards.nth(4).getAttribute('data-task-card')
+  await page.getByRole('button', { name: `Pin ${pinned}`, exact: true }).click()
+  await expect(cards.first()).toHaveAttribute('data-task-card', pinned!)
+  await page.getByRole('button', { name: 'Select tasks', exact: true }).click()
+  await page.getByRole('button', { name: `Select ${unpinned}`, exact: true }).click()
+  await page.getByRole('button', { name: `Select ${pinned}`, exact: true }).click()
+  await page.getByRole('spinbutton', { name: 'Maximum parallel workers' }).fill('1')
+  const request = page.waitForRequest('**/api/tasks/batch/run?*')
+  await page.getByRole('button', { name: 'Run one at a time (2)', exact: true }).click()
+  expect((await request).postDataJSON()).toEqual({ task_names: [pinned, unpinned], max_workers: 1 })
+})
+
 test('manager drag keeps the grid in place and animates the new order only when motion is enabled', async ({ page, isMobile }) => {
   test.skip(isMobile, 'Uses a mouse on a multi-column grid')
   await page.setViewportSize({ width: 1440, height: 900 })

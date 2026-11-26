@@ -84,7 +84,7 @@ test('monitor shows the latest progress redraw and keeps the original log availa
   const frames = Array.from({ length: 80 }, (_, index) => (
     ('Progress stage ' + String(index).padStart(4, '0')).padEnd(159, '█')
   ))
-  const content = 'Started\r\n\r' + frames.join('\r') + '\r\nFinished\r\n'
+  const content = 'Started\r\n\r' + frames.join('\r') + '\r\n\rShort 9%\rShort 100%\rFinal\r\nFinished\r\n'
   let copiedLog = ''
   await page.exposeFunction('captureCopiedLog', (value: string) => { copiedLog = value })
   await page.addInitScript(() => {
@@ -103,6 +103,7 @@ test('monitor shows the latest progress redraw and keeps the original log availa
   const rows = page.locator('.xterm-rows')
   await expect(rows).toContainText('Finished')
   await expect(rows).toContainText('Progress stage 0079')
+  await expect(rows).toContainText('Final 100%')
   await expect(rows).not.toContainText('Progress stage 0078')
   await page.getByRole('button', { name: 'Copy current log', exact: true }).click()
   await expect.poll(() => copiedLog).toBe(content)

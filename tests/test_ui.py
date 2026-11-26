@@ -583,7 +583,7 @@ def test_react_manager_uses_global_counts_page_scoped_selection_and_pending_lock
     assert "statusCounts: page.status_counts ?? null" in store
     assert "selectedIds: new Set()" in store
     assert "Selection is page-scoped" in manager
-    assert "tasks.filter(task => selectedIds.has(task.name))" in manager
+    assert "[...pinnedTasks, ...otherTasks].filter(task => selectedIds.has(task.name))" in manager
     assert "pendingTaskActionsRef.current.has(taskName)" in manager
     assert "const [bulkAction, setBulkAction]" in manager
     assert "api.runTask(task.name)" in manager

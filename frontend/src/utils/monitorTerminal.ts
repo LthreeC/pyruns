@@ -2,35 +2,50 @@
 const TERMINAL_RESET = '\x18\x1bc'
 const WRITE_CHARS = 32 * 1024
 const MAX_PROGRESS_COLUMNS = 500
-const PLAIN_FRAME = /^[\x20-\x7e\u2580-\u259f]*$/
+const NON_PROGRESS_CHARACTER = /[^\r\x20-\x7e\u2580-\u259f]/
 const UNSUPPORTED_CONTROLS = /[\x00-\x09\x0b\x0c\x0e-\x1f\x7f-\x9f]/
 
 /**
- * Retain the visible state of plain, fixed-width CR redraws in a history preview.
+ * Retain the visible state of plain CR redraws in a history preview.
  * A frame may wrap at the Monitor's width even though it fit on the original
  * terminal. Show the latest redraw once instead of retaining those extra wraps.
  */
-export function compactTerminalHistory(text: string) {
+export function compactTerminalHistory(text: string, columns = 80) {
   if (!/\r[^\n]/.test(text)) return text
   // Colors can span lines. Other controls can move the cursor or change modes.
   if (UNSUPPORTED_CONTROLS.test(text.replace(/\x1b\[[0-9:;]*m/g, ''))) return text
 
   return text.split('\n').map(line => {
     const firstReturn = line.indexOf('\r')
-    if (firstReturn < 0 || firstReturn === line.lastIndexOf('\r')) return line
+    if (firstReturn < 0) return line
+    if (firstReturn === line.lastIndexOf('\r')) return line
+    if (firstReturn > MAX_PROGRESS_COLUMNS || NON_PROGRESS_CHARACTER.test(line)) return line
 
-    const frames = line.split('\r')
-    const latest = frames[frames.length - 1]
-    const previous = frames[frames.length - 2]
-    const width = previous.length
-    if (width === 0 || width > MAX_PROGRESS_COLUMNS || frames[0].length > width) return line
-    if (!frames.every((frame, index) => (
-      (index === 0 || index === frames.length - 1 || frame.length === width) && PLAIN_FRAME.test(frame)
-    ))) return line
-
-    // The file may end in the middle of a redraw. Preserve the previous full
-    // frame and the partial write so a later live chunk resumes at its column.
-    return latest.length >= width ? latest : previous + '\r' + latest
+    // A single terminal row can contain hundreds of thousands of redraws.
+    // Check their widths in place and allocate only the visible suffix.
+    let widest = firstReturn
+    let narrowestRedraw = Infinity
+    let keepFrom = 0
+    for (let start = firstReturn + 1;;) {
+      const next = line.indexOf('\r', start)
+      const width = (next === -1 ? line.length : next) - start
+      if (next !== -1) {
+        if (width > MAX_PROGRESS_COLUMNS) return line
+        narrowestRedraw = Math.min(narrowestRedraw, width)
+      } else if (widest > columns && narrowestRedraw !== widest) {
+        // Variable-width writes may have wrapped and left earlier rows on
+        // screen. Keep the existing narrow-screen fold for fixed-width bars.
+        return line
+      }
+      // A redraw covering all earlier cells supersedes them. Keep subsequent
+      // shorter writes verbatim for their residual cells and final cursor.
+      if (width > 0 && width >= widest) {
+        keepFrom = start
+        widest = width
+      }
+      if (next === -1) return line.slice(keepFrom)
+      start = next + 1
+    }
   }).join('\n')
 }
 

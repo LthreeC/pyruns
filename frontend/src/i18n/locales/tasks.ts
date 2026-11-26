@@ -98,6 +98,7 @@ export default {
   'Workers': '并行进程',
   'Maximum parallel workers': '最大并行进程数',
   'Run ({{count}})': '运行（{{count}}）',
+  'Run one at a time ({{count}})': '逐个运行（{{count}}）',
   'Delete': '删除',
   'Cancel': '取消',
   'Task list': '任务列表',

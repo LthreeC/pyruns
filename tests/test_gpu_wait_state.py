@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import time
+from pathlib import Path
 
 import pytest
 
@@ -10,6 +11,7 @@ from pyruns.core.gpu_scheduler import GpuDevice, GpuResourceScheduler, GpuSchedu
 from pyruns.core.task_generator import TaskGenerator
 from pyruns.core.task_manager import TaskManager
 from pyruns.utils.info_io import load_task_info, update_task_info
+from pyruns.utils.runner_device import local_runner_device
 from pyruns.utils.settings import save_settings_for_root
 
 
@@ -359,7 +361,8 @@ def test_reservation_sync_skips_unchanged_locally_queued_task_files(tmp_path, mo
     )
     loaded = []
 
-    def fake_load(task_dir):
+    def fake_load(task_dir, *, raise_error):
+        assert raise_error
         name = str(task_dir).replace("\\", "/").rsplit("/", 1)[-1]
         loaded.append(name)
         remote = name == "remote"
@@ -382,3 +385,74 @@ def test_reservation_sync_skips_unchanged_locally_queued_task_files(tmp_path, mo
         "running": [0],
         "unknown": [1],
     }
+
+
+@pytest.mark.parametrize("failure", [
+    "empty", "read_error", "missing_record", "scan_error", "stale_listing", "missing_assignment",
+    "partial_assignment", "older_terminal", "older_queue", "wrong_attempt_terminal", "stale_lease",
+])
+def test_shared_gpu_group_survives_an_incomplete_reservation_scan(tmp_path, monkeypatch, failure):
+    config = GpuSchedulerConfig(enabled=True, task_mode="multi", gpus_per_task=2, stable_seconds=0)
+    manager, queued, tasks_dir = _create_manager_with_task(tmp_path, monkeypatch, config=config)
+    monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising=False)
+    manager.gpu_scheduler = GpuResourceScheduler(provider=StaticGpuProvider([
+        GpuDevice(index, "A100", f"GPU-{index}", 0, 81920, 0) for index in (0, 1)
+    ]))
+    # A new runner's admission scan can see an owner before UI discovery does.
+    other = TaskGenerator(root_dir=str(tasks_dir)).create_task("group-owner", {})
+    update_task_info(other["dir"], lambda info: info.update(
+        status="running", runner_id=f"{manager.runner_host}:0:other",
+        runner_host=manager.runner_host, runner_device=local_runner_device(),
+        lease_until=time.time() + 60, run_index=1, _attempt_id="owner-attempt",
+        run_attempt_ids=["owner-attempt"], _gpu_assignment={"gpu_ids": [0, 1]},
+    ))
+    assert manager.start_task_now(queued["name"])
+    assert manager._pick_queued_task()[0] is None
+    assert manager.gpu_scheduler._reservations == {other["name"]: [0, 1]}
+
+    with monkeypatch.context() as fault:
+        if failure == "scan_error":
+            fault.setattr(manager, "_scan_task_dir_names", lambda **_: (False, []))
+        elif failure == "stale_listing":
+            fault.setattr(manager, "_scan_task_dir_names", lambda **_: (True, [queued["name"]]))
+        else:
+            from pyruns.core import task_manager
+            original = task_manager.load_task_metadata
+
+            def intermittent_read(path, *args, **kwargs):
+                if Path(path) == Path(other["dir"]):
+                    if failure == "read_error":
+                        raise OSError("temporary shared filesystem failure")
+                    if failure == "missing_record":
+                        raise FileNotFoundError(path)
+                    if failure in {"missing_assignment", "partial_assignment", "stale_lease"}:
+                        info = original(path, *args, **kwargs)
+                        if failure == "missing_assignment":
+                            info.pop("_gpu_assignment", None)
+                        elif failure == "stale_lease":
+                            info["lease_until"] = 0
+                        else:
+                            info["_gpu_assignment"]["gpu_ids"] = [0]
+                        return info
+                    if failure == "older_terminal":
+                        return {"status": "completed", "run_index": 0}
+                    if failure == "older_queue":
+                        return {"status": "queued", "gpu_wait": {"run_index": 1}}
+                    if failure == "wrong_attempt_terminal":
+                        return {"status": "completed", "run_index": 1, "run_attempt_ids": ["different-attempt"]}
+                    return {}
+                return original(path, *args, **kwargs)
+
+            fault.setattr(task_manager, "load_task_metadata", intermittent_read)
+        assert manager._pick_queued_task()[0] is None
+        assert manager.gpu_scheduler._reservations == {other["name"]: [0, 1]}
+        waiting = load_task_info(queued["dir"])
+        assert waiting["status"] == "queued"
+        if failure != "stale_listing":
+            assert "Cannot verify GPU reservations" in waiting["gpu_wait"]["reason"]
+
+    assert manager._pick_queued_task()[0] is None
+    update_task_info(other["dir"], lambda info: info.update(status="completed"))
+    selected, _ = manager._pick_queued_task()
+    assert selected is not None and selected["name"] == queued["name"]
+    assert selected["_gpu_assignment"]["gpu_ids"] == [0, 1]

@@ -469,18 +469,9 @@ def _latest_run_index(task: dict[str, Any], info: dict[str, Any] | None = None) 
     return len(source.get("start_times", []) or [])
 
 
-def _selected_run_record(
-    task: dict[str, Any],
-    run_index: int,
-    *,
-    info: dict[str, Any] | None = None,
-) -> dict[str, Any]:
-    """Return one validated historical run summary."""
-
-    task_dir = str(task.get("dir", "") or "")
-    current_info = info if info is not None else (load_task_info(task_dir, raise_error=True) or task)
-    total = TaskManager._effective_run_slot_count(current_info)
-    if run_index > total:
+def _validate_selected_run(task: dict[str, Any], run_index: int, info: dict[str, Any]) -> None:
+    total = TaskManager._effective_run_slot_count(info)
+    if not 1 <= run_index <= total:
         name = str(task.get("name", "") or "")
         message = (
             f"run {run_index} not found for task '{name}'; available runs: 1-{total}"
@@ -489,15 +480,25 @@ def _selected_run_record(
         )
         raise CliError(message)
 
+
+def _selected_run_record(
+    task: dict[str, Any],
+    run_index: int,
+    *,
+    info: dict[str, Any],
+) -> dict[str, Any]:
+    """Read a run summary using its captured metadata."""
+    _validate_selected_run(task, run_index, info)
+
     def value_at(key: str) -> Any:
-        values = list(current_info.get(key, []) or [])
+        values = info.get(key, []) or []
         return values[run_index - 1] if run_index <= len(values) else None
 
-    status = run_history_status(current_info, run_index)
+    status = run_history_status(info, run_index)
     log_reference = _resolve_log_reference(
         task,
         run_index=run_index,
-        info=current_info,
+        info=info,
     )
     return {
         "index": run_index,
@@ -509,8 +510,7 @@ def _selected_run_record(
         "exit_code": value_at("exit_codes"),
         "source_state": value_at("source_states") or None,
         "environment": value_at("run_environments") or None,
-        "input": load_run_input(task_dir, run_index),
-        "gpu_wait": (current_info.get("gpu_wait_runs", {}) or {}).get(str(run_index)),
+        "gpu_wait": (info.get("gpu_wait_runs", {}) or {}).get(str(run_index)),
         "record": value_at("records") or {},
         "track": value_at("tracks") or {},
         "log": (
@@ -672,6 +672,7 @@ def _task_record(
                 selected_run,
                 info=info,
             )
+            record["selected_run"]["input"] = load_run_input(task_dir, selected_run)
     return record
 
 
@@ -2064,7 +2065,9 @@ def cmd_show(context: Any, args: Any, manager: TaskManager) -> int:
     if reference_run is not None and args.run is not None:
         raise CliUsageError("TASK@RUN cannot be combined with --run")
     selected_run = reference_run if reference_run is not None else args.run
-    record = _task_record(task, detailed=True, selected_run=selected_run)
+    # Only the JSON representation includes the recorded metric curves.
+    info = None if context.json_output else load_task_metadata(task["dir"], raise_error=True)
+    record = _task_record(task, detailed=True, selected_run=selected_run, info_snapshot=info)
     if context.json_output:
         _json_dump(record)
         return 0
@@ -2138,7 +2141,8 @@ def cmd_diff(context: Any, args: Any, manager: TaskManager) -> int:
         task, run_index = _resolve_task_run_reference(manager, reference)
         if run_index is None:
             raise CliUsageError("diff requires two TASK@RUN references")
-        inputs.append(_selected_run_record(task, run_index, info=load_task_metadata(task["dir"], raise_error=True))["input"])
+        _validate_selected_run(task, run_index, load_task_metadata(task["dir"], raise_error=True))
+        inputs.append(load_run_input(task["dir"], run_index))
     result = compare_run_inputs(inputs[0], inputs[1], left_label=args.left, right_label=args.right)
     if context.json_output:
         _json_dump(result)
@@ -2176,7 +2180,7 @@ def cmd_log(context: Any, args: Any, manager: TaskManager) -> int:
     if selected_run is not None:
         # Historical log selection needs run metadata, never metric curves.
         log_info = load_task_metadata(task["dir"], raise_error=True)
-        _selected_run_record(task, selected_run, info=log_info)
+        _validate_selected_run(task, selected_run, log_info)
     identity: _TaskRunIdentity | None = None
     if args.follow:
         identity = _capture_task_run_identity(task)

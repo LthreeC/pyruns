@@ -78,6 +78,47 @@ it('revalidates six large previews without downloading the log bodies again', as
   expect(validators.slice(6)).toEqual(['v1', '', ''])
 })
 
+it('reuses the live log list only for a validated file and periodically requests the full list', async () => {
+  setWorkspaceContext('/monitor')
+  const clock = vi.spyOn(performance, 'now').mockReturnValue(100)
+  const queries: (string | null)[] = []
+  let names = ['run1.log']
+  let revision = 'r1'
+  vi.stubGlobal('fetch', async (url: string) => {
+    const known = new URL(url, 'http://localhost').searchParams.get('known_log_options')
+    queries.push(known)
+    return Response.json({ selected_log: 'run1.log', available_logs: known === revision ? [] : names,
+      log_options_revision: revision, content: 'new bytes', offset: 2 })
+  })
+  let current = ['run1.log']
+  const read = async (file = 'run1.log') => {
+    const logs = await getTaskLogs('alpha', { logFileName: file, offset: 1, currentLogOptions: current })
+    current = logs.available_logs
+    return logs
+  }
+  try {
+    const first = await read()
+    const warm = await read()
+    expect(warm.available_logs).toBe(first.available_logs)
+    expect(warm.content).toBe('new bytes')
+    names = ['run1.log', 'run2.log']
+    revision = 'r2'
+    expect((await read()).available_logs).toEqual(names)
+    // A user-requested refresh can discover entries before a coarse directory timestamp changes.
+    current = [...names, 'error.log']
+    names = current
+    expect((await read()).available_logs).toEqual(current)
+    clock.mockReturnValue(31_000)
+    await read()
+    await read('run2.log')
+    setWorkspaceContext('/another')
+    await read('run2.log')
+    expect(queries).toEqual(['', 'r1', 'r1', '', '', '', ''])
+  } finally {
+    clock.mockRestore()
+  }
+})
+
 it('batch run preserves Manager options and only binds identities for newly created batches', async () => {
   const fetchMock = vi.fn().mockImplementation(() => Promise.resolve(new Response('{}')))
   vi.stubGlobal('fetch', fetchMock)

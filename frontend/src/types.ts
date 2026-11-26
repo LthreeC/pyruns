@@ -330,6 +330,7 @@ export interface MonitorLogPosition {
 }
 
 export interface TaskLogs {
+  log_options_revision?: string
   log_revision?: string
   preview_revision?: string
   preview_unchanged?: boolean

@@ -956,7 +956,7 @@ export default function MonitorPage() {
     } else if (!previous || logMatch || previous.file !== selectedLog || previous.identity !== logIdentity ||
                previous.placeholder !== shouldShowNoLogPlaceholder || previous.text !== logContent) {
       // An unchanged, revalidated view keeps its xterm buffer and selection.
-      const preview = logMatch ? logContent : compactTerminalHistory(logContent)
+      const preview = logMatch ? logContent : compactTerminalHistory(logContent, view.term.cols)
       writer.replace(preview || (
         shouldShowNoLogPlaceholder ? '\x1b[2m  < NO LOG >\x1b[0m\r\n' : ''
       ))
@@ -1416,6 +1416,8 @@ export default function MonitorPage() {
         offset: currentOffset,
         logIdentity: currentIdentity,
         logRevision: monitorState.logRevision,
+        // For short lists, a fresh listing is cheaper than a separate directory probe.
+        currentLogOptions: monitorState.availableLogs.length >= 32 ? monitorState.availableLogs : undefined,
         tailLines: monitorPreviewTailLines(monitorScrollback, monitorState.logTailExpanded),
         chunkSize: monitorChunkSize,
       }, controller.signal)
@@ -1455,8 +1457,9 @@ export default function MonitorPage() {
       const nextRevision = logs.log_revision || ''
       // An idle HTTP fallback must not rerender the terminal at each poll.
       if (!cursorChanged && !logs.content && nextRevision === monitorState.logRevision
-        && logs.selected_log === monitorState.selectedLog && logs.available_logs.length === monitorState.availableLogs.length
-        && logs.available_logs.every((name, index) => name === monitorState.availableLogs[index])) return
+        && logs.selected_log === monitorState.selectedLog && (logs.available_logs === monitorState.availableLogs
+          || (logs.available_logs.length === monitorState.availableLogs.length
+            && logs.available_logs.every((name, index) => name === monitorState.availableLogs[index])))) return
       if (cursorChanged) {
         // HTTP won while the socket was connecting. Retire that socket before
         // committing its new cursor, then reconnect from the committed bytes.

@@ -452,22 +452,38 @@ def validate_task_log_path(task_dir: str, filename: str) -> str:
     return _task_log_path(task_dir, filename, create_directory=False)
 
 
-def stat_task_run_log(task_dir: str, run_index: int) -> os.stat_result | None:
-    """Read a known run's metadata with one probe per managed directory and file."""
+def is_standard_log_name(filename: str) -> bool:
+    return filename in {QUEUE_LOG_FILENAME, ERROR_LOG_FILENAME} or re.fullmatch(r"run[0-9]+\.log", filename) is not None
+
+
+def stat_task_log(task_dir: str, filename: str) -> os.stat_result:
+    """Sample a named log without following managed links. No file is opened."""
+    if not is_standard_log_name(filename):
+        # Older workspaces can contain other run*.log names. Keep the same
+        # native path checks as a full read for these non-standard components.
+        return os.stat(validate_task_log_path(task_dir, filename))
     absolute = _workspace_abspath(task_dir)
+    tasks_dir = os.path.dirname(absolute)
+    workspace = os.path.dirname(tasks_dir)
     log_dir = os.path.join(absolute, RUN_LOGS_DIR)
+    ancestors = _managed_ancestor_paths(workspace) or (workspace,)
+    for directory in (*ancestors, tasks_dir, absolute, log_dir):
+        info = os.lstat(directory)
+        if not stat.S_ISDIR(info.st_mode) or _stat_is_link_or_reparse(info):
+            raise ValueError(f"Invalid managed log directory: {directory}")
+    path = os.path.join(log_dir, filename)
+    info = os.lstat(path)
+    if not stat.S_ISREG(info.st_mode) or _stat_is_link_or_reparse(info):
+        raise ValueError(f"Invalid managed log file: {path}")
+    return info
+
+
+def stat_task_run_log(task_dir: str, run_index: int) -> os.stat_result | None:
+    """Best-effort metadata for the Monitor activity indicator."""
     try:
-        validate_tasks_root(os.path.dirname(absolute))
-        for directory in (absolute, log_dir):
-            info = os.lstat(directory)
-            if not stat.S_ISDIR(info.st_mode) or _stat_is_link_or_reparse(info):
-                return None
-        info = os.lstat(os.path.join(log_dir, f"run{run_index}.log"))
+        return stat_task_log(task_dir, f"run{run_index}.log")
     except (OSError, ValueError):
         return None
-    if not stat.S_ISREG(info.st_mode) or _stat_is_link_or_reparse(info):
-        return None
-    return info
 
 
 def prepare_task_log_path(task_dir: str, filename: str) -> str:
@@ -1068,6 +1084,18 @@ def get_log_entries(task_dir: str, *, cancelled: threading.Event | None = None) 
 def get_log_options(task_dir: str) -> Dict[str, str]:
     """Return ``{display_name: file_path}`` for all available log files."""
     return {name: path for name, (path, _) in get_log_entries(task_dir).items()}
+
+
+def log_directory_revision(task_dir: str) -> str:
+    """Identify changes to log directory entries, independently of file contents."""
+    try:
+        directory = _task_log_directory(task_dir, create=False)
+        info = os.lstat(directory)
+    except (OSError, ValueError):
+        return ""
+    if not info.st_ino or not stat.S_ISDIR(info.st_mode) or _stat_is_link_or_reparse(info):
+        return ""
+    return f"{info.st_dev:x}:{info.st_ino:x}:{info.st_mtime_ns}:{info.st_ctime_ns}"
 
 
 def resolve_log_path(

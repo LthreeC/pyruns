@@ -8,6 +8,7 @@ import gzip
 import json
 import os
 import queue
+import re
 import secrets
 import signal
 import socket
@@ -29,6 +30,7 @@ from fastapi.staticfiles import StaticFiles
 from omegaconf.errors import OmegaConfBaseException
 from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
+from starlette.types import Scope
 from starlette.websockets import WebSocketState
 
 from pyruns import __version__
@@ -42,8 +44,8 @@ from pyruns._config import (
 from pyruns.core.task_manager import TaskStateConflict
 from pyruns.utils.events import log_emitter
 from pyruns.utils.file_io import map_disk_reads
-from pyruns.utils.info_io import MAX_RUN_HISTORY_SLOTS, stat_task_run_log, validate_task_log_path
-from pyruns.utils.log_io import LogFileState, stat_log_file
+from pyruns.utils.info_io import MAX_RUN_HISTORY_SLOTS, is_standard_log_name, stat_task_log, stat_task_run_log
+from pyruns.utils.log_io import LogFileState
 from pyruns.utils.shell_runtime import get_follow_shell_runtime
 from pyruns.utils.search_query import DEFAULT_MAX_SEARCH_RESULTS, SearchQueryError
 from pyruns.web.runtime import (
@@ -502,6 +504,16 @@ def _frontend_dist_dir() -> Path | None:
     return None
 
 
+class _FrontendAssets(StaticFiles):
+    """Vite changes the filename when a bundled script or stylesheet changes."""
+
+    async def get_response(self, path: str, scope: Scope) -> Response:
+        response = await super().get_response(path, scope)
+        if response.status_code in {200, 304} and re.fullmatch(r"[\w.-]+-[A-Za-z0-9_-]{8}\.(?:js|css)", path, re.ASCII):
+            response.headers["Cache-Control"] = "private, max-age=31536000, immutable"
+        return response
+
+
 def _fallback_frontend_html() -> str:
     return """
 <!doctype html>
@@ -867,7 +879,7 @@ def create_app(
     if dist_dir is not None:
         assets_dir = dist_dir / "assets"
         if assets_dir.exists():
-            app.mount("/assets", StaticFiles(directory=str(assets_dir)), name="assets")
+            app.mount("/assets", _FrontendAssets(directory=str(assets_dir)), name="assets")
 
     def get_runtime() -> PyrunsRuntime:
         return app.state.runtime
@@ -1412,6 +1424,7 @@ def create_app(
         tail_bytes: int | None = Query(default=None, ge=1, le=MAX_LOG_RESPONSE_BYTES),
         tail_lines: int | None = Query(default=None, ge=0, le=MAX_LOG_TAIL_LINES),
         log_revision: Annotated[str | None, Query(max_length=128)] = None,
+        known_log_options: Annotated[str | None, Query(max_length=256)] = None,
         known_preview: str | None = Query(default=None, max_length=256),
         chunk_size: int | None = Query(default=None, ge=1, le=MAX_LOG_RESPONSE_BYTES),
     ) -> dict[str, Any] | Response:
@@ -1422,6 +1435,7 @@ def create_app(
                 offset=offset,
                 log_identity=log_identity,
                 **({"log_revision": log_revision} if log_revision else {}),
+                **({"known_log_options": known_log_options} if known_log_options is not None else {}),
                 tail_bytes=tail_bytes,
                 tail_lines=tail_lines,
                 **({"known_preview": known_preview} if known_preview is not None else {}),
@@ -1766,8 +1780,10 @@ def create_app(
             return payload
 
         def read_log_state(log_name: str) -> LogFileState:
-            path = validate_task_log_path(stream_task_dir, log_name)
-            return stat_log_file(path, strict=True)
+            try:
+                return LogFileState.from_stat(stat_task_log(stream_task_dir, log_name))
+            except FileNotFoundError:
+                return LogFileState()
 
         async def wait_for_tail() -> None:
             try:
@@ -1791,6 +1807,7 @@ def create_app(
                             payload = await read_logs(
                                 log_file_name=requested_log_name or None,
                                 tail_lines=0,
+                                include_log_options=not is_standard_log_name(requested_log_name),
                                 expected_workspace_root=stream_root,
                                 expected_task_dir=stream_task_dir,
                             )
@@ -1802,6 +1819,7 @@ def create_app(
                                 log_revision=log_revision,
                                 tail_lines=tail_lines,
                                 chunk_size=LOG_STREAM_TAIL_CHUNK_SIZE,
+                                include_log_options=not is_standard_log_name(requested_log_name),
                                 expected_workspace_root=stream_root,
                                 expected_task_dir=stream_task_dir,
                             )
@@ -2275,6 +2293,7 @@ def create_app(
                 full_path
                 and inside_static
                 and requested is not None
+                and requested != dist_dir / "index.html"
                 and requested.exists()
                 and requested.is_file()
             ):
@@ -2290,7 +2309,7 @@ def create_app(
         def serve_frontend_fallback(full_path: str) -> HTMLResponse:
             if full_path == "api" or full_path.startswith("api/"):
                 raise HTTPException(status_code=404, detail="Not Found")
-            return HTMLResponse(_fallback_frontend_html())
+            return HTMLResponse(_fallback_frontend_html(), headers={"Cache-Control": "no-store"})
 
     return app
 

@@ -571,6 +571,25 @@ def test_task_info_rejects_reparse_tasks_root_without_following_it(tmp_path, sim
         load_task_info(str(task_dir), raise_error=True)
 
 
+@pytest.mark.parametrize("redirected", ["workspace", "tasks", "task", "run_logs", "run1.log"])
+def test_log_metadata_probe_rechecks_each_boundary(tmp_path, simulate_reparse, redirected):
+    from pyruns.utils.info_io import stat_task_log
+
+    workspace = tmp_path / DEFAULT_ROOT_NAME / "workspace"
+    task = workspace / "tasks" / "task"
+    logs = task / RUN_LOGS_DIR
+    logs.mkdir(parents=True)
+    path = logs / "run1.log"
+    with pytest.raises(FileNotFoundError):
+        stat_task_log(str(task), path.name)
+    path.write_bytes(b"log")
+    assert stat_task_log(str(task), path.name).st_size == 3
+    simulate_reparse(next(item for item in (workspace, task.parent, task, logs, path) if item.name == redirected))
+    with pytest.raises(ValueError, match="Invalid managed log"):
+        stat_task_log(str(task), path.name)
+    assert stat_task_run_log(str(task), 1) is None
+
+
 @pytest.mark.parametrize("kind", ["file", "directory", "missing"])
 def test_link_check_identifies_existing_and_broken_links(tmp_path, kind):
     import pyruns.utils.info_io as info_io

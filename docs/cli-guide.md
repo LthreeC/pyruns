@@ -435,6 +435,12 @@ pyr -w train run seed1 seed2 seed3 --jobs 3
 pyr -w train run seed1 seed2 --jobs 2
 ```
 
+多个任务要依次使用同一组 GPU，可一次提交任务名并设 `-j 1`。例如下面三个任务按参数顺序接力使用 GPU 1、3。首项等待 GPU 时，后续任务保留队列顺序。前项失败或被取消后，队列仍会继续。
+
+```bash
+pyr -w train run seed1 seed2 seed3 -j 1 --gpu-wait device=1,3-8-70-0-0
+```
+
 也可以创建并立即运行：
 
 ```bash

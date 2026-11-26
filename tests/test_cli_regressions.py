@@ -964,6 +964,74 @@ def test_dev_server_interrupt_stops_and_reaps_process_tree(monkeypatch):
     assert commands.signal.getsignal(commands.signal.SIGINT) == original_sigint_handler
 
 
+@pytest.mark.parametrize("web_batch", [False, True], ids=["cli", "web"])
+def test_serial_gpu_batch_runs_real_children_in_submission_order(tmp_path, monkeypatch, web_batch):
+    from pyruns._config import ENV_KEY_ROOT
+    from pyruns.cli import detached_runner
+    from pyruns.core.gpu_scheduler import GpuDevice, SystemGpuProvider
+    from pyruns.utils.info_io import load_task_metadata
+    from pyruns.utils.settings import save_settings_for_root
+
+    workspace = Path(bootstrap_shell_workspace(str(tmp_path / "_pyruns_")))
+    monkeypatch.setenv(ENV_KEY_ROOT, str(workspace))
+    save_settings_for_root(str(workspace), {
+        "gpu_scheduler_enabled": True, "gpu_scheduler_min_free_memory_gb": 8,
+        "gpu_scheduler_stable_seconds": 0, "gpu_scheduler_max_wait_seconds": 15,
+    })
+    worker = tmp_path / "relay.py"
+    worker.write_text(
+        "import os, sys, time\n"
+        "def record(event):\n"
+        "    with open('events', 'a', encoding='utf-8') as output:\n"
+        "        print(event, sys.argv[1], os.getpid(), os.environ['CUDA_VISIBLE_DEVICES'], file=output)\n"
+        "record('start')\ntime.sleep(.1)\nrecord('end')\nprint('finished', sys.argv[1])\n",
+        encoding="utf-8",
+    )
+    generator = TaskGenerator(root_dir=str(workspace / TASKS_DIR))
+    names = ["z-first", "a-second", "m-third"]
+    masks = ["0", "1", "1"]
+    dirs = [
+        Path(generator.create_shell_task(
+            name, _render_argument_command([sys.executable, str(worker), name], str(workspace)),
+            exact_name=True, workdir=str(tmp_path), env={"CUDA_VISIBLE_DEVICES": mask},
+        )["dir"])
+        for name, mask in zip(names, masks, strict=True)
+    ]
+    # Once every task is queued, return two samples where only the second task's GPU is ready.
+    samples_after_submission = 0
+
+    def sample(_provider):
+        nonlocal samples_after_submission
+        if load_task_metadata(str(dirs[-1])).get("status") != "pending":
+            samples_after_submission += 1
+        return [
+            GpuDevice(0, "A", "GPU-0", 1024, 24576, 95 if samples_after_submission <= 2 else 0),
+            GpuDevice(1, "B", "GPU-1", 1024, 24576, 0),
+        ]
+
+    monkeypatch.setattr(SystemGpuProvider, "sample", sample)
+    token = "5" * 32
+    write_submission_payload(
+        submission_payload_path(str(workspace / TASKS_DIR), token),
+        token=token, names=names, run_indices=[1] * len(names),
+        gpu_wait_rule=None if web_batch else "1-8-70-0-0.005",
+    )
+    monkeypatch.setattr(detached_runner, "_parse_args", lambda: SimpleNamespace(
+        workspace=str(workspace), jobs=1, submission_token=token, web_batch=web_batch,
+    ))
+    assert detached_runner.main() == 0
+    assert samples_after_submission > 2
+    events = [line.split() for line in (tmp_path / "events").read_text(encoding="utf-8").splitlines()]
+    assert [(event, name, mask) for event, name, _pid, mask in events] == [
+        (event, name, mask) for name, mask in zip(names, masks, strict=True) for event in ("start", "end")
+    ]
+    for index, (name, directory) in enumerate(zip(names, dirs, strict=True)):
+        assert events[2 * index][2] == events[2 * index + 1][2]
+        info = load_task_metadata(str(directory))
+        assert (info["status"], info["exit_codes"]) == ("completed", [0])
+        assert f"finished {name}" in (directory / "run_logs/run1.log").read_text(encoding="utf-8")
+
+
 @pytest.mark.parametrize("fault", ["one-empty-read", "pruned-and-unreadable", "stale-terminal"])
 def test_detached_runner_preserves_live_child_when_metadata_is_unreliable(tmp_path, monkeypatch, fault):
     from pyruns._config import ENV_KEY_ROOT
