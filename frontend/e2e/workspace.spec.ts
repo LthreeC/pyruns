@@ -39,6 +39,77 @@ test('the production sidebar groups update and restart in the header', async ({ 
   await dialog.getByRole('button', { name: 'Cancel', exact: true }).click()
 })
 
+test('the sidebar keeps its version and controls visible while shared updates are unavailable', async ({ page, isMobile }) => {
+  if (isMobile) await page.setViewportSize({ width: 375, height: 667 })
+  else await page.addInitScript(() => localStorage.setItem('pyruns.sidebarWidth', '336'))
+  let finishStatus!: () => void
+  const statusReady = new Promise<void>(resolve => { finishStatus = resolve })
+  const reason = 'Shared Pyruns update coordination has not responded yet.'
+  const runningVersion = '0.3.24.1'
+  let installedVersion = runningVersion
+  let available = false
+  let updateChecks = 0
+  await page.route('**/api/system/info', async route => {
+    await statusReady
+    const restartRequired = installedVersion !== runningVersion
+    await route.fulfill({ json: {
+      version: runningVersion, installed_version: installedVersion, restart_required: restartRequired,
+      restart_supported: true, instance_id: 'shared-instance', update_supported: available,
+      update_state: restartRequired ? 'restart_required' : available ? 'idle' : 'unavailable',
+      update_unavailable_reason: available ? undefined : reason,
+      last_update: null,
+    } })
+  })
+  await page.route('**/api/system/update/check', route => {
+    updateChecks += 1
+    return route.fulfill({ json: { current_version: '0.3.24.1', latest_version: '0.3.24.1', update_available: false } })
+  })
+
+  await page.goto('/generator?token=pyruns-e2e-access-token')
+  const header = page.locator('[data-sidebar-header]')
+  const restart = header.getByRole('button', { name: 'Restart UI', exact: true })
+  const loading = header.getByRole('button', { name: 'Reading Pyruns status…', exact: true })
+  try {
+    await expect(loading).toBeVisible()
+    await expect(loading).toBeDisabled()
+    await expect(restart).toBeDisabled()
+  } finally {
+    finishStatus()
+  }
+
+  const unavailable = header.getByRole('button', { name: 'Pyruns updates unavailable, running version 0.3.24.1' })
+  await expect(unavailable).toBeVisible()
+  await expect(unavailable).toBeDisabled()
+  await expect(unavailable).toHaveAccessibleDescription(reason)
+  await expect(restart).toBeEnabled()
+  if (!isMobile) await expect(unavailable).toHaveText('v0.3.24.1')
+  const unavailableBox = await unavailable.boundingBox()
+  const restartBox = await restart.boundingBox()
+
+  await unavailable.focus()
+  await expect(unavailable).toBeFocused()
+  await page.keyboard.press('Enter')
+  expect(updateChecks).toBe(0)
+
+  available = true
+  const update = header.getByRole('button', { name: 'Check for Pyruns updates, installed version 0.3.24.1' })
+  await expect(update).toBeEnabled({ timeout: 10_000 })
+  expect(await update.boundingBox()).toEqual(unavailableBox)
+  expect(await restart.boundingBox()).toEqual(restartBox)
+  await expect(update).toBeFocused()
+  await update.click()
+  await expect(page.getByText('Pyruns is up to date')).toBeVisible()
+  expect(updateChecks).toBe(1)
+
+  available = false
+  installedVersion = '0.3.24.2'
+  await expect(restart).toHaveAttribute('title',
+    `Restart Pyruns to load installed version ${installedVersion}; this interface is running ${runningVersion}`,
+    { timeout: 10_000 })
+  await expect(restart).toBeEnabled()
+  await expect(unavailable).toBeDisabled()
+})
+
 test('idle UI update confirms, waits for a new instance, and reloads', async ({ page, isMobile }) => {
   let restarted = false
   let updateChecks = 0

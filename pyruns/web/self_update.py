@@ -47,6 +47,7 @@ PYPI_CHECK_TIMEOUT_SECONDS = 5.0
 PYPI_MAX_RESPONSE_BYTES = 1_048_576
 UPDATE_PARTICIPANT_WAIT_SECONDS = 60.0
 UPDATE_STATUS_REPORT_SECONDS = 5.0
+INSTALLED_VERSION_CHECK_SECONDS = 5.0
 SCHEDULED_OPERATION_RETRY_SECONDS = 10.0
 SHARED_PROBE_WAIT_SECONDS = 1.0
 SHARED_COORDINATION_PENDING = "Shared Pyruns update coordination has not responded yet."
@@ -122,6 +123,7 @@ class UiUpdateCoordinator:
         self._background_attach = False
         self._stop = threading.Event()
         self._monitor: threading.Thread | None = None
+        self._version_monitor: threading.Thread | None = None
         self._next_version_check = 0.0
         self._next_shared_restart_check = 0.0
 
@@ -157,6 +159,14 @@ class UiUpdateCoordinator:
             else:
                 state = "restart_required" if self.restart_required else "idle"
             return state, pending.copy() if pending is not None else None
+
+    def system_status(self) -> tuple[str, bool, str, dict[str, str] | None]:
+        """Read the version and operation status from the same local snapshot."""
+        if not self._background_attach and not self.coordination_issue:
+            self.refresh_installed_version()
+        with self._lock:
+            state, pending = self.operation_status()
+            return self.installed_version, self.restart_required, state, pending
 
     def operation_response(self) -> dict[str, Any]:
         with self._lock:
@@ -200,7 +210,7 @@ class UiUpdateCoordinator:
         with self._lock:
             if not force and now < self._next_version_check:
                 return self._installed_version_value or self._current_version
-            self._next_version_check = now + 5.0
+            self._next_version_check = now + INSTALLED_VERSION_CHECK_SECONDS
         installed = self._installed_version(self._current_version)
         with self._lock:
             self._installed_version_value = installed
@@ -321,6 +331,13 @@ class UiUpdateCoordinator:
             # LOCK_NB only bounds contention after the filesystem has replied.
             # A remote lock RPC must not delay startup or block monitoring.
             self._coordination_error = SHARED_COORDINATION_PENDING
+            if self._current_version:
+                self._version_monitor = threading.Thread(
+                    target=self._version_monitor_loop,
+                    name="pyruns-installed-version",
+                    daemon=True,
+                )
+                self._version_monitor.start()
         else:
             self._register_shared_instance(self._store)
         if not self._coordination_degraded:
@@ -819,7 +836,7 @@ class UiUpdateCoordinator:
             restart_active_count=serving_counts[1],
         )
         if self._current_version:
-            installed = self.refresh_installed_version()
+            installed = self.installed_version if self._background_attach else self.refresh_installed_version()
             if (
                 installed != self._current_version and not serving_counts[1]
                 and self._restart_after_shared_completion(installed)
@@ -827,6 +844,16 @@ class UiUpdateCoordinator:
                 self.trigger_shutdown()
                 return
         self._retry_scheduled_operation(serving_counts)
+
+    def _version_monitor_loop(self) -> None:
+        # Readers can see an already-published release even if the shared lock stalls.
+        while not self._stop.is_set():
+            try:
+                self.refresh_installed_version()
+            except (OSError, RuntimeError, TypeError, ValueError):
+                pass
+            if self._stop.wait(INSTALLED_VERSION_CHECK_SECONDS):
+                return
 
     def _monitor_loop(self) -> None:
         try:
@@ -867,9 +894,12 @@ class UiUpdateCoordinator:
         if self._stop.is_set():
             return
         self._stop.set()
-        if self._monitor is not None and self._monitor is not threading.current_thread():
-            self._monitor.join(timeout=2.0)
+        deadline = time.monotonic() + 2.0
+        for monitor in (self._monitor, self._version_monitor):
+            if monitor is not None and monitor is not threading.current_thread():
+                monitor.join(timeout=max(0.0, deadline - time.monotonic()))
         self._monitor = None
+        self._version_monitor = None
 
     def quiesce(self) -> None:
         """Stop background checks before the owning runtime is shut down."""

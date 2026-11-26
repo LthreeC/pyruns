@@ -5357,15 +5357,22 @@ def test_web_main_shutdowns_runtime_after_uvicorn_returns(monkeypatch):
 
 @pytest.mark.parametrize("stall_on_startup", [True, False], ids=["startup", "heartbeat"])
 def test_ui_serves_logs_while_shared_update_lock_does_not_return(tmp_path, monkeypatch, stall_on_startup):
+    from pyruns import update_release
     from pyruns.web import self_update
+
+    installation = tmp_path / "installation"
+    installation.mkdir()
+    monkeypatch.setattr(update_release, "installation_root", lambda: installation)
+    monkeypatch.setattr(update_release, "current_release_root", lambda: None)
 
     workspace = _make_workspace(tmp_path, "main")
     _add_task(workspace, "finished", status="completed", log_text="visible during the outage\n")
     _add_task(workspace, "pending")
     runtime = _build_runtime(workspace, owns_task_lifecycle=False)
     runtime.detached_task_runs = True
+    shutdowns = []
     coordinator = self_update.UiUpdateCoordinator(
-        lambda: None, shared=True, isolated_upgrades=True, current_version=__version__,
+        lambda: shutdowns.append("shutdown"), shared=True, isolated_upgrades=True, current_version=__version__,
         state_dir=str(tmp_path / "coordination"),
     )
     store = coordinator._store
@@ -5390,6 +5397,7 @@ def test_ui_serves_logs_while_shared_update_lock_does_not_return(tmp_path, monke
     monkeypatch.setattr(store, "_try_native_lock", wait_for_server_reply)
     monkeypatch.setattr(self_update, "UPDATE_HEARTBEAT_SECONDS", 0.05)
     monkeypatch.setattr(self_update, "SHARED_PROBE_WAIT_SECONDS", 0.2)
+    monkeypatch.setattr(self_update, "INSTALLED_VERSION_CHECK_SECONDS", 0.05)
     try:
         with TestClient(create_app(runtime, update_coordinator=coordinator)) as client:
             try:
@@ -5410,6 +5418,22 @@ def test_ui_serves_logs_while_shared_update_lock_does_not_return(tmp_path, monke
                 assert response.status_code == 503
                 assert "Could not coordinate this task start" in response.json()["detail"]
                 assert load_task_info(str(workspace / TASKS_DIR / "pending"))["status"] == "pending"
+
+                installed = "9999.0.0"
+                metadata = installation / f"pyruns-{installed}.dist-info"
+                metadata.mkdir()
+                (metadata / "METADATA").write_text(f"Name: pyruns\nVersion: {installed}\n", encoding="utf-8")
+                deadline = time.monotonic() + 4
+                while coordinator.installed_version != installed and time.monotonic() < deadline:
+                    time.sleep(0.01)
+                state = client.get("/api/system/info").json()
+                assert state["installed_version"] == installed
+                assert state["version"] == __version__
+                assert state["update_state"] == "restart_required"
+                assert state["restart_required"] and state["restart_supported"]
+                assert not state["update_supported"]
+                assert client.post("/api/system/update").status_code == 503
+                assert shutdowns == []
                 assert not recover.is_set()
             finally:
                 recover.set()

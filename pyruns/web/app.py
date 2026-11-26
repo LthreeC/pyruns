@@ -2165,9 +2165,7 @@ def create_app(
         issue = ""
         if coordinator is not None:
             issue = coordinator.coordination_issue
-            installed_version = coordinator.installed_version if issue else coordinator.refresh_installed_version()
-            restart_required = coordinator.restart_required
-            state, scheduled_operation = coordinator.operation_status()
+            installed_version, restart_required, state, scheduled_operation = coordinator.system_status()
             if issue and state == "idle":
                 state = "unavailable"
         return {

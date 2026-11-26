@@ -13,7 +13,7 @@ import {
   useToastStore,
 } from '@/store'
 import type { SystemInfo, UiScheduledOperation, UiUpdateResponse, UiVersionCheck } from '@/types'
-import { t, useTranslation } from '@/i18n'
+import { t, translateMessage, useTranslation } from '@/i18n'
 import CopyButton from '@/components/shared/CopyButton'
 
 const RESTART_POLL_MS = 500
@@ -189,6 +189,7 @@ export default function UpdateControl({ compact, showVersion, showRestartLabel }
   const systemInfoRevision = useRef(0)
   const reportedResults = useRef(new Set<string>())
   const notify = useToastStore(state => state.notify)
+  const updateSupported = systemInfo?.update_supported === true
   const restartSupported = systemInfo?.restart_supported ?? systemInfo?.update_supported ?? false
 
   const showFailure = useCallback((title: string, detail: string, operation: FullProcessOperation = 'update', retryable = true) => {
@@ -379,7 +380,7 @@ export default function UpdateControl({ compact, showVersion, showRestartLabel }
   }, [notify, waitForRestart])
 
   const startUpdate = useCallback(async () => {
-    if (checking || operation) return
+    if (checking || operation || !updateSupported) return
 
     setChecking(true)
     setFailureOpen(false)
@@ -438,7 +439,7 @@ export default function UpdateControl({ compact, showVersion, showRestartLabel }
       setOperation(null)
       showFailure(t(restarting ? 'Could not restart Pyruns' : 'Could not update Pyruns'), errorMessage(error), restarting ? 'restart' : 'update')
     }
-  }, [checking, handleOperationResponse, notify, operation, showFailure])
+  }, [checking, handleOperationResponse, notify, operation, showFailure, updateSupported])
 
   const startRestart = useCallback(async () => {
     if (checking || operation || !restartSupported) return
@@ -502,26 +503,36 @@ export default function UpdateControl({ compact, showVersion, showRestartLabel }
     }
   }
 
-  if (!systemInfo) return null
-  const restartRequired = systemInfo.restart_required
-  const backendRestarting = systemInfo.update_state === 'restarting'
-  const schedule = systemInfo.scheduled_operation
+  const version = systemInfo?.version
+  const restartRequired = systemInfo?.restart_required
+  const backendRestarting = systemInfo?.update_state === 'restarting'
+  const schedule = systemInfo?.scheduled_operation
   const waiting = !backendRestarting && schedule && !schedule.error ? schedule : null
   const updateFailed = failure?.operation === 'update'
-  const showUpdateButton = systemInfo.update_supported || updateFailed || waiting || reloadReady
-  const showRestartButton = restartSupported || systemInfo.update_supported
+  const updateUnavailable = !updateSupported && !updateFailed && !waiting && !reloadReady
+  const showUpdateButton = !systemInfo || restartSupported || !updateUnavailable
+  const showRestartButton = !systemInfo || restartSupported || updateSupported
   if (!showUpdateButton && !showRestartButton) return null
   const busy = checking || operation !== null || backendRestarting
   const showFailureButton = updateFailed && !waiting && !reloadReady
   const controlsClass = clsx(
-    'touch-target inline-flex items-center justify-center gap-1 rounded-md px-1.5 text-txt-secondary transition-colors enabled:hover:bg-surface-overlay enabled:hover:text-txt-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/35 disabled:opacity-60',
+    'touch-target inline-flex items-center justify-center gap-1 rounded-md px-1.5 text-txt-secondary transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/35',
     compact ? 'size-11' : 'h-10 min-w-8',
   )
-  const restartLabel = !restartSupported ? t('UI restart is unavailable on this server.')
+  const interactiveClass = 'enabled:hover:bg-surface-overlay enabled:hover:text-txt-primary disabled:opacity-60'
+  const readingStatusLabel = t('Reading Pyruns status…')
+  const unavailableReason = updateUnavailable && systemInfo
+    ? translateMessage(systemInfo.update_unavailable_reason || 'Pyruns updates are unavailable on this server.')
+    : undefined
+  const restartLabel = !systemInfo ? readingStatusLabel
+    : !restartSupported ? t('UI restart is unavailable on this server.')
     : restartRequired ? t('Restart Pyruns to load installed version {{installed}}; this interface is running {{current}}', {
       installed: systemInfo.installed_version, current: systemInfo.version,
     }) : t('Restart UI')
-  let buttonLabel = t('Check for Pyruns updates, installed version {{version}}', { version: systemInfo.version })
+  let buttonLabel = readingStatusLabel
+  if (version) buttonLabel = t(updateUnavailable
+    ? 'Pyruns updates unavailable, running version {{version}}'
+    : 'Check for Pyruns updates, installed version {{version}}', { version })
   if (reloadReady) buttonLabel = t('Reload updated interface')
   else if (waiting) buttonLabel = scheduledLabel(waiting)
   else if (showFailureButton) buttonLabel = t('View update failure details')
@@ -542,16 +553,20 @@ export default function UpdateControl({ compact, showVersion, showRestartLabel }
               else if (updateFailed) setFailureOpen(true)
               else void startUpdate()
             }}
-            disabled={!reloadReady && (cancelling || (showFailureButton ? checking || operation !== null : busy))}
+            disabled={!systemInfo || (!reloadReady && (cancelling || (showFailureButton ? checking || operation !== null : busy)))}
+            aria-disabled={Boolean(systemInfo && updateUnavailable) || undefined}
             aria-label={buttonLabel}
-            title={buttonLabel}
-            className={clsx(controlsClass, 'disabled:cursor-wait', (waiting || reloadReady) && 'bg-amber-500/10 text-amber-700 dark:text-amber-300')}
+            aria-description={unavailableReason}
+            title={unavailableReason || buttonLabel}
+            className={clsx(controlsClass, updateUnavailable ? 'cursor-not-allowed' : interactiveClass,
+              'disabled:cursor-wait', (waiting || reloadReady) && 'bg-amber-500/10 text-amber-700 dark:text-amber-300')}
           >
             {waiting && !reloadReady ? <Clock3 aria-hidden="true" className="size-4 shrink-0" />
               : showFailureButton && !busy ? <AlertTriangle aria-hidden="true" className="size-4 shrink-0 text-rose-700 dark:text-rose-300" />
                 : checking || operation === 'update' || reloadReady ? <RefreshCw aria-hidden="true" className={clsx('size-4 shrink-0', !reloadReady && 'motion-safe:animate-spin')} />
-                  : <Download aria-hidden="true" className="size-4 shrink-0" />}
-            {showVersion && <span className="max-w-24 truncate font-mono text-[11px]">v{systemInfo.version}</span>}
+                  : <Download aria-hidden="true" className={clsx('size-4 shrink-0', updateUnavailable && 'opacity-50')} />}
+            {showVersion && <span className={clsx('max-w-24 truncate font-mono text-[11px]', !version && 'w-[9ch]')}
+              aria-hidden={!version || undefined}>{version ? `v${version}` : '—'}</span>}
           </button>
         )}
         {showRestartButton && (
@@ -562,7 +577,7 @@ export default function UpdateControl({ compact, showVersion, showRestartLabel }
             disabled={!restartSupported || busy || Boolean(waiting) || cancelling || reloadReady}
             aria-label={t('Restart UI')}
             title={restartLabel}
-            className={clsx(controlsClass, 'whitespace-nowrap text-xs font-medium', restartSupported ? 'disabled:cursor-wait' : 'disabled:cursor-not-allowed', restartRequired && 'bg-amber-500/10 text-amber-800 dark:text-amber-300')}
+            className={clsx(controlsClass, interactiveClass, 'whitespace-nowrap text-xs font-medium', restartSupported ? 'disabled:cursor-wait' : 'disabled:cursor-not-allowed', restartRequired && 'bg-amber-500/10 text-amber-800 dark:text-amber-300')}
           >
             <RefreshCw aria-hidden="true" className={clsx('size-4 shrink-0', (operation === 'restart' || backendRestarting) && 'motion-safe:animate-spin')} />
             {showRestartLabel && <span>{t('Restart UI')}</span>}
@@ -577,7 +592,7 @@ export default function UpdateControl({ compact, showVersion, showRestartLabel }
         <div className="flex flex-wrap justify-end gap-2">
           <CopyButton value={failure?.detail || ''} text={t('Copy failure details')} label={t('Copy failure details')} />
           <button type="button" onClick={closeFailure} className="touch-target min-h-11 rounded-md border border-border px-3 text-sm">{t('Close')}</button>
-          {failure?.retryable !== false && <button type="button" disabled={busy || Boolean(waiting) || reloadReady || !(failure?.operation === 'restart' ? restartSupported : systemInfo.update_supported)} onClick={() => {
+          {failure?.retryable !== false && <button type="button" disabled={busy || Boolean(waiting) || reloadReady || !(failure?.operation === 'restart' ? restartSupported : updateSupported)} onClick={() => {
             setFailure(null)
             void (failure?.operation === 'restart' ? startRestart() : startUpdate())
           }} className="touch-target min-h-11 rounded-md bg-accent px-3 text-sm text-white disabled:opacity-50">{t('Retry')}</button>}

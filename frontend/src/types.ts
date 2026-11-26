@@ -236,6 +236,7 @@ export interface SystemInfo {
   restart_required: boolean
   instance_id: string
   update_supported: boolean
+  update_unavailable_reason?: string
   restart_supported?: boolean
   update_state: string
   scheduled_operation?: UiScheduledOperation | null
