@@ -1385,8 +1385,38 @@ def test_activity_lease_rejects_starts_while_shared_gate_is_active(tmp_path):
         stage="updating",
     )
 
+    lease = EnvironmentActivityLease("cli-runner", state_dir=state_dir)
     with pytest.raises(UpdateInProgressError, match="new tasks are disabled"):
-        EnvironmentActivityLease("cli-runner", state_dir=str(state_dir)).start()
+        lease.start()
+    assert not Path(lease.store.record_path("activities", lease.activity_id)).exists()
+
+
+def test_activity_lease_registers_before_checking_update_without_lock(tmp_path, monkeypatch):
+    lease = EnvironmentActivityLease("cli-runner", state_dir=str(tmp_path / "coordination"))
+    recorded = Path(lease.store.record_path("activities", lease.activity_id))
+    read_request = lease.store.read_request_locked
+
+    def read_after_registration(**kwargs):
+        assert recorded.is_file()
+        return read_request(**kwargs)
+
+    monkeypatch.setattr(lease.store, "locked", lambda *_: pytest.fail("task admission acquired the update lock"))
+    monkeypatch.setattr(lease.store, "read_request_locked", read_after_registration)
+    with lease:
+        assert recorded.is_file()
+        assert not Path(lease.store.lock_guard_path).exists()
+
+
+def test_legacy_updater_waits_for_activity_admitted_before_its_gate(tmp_path, monkeypatch):
+    state_dir = tmp_path / "coordination"
+    owner_id, request_id = "a" * 32, "b" * 32
+    with EnvironmentActivityLease("cli-runner", state_dir=state_dir):
+        store = _publish_update_request(state_dir, owner_id, request_id, stage="draining", operation="upgrade")
+        monkeypatch.setattr(self_update, "UPDATE_PARTICIPANT_WAIT_SECONDS", 0.0)
+        with pytest.raises(UpdateCoordinationError, match="cli-runner"):
+            self_update._wait_for_update_participants(
+                store, request_id=request_id, instance_id=owner_id, previous_version="0.3.0",
+            )
 
 
 def test_activity_lease_disables_coordination_for_read_only_installation(
@@ -1398,32 +1428,27 @@ def test_activity_lease_disables_coordination_for_read_only_installation(
         state_dir=str(tmp_path / "coordination"),
     )
 
-    def read_only_lock(*_args, **_kwargs):
+    def read_only_record(*_args, **_kwargs):
         raise OSError(errno.EROFS, "read-only file system")
 
-    monkeypatch.setattr(lease.store, "locked", read_only_lock)
+    monkeypatch.setattr(lease.store, "write_record", read_only_record)
 
     assert lease.start() is lease
     assert lease._disabled is True
 
 
-def test_activity_lease_fails_closed_when_coordination_lock_times_out(
-    tmp_path,
-    monkeypatch,
-):
+def test_activity_lease_fails_closed_when_update_request_is_unreadable(tmp_path):
     lease = EnvironmentActivityLease(
         "cli-runner",
         state_dir=str(tmp_path / "coordination"),
     )
+    lease.store.ensure()
+    Path(lease.store.request_path).write_text("{", encoding="utf-8")
 
-    def lock_timeout(*_args, **_kwargs):
-        raise UpdateCoordinationError("Timed out waiting for the shared Pyruns update lock.")
-
-    monkeypatch.setattr(lease.store, "locked", lock_timeout)
-
-    with pytest.raises(UpdateCoordinationError, match="Timed out"):
+    with pytest.raises(UpdateCoordinationError, match="invalid"):
         lease.start()
 
+    assert not Path(lease.store.record_path("activities", lease.activity_id)).exists()
     assert lease._disabled is False
     assert lease._started is False
 

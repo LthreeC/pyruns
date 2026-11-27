@@ -416,15 +416,26 @@ class UiUpdateCoordinator:
         self._monitor.start()
 
     @contextmanager
-    def task_start_guard(self) -> Iterator[None]:
-        """Serialize a task claim against publishing the installation update gate."""
+    def task_start_guard(self, *, create_only: bool = False) -> Iterator[None]:
+        """Guard local shutdown and serialize launches with the shared update gate."""
 
         with self._lock:
             if self._requested:
                 raise UpdateInProgressError(
                     "Pyruns is updating; new tasks are disabled until every UI restarts."
                 )
-            if self._store is None or self._coordination_degraded:
+            if create_only or self._store is None or self._coordination_degraded:
+                yield
+                return
+            if self._isolated_upgrades:
+                try:
+                    self._store.check_task_admission(allow_missing=True)
+                except (OSError, UpdateCoordinationError, ValueError) as exc:
+                    raise UpdateInProgressError(
+                        "Could not coordinate this task start with the shared Pyruns installation."
+                    ) from exc
+                # The detached runner records its activity and checks again
+                # before claiming tasks.
                 yield
                 return
             if self.coordination_issue:
@@ -452,11 +463,6 @@ class UiUpdateCoordinator:
                     "Could not coordinate this task start with the shared Pyruns installation."
                 ) from exc
             try:
-                if self._isolated_upgrades:
-                    # The detached worker checks the gate when it claims tasks.
-                    # It cannot do so while the submitting UI holds this lock.
-                    lock_context.__exit__(None, None, None)
-                    lock_acquired = False
                 yield
             finally:
                 if lock_acquired and sys.exc_info()[0] is None:

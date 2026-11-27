@@ -5356,7 +5356,7 @@ def test_web_main_shutdowns_runtime_after_uvicorn_returns(monkeypatch):
 
 
 @pytest.mark.parametrize("stall_on_startup", [True, False], ids=["startup", "heartbeat"])
-def test_ui_serves_logs_while_shared_update_lock_does_not_return(tmp_path, monkeypatch, stall_on_startup):
+def test_ui_serves_logs_and_accepts_tasks_while_native_update_lock_stalls(tmp_path, monkeypatch, stall_on_startup):
     from pyruns import update_release
     from pyruns.web import self_update
 
@@ -5370,6 +5370,13 @@ def test_ui_serves_logs_while_shared_update_lock_does_not_return(tmp_path, monke
     _add_task(workspace, "pending")
     runtime = _build_runtime(workspace, owns_task_lifecycle=False)
     runtime.detached_task_runs = True
+    submitted = []
+
+    def submit_detached_runs(names, **_kwargs):
+        submitted.extend(names)
+        return names
+
+    monkeypatch.setattr(runtime, "_submit_detached_runs", submit_detached_runs)
     shutdowns = []
     coordinator = self_update.UiUpdateCoordinator(
         lambda: shutdowns.append("shutdown"), shared=True, isolated_upgrades=True, current_version=__version__,
@@ -5412,12 +5419,22 @@ def test_ui_serves_logs_while_shared_update_lock_does_not_return(tmp_path, monke
                 assert "has not responded" in state["update_unavailable_reason"]
                 assert client.get("/api/workspace").json()["workspace_ready"]
                 logs = client.get("/api/tasks/finished/logs?log_file_name=run1.log").json()
-                assert logs["content"] == "visible during the outage\n"
+                log_path = workspace / TASKS_DIR / "finished" / "run_logs" / "run1.log"
+                assert logs["content"] == log_path.read_bytes().decode("utf-8")
                 assert client.post("/api/system/update").status_code == 503
+                created = client.post("/api/generator/create", json={
+                    "mode": "yaml", "name_prefix": "during-outage", "append_timestamp": False,
+                    "yaml_text": "lr: 0.02\n",
+                })
+                assert created.status_code == 200, created.text
+                name = created.json()["items"][0]["name"]
+                assert load_task_info(str(workspace / TASKS_DIR / name))["status"] == "pending"
+                assert submitted == []
                 response = client.post("/api/tasks/pending/run")
-                assert response.status_code == 503
-                assert "Could not coordinate this task start" in response.json()["detail"]
-                assert load_task_info(str(workspace / TASKS_DIR / "pending"))["status"] == "pending"
+                assert response.status_code == 200, response.text
+                response = client.post("/api/tasks/batch/run", json={"task_names": [name]})
+                assert response.status_code == 200, response.text
+                assert submitted == ["pending", name]
 
                 installed = "9999.0.0"
                 metadata = installation / f"pyruns-{installed}.dist-info"

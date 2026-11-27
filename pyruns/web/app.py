@@ -895,9 +895,9 @@ def create_app(
     def get_runtime() -> PyrunsRuntime:
         return app.state.runtime
 
-    def task_start_guard():
+    def task_start_guard(*, create_only: bool = False):
         coordinator = app.state.update_coordinator
-        return coordinator.task_start_guard() if coordinator is not None else nullcontext()
+        return coordinator.task_start_guard(create_only=create_only) if coordinator is not None else nullcontext()
 
     def require_item_limit(items: list[Any], *, label: str) -> None:
         if len(items) > MAX_TASK_BATCH_ITEMS:
@@ -993,7 +993,7 @@ def create_app(
     @app.post("/api/generator/create")
     def create_tasks_from_generator(payload: GeneratorCreateRequest) -> dict[str, Any]:
         try:
-            with task_start_guard():
+            with task_start_guard(create_only=True):
                 return get_runtime().create_tasks_from_template(
                     name_prefix=payload.name_prefix,
                     mode=payload.mode,

@@ -633,6 +633,19 @@ class CoordinationStore:
             request.get("isolated") is True or request.get("stage") == ISOLATED_UPGRADE_STAGE
         ))
 
+    def check_task_admission(self, *, allow_missing: bool = False) -> None:
+        """Read the atomically published request without acquiring the update lock."""
+        request = self.read_request_locked(allow_missing=allow_missing)
+        if (
+            request is not None
+            and self.request_is_active(request)
+            and not self.request_is_isolated(request)
+            and not self.request_is_stale(request)
+        ):
+            raise UpdateInProgressError(
+                "Pyruns is updating; new tasks are disabled until every UI restarts."
+            )
+
     @staticmethod
     def request_is_stale(request: dict[str, Any]) -> bool:
         if not CoordinationStore.request_is_active(request):
@@ -821,48 +834,28 @@ class EnvironmentActivityLease:
         if self._disabled:
             return self
         try:
-            with self.store.locked():
-                request = self.store.active_request_locked(recover=True)
-                if request is not None and not self.store.request_is_isolated(request):
-                    raise UpdateInProgressError(
-                        "Pyruns is updating; new tasks are disabled until every UI restarts."
-                    )
+            try:
                 self.store.write_record("activities", self.activity_id, self._payload())
-        except UpdateCoordinationError:
-            raise
-        except OSError as exc:
-            # Coordination is optional for ordinary task execution. Preserve a
-            # readable live update gate only when storage explicitly denies
-            # writes, as with a read-only package installation.
-            if not _coordination_write_is_denied(exc):
-                raise
-            request = self.store.read_request_locked(strict=True, allow_missing=True)
-            if (
-                self.store.request_is_active(request)
-                and request is not None
-                and not self.store.request_is_isolated(request)
-                and not self.store.request_is_stale(request)
-            ):
-                raise UpdateInProgressError(
-                    "Pyruns is updating; new tasks are disabled until every UI restarts."
-                ) from exc
-            self._disabled = True
-            return self
-        self._started = True
-        self._thread = threading.Thread(
-            target=self._heartbeat_loop,
-            name="pyruns-activity-heartbeat",
-            daemon=True,
-        )
-        try:
+            except OSError as exc:
+                if not _coordination_write_is_denied(exc):
+                    raise
+                self.store.check_task_admission(allow_missing=True)
+                self._disabled = True
+                return self
+            # The legacy updater publishes its gate before checking activities.
+            # Register first so a concurrent updater or this submission sees
+            # the other side before either proceeds.
+            self.store.check_task_admission()
+            self._thread = threading.Thread(
+                target=self._heartbeat_loop,
+                name="pyruns-activity-heartbeat",
+                daemon=True,
+            )
             self._thread.start()
         except BaseException:
-            try:
-                self.store.remove_record("activities", self.activity_id)
-            except OSError:
-                pass
-            self._started = False
+            self._remove_record_best_effort()
             raise
+        self._started = True
         return self
 
     def _heartbeat_loop(self) -> None:
